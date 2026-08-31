@@ -1199,6 +1199,21 @@ const App = (() => {
       </div>
       <div class="muted small center">刷题宝 · 本地题库存储于浏览器 IndexedDB<br>手机浏览器打开即用，可"添加到主屏幕"当 APP 使用</div>`;
 
+    // Blob → base64（APK 中 WebView 不触发 <a download>，需走 JS 桥接原生直接写入 Download 目录）
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const url = fr.result || '';
+          // data:application/json;base64,xxx...  去掉 data:*/*;base64, 前缀
+          const i = url.indexOf(',');
+          resolve(i >= 0 ? url.slice(i + 1) : '');
+        };
+        fr.onerror = () => reject(fr.error || new Error('blobToBase64 失败'));
+        fr.readAsDataURL(blob);
+      });
+    }
+
     // 备份：导出全部题库 JSON
     document.getElementById('backup-btn').onclick = async () => {
       const st = document.getElementById('backup-status');
@@ -1207,15 +1222,35 @@ const App = (() => {
         if (!banks.length) return toast('题库为空，无可导出');
         const all = { version: 1, exportedAt: new Date().toISOString(), banks, questions: {} };
         for (const b of banks) all.questions[b.id] = await DB.questionsByBank(b.id);
+        const fileName = `刷题宝备份_${new Date().toISOString().slice(0, 10)}.json`;
         const blob = new Blob([JSON.stringify(all)], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `刷题宝备份_${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-        st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题`;
+
+        // APK 环境：走 JS 桥接原生保存到系统 Download 目录 → 文件管理器直接可见
+        const bridge = (typeof window !== 'undefined') && window.AndroidBridge;
+        const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
+        if (isApk) {
+          const b64 = await blobToBase64(blob);
+          if (!b64) throw new Error('文件内容为空');
+          const res = ('' + (bridge.saveFile(fileName, b64) || '')).trim();
+          if (res.startsWith('OK:')) {
+            const path = res.slice(3);
+            st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题 → ${path}`;
+          } else if (res.startsWith('NEED_PERMISSION:')) {
+            st.textContent = '⚠ ' + res.slice(16) + '（授予后再点一次导出）';
+          } else {
+            throw new Error(res || '原生保存失败');
+          }
+        } else {
+          // 浏览器 / PWA：走标准 <a download>
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(a.href);
+          st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题`;
+        }
       } catch (e) {
-        st.textContent = '⚠ ' + e.message.slice(0, 80);
+        st.textContent = '⚠ ' + (e.message || String(e)).slice(0, 80);
       }
     };
     // 恢复：导入备份 JSON（按题库名合并，已有同名库跳过）
