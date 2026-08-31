@@ -1077,10 +1077,10 @@ const LLM = (() => {
   let _netLevel = 0;
   let _successStreak = 0;
   const LEVELS = [
-    { batch: 10, concurrency: 4 },
-    { batch: 5,  concurrency: 2 },
-    { batch: 2,  concurrency: 1 },
-    { batch: 1,  concurrency: 1 }
+    { batch: 5, concurrency: 2 },   // 强网：5题/批，避免 GLM-Flash 等慢模型生成 10 题超 90s
+    { batch: 3, concurrency: 2 },
+    { batch: 2, concurrency: 1 },
+    { batch: 1, concurrency: 1 }
   ];
   function currentLevel() {
     return LEVELS[Math.min(_netLevel, LEVELS.length - 1)];
@@ -1878,7 +1878,17 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: SOLVE_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true });
+      ], {
+        onRetry: (a, c) => {
+          // chat 重试时立刻反馈到 UI，避免"转圈无报错"误判为卡死
+          if (onProgress) {
+            const note = c > 0 ? `限流冷却 ${c}s · 第 ${a} 次重试` : `网络抖动 · 第 ${a} 次重试`;
+            onProgress(processed, total, solved, note);
+          }
+        },
+        maxTokens,
+        withFinish: true
+      });
 
       // 截断：不浪费重试，直接返回 truncated 让上层拆半
       if (result.finishReason === 'length') return { ok: false, truncated: true };
@@ -1922,6 +1932,10 @@ const LLM = (() => {
           processed += task.batch.length;
           if (onProgress) onProgress(processed, total, solved, '');
           continue;
+        }
+        // 启动一批前先反馈，避免 fetch pending 期间 UI 不动 → "转圈无报错"误判为卡死
+        if (onProgress) {
+          onProgress(processed, total, solved, `正在解 ${batch.length} 题 · 档位 ${_netLevel + 1}/4`);
         }
 
         let result;
@@ -2009,7 +2023,16 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: VERIFY_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true });
+      ], {
+        onRetry: (a, c) => {
+          if (onProgress) {
+            const note = c > 0 ? `限流冷却 ${c}s · 第 ${a} 次重试` : `网络抖动 · 第 ${a} 次重试`;
+            onProgress(processed, total, checked, note);
+          }
+        },
+        maxTokens,
+        withFinish: true
+      });
 
       // 截断：拆半，不浪费重试
       if (result.finishReason === 'length') return { ok: false, truncated: true };
@@ -2059,6 +2082,10 @@ const LLM = (() => {
           processed += task.batch.length;
           if (onProgress) onProgress(processed, total, checked, '');
           continue;
+        }
+        // 启动一批前先反馈，避免 fetch pending 期间 UI 不动 → "转圈无报错"误判为卡死
+        if (onProgress) {
+          onProgress(processed, total, checked, `正在校验 ${batch.length} 题 · 档位 ${_netLevel + 1}/4`);
         }
 
         let result;
