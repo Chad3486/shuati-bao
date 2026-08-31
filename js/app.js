@@ -149,7 +149,7 @@ const App = (() => {
               <div class="bank-meta">${b.count || 0} 题 · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
             </div>
             ${b.count ? `<button class="bank-del" style="color:var(--primary)" onclick="App.navigate('#/bank/${b.id}')">选题</button>` : ''}
-            ${na ? `<button class="bank-del" style="color:var(--bad)" onclick="App.navigate('#/answers/${b.id}')">补答案</button>` : ''}
+            ${b.count ? `<button class="bank-del" style="color:${na ? 'var(--bad)' : 'var(--primary)'}" onclick="App.navigate('#/answers/${b.id}')">${na ? '补答案' : '答案校验'}</button>` : ''}
             <button class="bank-del" onclick="App.renameBank('${b.id}')">改名</button>
             <button class="bank-del" onclick="App.delBank('${b.id}')">删除</button>
           </div>`;
@@ -626,8 +626,8 @@ const App = (() => {
       <div class="card">
         <div class="card-title">方式二 · AI 解答剩余题目</div>
         <p class="muted small">由 AI 做题生成答案（可能出错，仅供练习参考；建议配合教材核对关键题）。</p>
-        <button class="btn ghost big" id="ans-ai-btn">AI 解答 ${noAns.length} 题</button>
-        <div class="muted small" id="ans-ai-status"></div>
+        <button class="btn ghost big" id="ans-ai-btn" ${noAns.length ? '' : 'disabled'}>${noAns.length ? `AI 解答 ${noAns.length} 题` : '本库无缺答案题'}</button>
+        <div class="muted small" id="ans-ai-status">${noAns.length ? '' : '本库所有题目都已有答案，如需复核可使用下方「AI 校验」'}</div>
       </div>
 
       ${qs.length - noAns.length ? `
@@ -721,9 +721,10 @@ const App = (() => {
       const vResult = document.getElementById('verify-result');
       vStatus.textContent = 'AI 校验中…（独立重做每题，每批 10 题，进度自动保存）';
       try {
-        const res = await LLM.verifyQuestions(targets, (done, total, got) => {
+        const res = await LLM.verifyQuestions(targets, (done, total, got, note) => {
+          if (total <= 1) { if (note) vStatus.textContent = note; return; }
           bar.style.width = Math.round(done / total * 100) + '%';
-          vStatus.textContent = `AI 校验中：${done}/${total} 批 · 已核 ${got} 题`;
+          vStatus.textContent = `${note ? note + ' · ' : ''}AI 校验中：${done}/${total} 批 · 已核 ${got} 题`;
         }, (c, a, cool) => {
           vStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试（进度已保存）` : '网络波动，重试中…（进度已保存）';
         }, async (batch) => {

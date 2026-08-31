@@ -587,6 +587,7 @@ const LLM = (() => {
             options: q.options || undefined
           }));
           let ok = true;
+          let solvedHere = 0;
           try {
             const raw = await chat([
               { role: 'system', content: SOLVE_PROMPT },
@@ -607,8 +608,12 @@ const LLM = (() => {
                 q.answer = ans;
                 if (a.explanation) q.explanation = String(a.explanation).trim();
                 solved++;
+                solvedHere++;
               }
             }
+            // 修复：LLM 返回非 JSON 或本批一题都没解出时，标记失败进 failed，下一轮才能正确重试
+            // 否则 pool=failed.flat() 为空，MAX_ROUNDS 提前退出，看起来「重试多次都不动」
+            if (!Array.isArray(arr) || solvedHere === 0) ok = false;
           } catch (e) { ok = false; }
           // 增量落盘：本批有结果的立即保存，断网/退出不丢
           if (onBatchSave && batch.some(q => q.answer)) {
@@ -630,12 +635,9 @@ const LLM = (() => {
      不修改 q.answer（原答案保留），只写 q.aiAnswer / 补 q.explanation ---- */
   async function verifyQuestions(questions, onProgress, onRetry, onBatchSave) {
     const BATCH = 10;
+    const MAX_ROUNDS = 3;
     const cfg = await getConfig();
     const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
-    // 断点续跑：跳过已校验过的题（上次中断的部分不再重做）
-    const batches = [];
-    const todo = questions.filter(q => !q.aiAnswer);
-    for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
 
     const VERIFY_PROMPT = `你是答题专家。独立解答下列题目（不要猜原答案，凭知识自己做），严格按json输出：
 {"answers":[{"idx":0,"answer":"C","explanation":"解题过程，2-3句"}]}
@@ -644,65 +646,88 @@ const LLM = (() => {
 - 填空题 answer 为答案文本，多空用 ||| 分隔
 - explanation 写清推理依据，2-3 句`;
 
-    let done = 0, checked = 0, agree = 0, explained = 0;
+    let checked = 0, agree = 0, explained = 0;
     const conflicts = [];
-    let idx = 0;
-    async function worker() {
-      while (idx < batches.length) {
-        const my = idx++;
-        const batch = batches[my];
-        const body = batch.map((q, i) => ({
-          idx: i, type: q.type, stem: q.stem,
-          options: q.options || undefined
-        }));
-        try {
-          const raw = await chat([
-            { role: 'system', content: VERIFY_PROMPT },
-            { role: 'user', content: JSON.stringify(body) }
-          ], { onRetry });
-          const obj = parseJSON(raw);
-          const arr = obj?.answers || obj;
-          if (Array.isArray(arr)) {
-            for (const a of arr) {
-              const q = batch[a.idx];
-              if (!q) continue;
-              let ai = String(a.answer ?? '').trim();
-              if (!ai) continue;
-              if (q.options) {
-                ai = ai.toUpperCase().replace(/[^A-Z]/g, '');
-                if (!ai || [...ai].some(c => !q.options[c])) continue;
-              } else {
-                // 填空：宽松归一后再比对
-              }
-              q.aiAnswer = ai;
-              // 比对
-              let same;
-              if (q.type === 'fill') {
-                same = QuizSession.normalizeFill(ai) === QuizSession.normalizeFill(q.answer);
-              } else {
-                const nrm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-                same = nrm(ai) === nrm(q.answer);
-              }
-              checked++;
-              if (same) agree++;
-              else conflicts.push({ no: q.no, stem: q.stem.slice(0, 40), orig: q.answer, ai });
-              // 补解析（原本没有的）
-              if (!q.explanation && a.explanation) {
-                q.explanation = String(a.explanation).trim();
-                explained++;
+    // 断点续跑：每轮跳过已校验过的题（q.aiAnswer 已设）
+    let pool = questions.filter(q => !q.aiAnswer);
+    let round = 0;
+    while (pool.length && round < MAX_ROUNDS) {
+      round++;
+      if (round > 1) {
+        if (onProgress) onProgress(0, 1, checked, `网络波动，第 ${round} 轮重试（10s 后）`);
+        await new Promise(r => setTimeout(r, 10000));
+        pool = pool.filter(q => !q.aiAnswer);
+        if (!pool.length) break;
+      }
+      const batches = [];
+      for (let i = 0; i < pool.length; i += BATCH) batches.push(pool.slice(i, i + BATCH));
+      const failed = [];
+      let done = 0;
+      let idx = 0;
+      async function worker() {
+        while (idx < batches.length) {
+          const my = idx++;
+          const batch = batches[my];
+          const body = batch.map((q, i) => ({
+            idx: i, type: q.type, stem: q.stem,
+            options: q.options || undefined
+          }));
+          let ok = true;
+          let checkedHere = 0;
+          try {
+            const raw = await chat([
+              { role: 'system', content: VERIFY_PROMPT },
+              { role: 'user', content: JSON.stringify(body) }
+            ], { onRetry });
+            const obj = parseJSON(raw);
+            const arr = obj?.answers || obj;
+            if (Array.isArray(arr)) {
+              for (const a of arr) {
+                const q = batch[a.idx];
+                if (!q || q.aiAnswer) continue;
+                let ai = String(a.answer ?? '').trim();
+                if (!ai) continue;
+                if (q.options) {
+                  ai = ai.toUpperCase().replace(/[^A-Z]/g, '');
+                  if (!ai || [...ai].some(c => !q.options[c])) continue;
+                } else {
+                  // 填空：宽松归一后再比对
+                }
+                q.aiAnswer = ai;
+                // 比对
+                let same;
+                if (q.type === 'fill') {
+                  same = QuizSession.normalizeFill(ai) === QuizSession.normalizeFill(q.answer);
+                } else {
+                  const nrm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+                  same = nrm(ai) === nrm(q.answer);
+                }
+                checked++;
+                checkedHere++;
+                if (same) agree++;
+                else conflicts.push({ no: q.no, stem: q.stem.slice(0, 40), orig: q.answer, ai });
+                // 补解析（原本没有的）
+                if (!q.explanation && a.explanation) {
+                  q.explanation = String(a.explanation).trim();
+                  explained++;
+                }
               }
             }
+            // 修复：LLM 返回非 JSON 或本批一题都没校验出时，标记失败进 failed，下一轮才能正确重试
+            if (!Array.isArray(arr) || checkedHere === 0) ok = false;
+          } catch (e) { ok = false; }
+          // 增量落盘：本批有结果的立即保存，断网/退出不丢
+          if (onBatchSave && batch.some(q => q.aiAnswer)) {
+            try { await onBatchSave(batch); } catch (e) { /* 保存失败不中断 */ }
           }
-        } catch (e) { /* 单批失败跳过，已答的已即时落盘 */ }
-        // 增量落盘：本批有结果的立即保存，断网/退出不丢
-        if (onBatchSave && batch.some(q => q.aiAnswer)) {
-          try { await onBatchSave(batch); } catch (e) { /* 保存失败不中断 */ }
+          if (!ok) failed.push(batch);
+          done++;
+          if (onProgress) onProgress(done, batches.length, checked, round > 1 ? `第 ${round} 轮` : '');
         }
-        done++;
-        if (onProgress) onProgress(done, batches.length, checked);
       }
+      await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+      pool = failed.flat().filter(q => !q.aiAnswer);
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
     return { checked, agree, conflicts, explained };
   }
 
