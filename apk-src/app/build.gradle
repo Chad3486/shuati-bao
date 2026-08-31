@@ -8,8 +8,8 @@ android {
         applicationId "com.shuati.bao"
         minSdk 21
         targetSdk 34
-        versionCode 6
-        versionName "1.1.4"
+        versionCode 7
+        versionName "1.2.0"
     }
     // 固定 debug 签名：把 debug.keystore 提交到仓库，
     // GitHub Actions 不同次构建都用同一个 keystore 签名，
