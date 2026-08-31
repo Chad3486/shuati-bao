@@ -681,12 +681,12 @@ const App = (() => {
       if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
       const btn = document.getElementById('ans-ai-btn');
       btn.disabled = true;
-      aiStatus.textContent = 'AI 解答中…（每批 10 题，进度自动保存，中断可继续）';
+      aiStatus.textContent = 'AI 解答中…（自适应批量、流式反馈、进度自动保存，中断可继续）';
       try {
         const solved = await LLM.solveQuestions(noAns, (done, total, got, note) => {
-          if (total <= 1) { if (note) aiStatus.textContent = note; return; }
+          if (total <= 0) { if (note) aiStatus.textContent = note; return; }
           bar.style.width = Math.round(done / total * 100) + '%';
-          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解答中：${done}/${total} 批 · 已得 ${got} 个答案`;
+          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解答中：${done}/${total} 题 · 已得 ${got} 个答案`;
         }, (chunkIdx, attempt, cool) => {
           aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试（进度已保存）` : '网络波动，重试中…（进度已保存）';
         }, async (batch) => {
@@ -719,12 +719,12 @@ const App = (() => {
       verifyBtn.disabled = true;
       const vStatus = document.getElementById('ans-verify-status');
       const vResult = document.getElementById('verify-result');
-      vStatus.textContent = 'AI 校验中…（独立重做每题，每批 10 题，进度自动保存）';
+      vStatus.textContent = 'AI 校验中…（独立重做每题，自适应批量、流式反馈，进度自动保存）';
       try {
         const res = await LLM.verifyQuestions(targets, (done, total, got, note) => {
-          if (total <= 1) { if (note) vStatus.textContent = note; return; }
+          if (total <= 0) { if (note) vStatus.textContent = note; return; }
           bar.style.width = Math.round(done / total * 100) + '%';
-          vStatus.textContent = `${note ? note + ' · ' : ''}AI 校验中：${done}/${total} 批 · 已核 ${got} 题`;
+          vStatus.textContent = `${note ? note + ' · ' : ''}AI 校验中：${done}/${total} 题 · 已核 ${got} 题`;
         }, (c, a, cool) => {
           vStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试（进度已保存）` : '网络波动，重试中…（进度已保存）';
         }, async (batch) => {
