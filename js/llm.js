@@ -218,9 +218,11 @@ const LLM = (() => {
 
   /* ---- 单次 chat 调用（流式版 + 三道闸 + 错误分类重试）
      返回值：默认返回 content 字符串（兼容 parseChunk / testConnection）
-     若 opts.withFinish=true 则返回 { content, finishReason } 给 solveQuestions 用 ---- */
+     若 opts.withFinish=true 则返回 { content, finishReason } 给 solveQuestions 用
+     opts.stream：默认 false（向后兼容 parseChunk/parseDocument）
+                  solveQuestions/verifyQuestions 显式传 true 启用流式 SSE ---- */
   async function chat(messages, opts = {}) {
-    const { onRetry, raw = false, onStream = null, maxTokens = null, withFinish = false } = opts;
+    const { onRetry, raw = false, onStream = null, maxTokens = null, withFinish = false, stream = false } = opts;
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
@@ -229,9 +231,10 @@ const LLM = (() => {
       model: cfg.model,
       messages,
       temperature: cfg.temperature,
-      max_tokens: maxTokens || 8192,
-      stream: true
+      max_tokens: maxTokens || 8192
     };
+    // 仅在显式 stream=true 时启用流式；response_format 在 raw=false 时启用
+    if (stream) payload.stream = true;
     if (!raw) payload.response_format = { type: 'json_object' };
     const body = JSON.stringify(payload);
 
@@ -243,13 +246,19 @@ const LLM = (() => {
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
 
-        const result = await streamSSE(url, body, cfg, {
-          onStream,
-          firstByteMs: FIRST_BYTE_TIMEOUT,
-          idleMs: IDLE_TIMEOUT,
-          hardCapMs: HARD_CAP
-        });
-        // 成功返回（含 aborted 抢救也算成功路径，由上层判断 finishReason）
+        let result;
+        if (stream) {
+          result = await streamSSE(url, body, cfg, {
+            onStream,
+            firstByteMs: FIRST_BYTE_TIMEOUT,
+            idleMs: IDLE_TIMEOUT,
+            hardCapMs: HARD_CAP
+          });
+        } else {
+          // 非流式路径（parseChunk/parseDocument/testConnection 走这里，跟 v1.0.0 行为一致）
+          result = await fetchJSON(url, body, cfg);
+        }
+        // 成功返回
         if (result.finishReason === 'stop' || result.finishReason === 'length') {
           noteSuccess();
         }
@@ -258,7 +267,7 @@ const LLM = (() => {
         lastErr = e;
         // 配置错误（400/401/403/404）和余额不足（402）永远不重试，立刻把原因告诉用户
         if ([400, 401, 403, 404, 402].includes(e.status)) throw e;
-        // 429 限流：按 Retry-After 冷却，不再逐次翻倍（那是把等待感放大），不升档
+        // 429 限流：按 Retry-After 冷却，不再逐次翻倍
         if (e.status === 429) {
           const cool = e.retryAfterMs || 15000;
           _throttleUntil = Date.now() + cool;
@@ -277,6 +286,46 @@ const LLM = (() => {
     throw new Error(isNet
       ? `网络连不上 API（已重试 ${maxRetry} 次）：${lastErr?.message || ''}。请检查手机网络/代理，或稍后再试`
       : (lastErr?.message || '未知错误'));
+  }
+
+  /* ---- 非流式 fetch JSON（与 v1.0.0 chat 行为一致的兜底路径） ----
+     用于 parseChunk / parseDocument / testConnection 等不需要流式的场景。
+     保留 90s 超时；非流式响应天然解析为 JSON 不依赖 SSE 切分。 */
+  async function fetchJSON(url, body, cfg) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort('timeout'), 90000);
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + cfg.apiKey
+        },
+        body,
+        signal: ctl.signal
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') throw new Error('请求超时（90s）');
+      throw new Error('网络错误：' + (e.message || ''));
+    }
+    clearTimeout(timer);
+    if (!resp.ok) {
+      let errText = '';
+      try { errText = await resp.text(); } catch {}
+      const err = new Error(`API ${resp.status}: ${errText.slice(0, 300)}`);
+      err.status = resp.status;
+      if (resp.status === 429) {
+        const ra = parseInt(resp.headers.get('retry-after'), 10);
+        err.retryAfterMs = (ra > 0 ? ra * 1000 : 15000);
+      }
+      throw err;
+    }
+    const data = await resp.json().catch(() => ({}));
+    const content = data.choices?.[0]?.message?.content || '';
+    if (!content) throw new Error('API 返回为空');
+    return { content, finishReason: data.choices?.[0]?.finish_reason || 'stop' };
   }
 
   /* ---- JSON 容错解析 ---- */
@@ -793,7 +842,7 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: SOLVE_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true });
+      ], { onRetry, maxTokens, withFinish: true, stream: true });
 
       // 截断：不浪费重试，直接返回 truncated 让上层拆半
       if (result.finishReason === 'length') return { ok: false, truncated: true };
@@ -924,7 +973,7 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: VERIFY_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true });
+      ], { onRetry, maxTokens, withFinish: true, stream: true });
 
       // 截断：拆半，不浪费重试
       if (result.finishReason === 'length') return { ok: false, truncated: true };
