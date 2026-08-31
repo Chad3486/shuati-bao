@@ -1895,12 +1895,40 @@ const LLM = (() => {
 
       // 断流抢救：尝试把已收到的部分解析成合法 JSON，落库已抢救到的题
       const obj = parseJSON(result.content);
-      const arr = obj?.answers || obj;
+      // 鲁棒提取答案数组：兼容 GLM/不同模型可能返回的多种 JSON 结构
+      // 期望: {answers:[{idx,answer,explanation}]} 或 [{idx,answer,...}] 或 {answers:{"0":{...}}}
+      let arr = null;
+      if (Array.isArray(obj)) {
+        arr = obj;                                            // 直接数组
+      } else if (obj && typeof obj === 'object') {
+        arr = obj.answers;                                     // 期望格式
+        if (!Array.isArray(arr)) {
+          // answers 可能是 {"0":{...}, "1":{...}} 这种对象映射
+          if (arr && typeof arr === 'object') {
+            arr = Object.values(arr);
+          } else if (Array.isArray(obj.questions)) {          // 模型返回 questions
+            arr = obj.questions;
+          } else if (Array.isArray(obj.data)) {               // 模型返回 data
+            arr = obj.data;
+          } else if (Array.isArray(obj.results)) {            // 模型返回 results
+            arr = obj.results;
+          } else if (Array.isArray(obj.list)) {
+            arr = obj.list;
+          } else if (obj.idx !== undefined || obj.answer !== undefined) {
+            // 单个对象 {idx,answer,...} 当成只有一题
+            arr = [obj];
+          } else {
+            // 最后兜底：扫所有 value 找第一个数组
+            arr = Object.values(obj).find(v => Array.isArray(v)) || null;
+          }
+        }
+      }
       if (Array.isArray(arr)) {
         for (const a of arr) {
-          const q = batch[a.idx];
+          if (!a || typeof a !== 'object') continue;
+          const q = batch[a.idx] || batch[a.index] || batch[a.i];
           if (!q || q.answer) continue;
-          let ans = String(a.answer ?? '').trim();
+          let ans = String(a.answer ?? a.ans ?? a.A ?? '').trim();
           if (!ans) continue;
           if (q.options) {
             ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
@@ -1917,8 +1945,14 @@ const LLM = (() => {
           solvedHere++;
         }
       }
-      // 无效 JSON 或一题都没解出 → 失败
-      if (!Array.isArray(arr) || solvedHere === 0) return { ok: false, truncated: false };
+      // 无效 JSON 或一题都没解出 → 失败，把模型实际返回的内容前 80 字反馈到 UI 帮助诊断
+      if (!Array.isArray(arr) || solvedHere === 0) {
+        if (onProgress) {
+          const preview = (result.content || '(空)').replace(/\s+/g, ' ').slice(0, 80);
+          onProgress(processed, total, solved, `解析失败 · GLM 返回: ${preview}`);
+        }
+        return { ok: false, truncated: false };
+      }
       // 抢救到部分但未全解（断流）→ 拆半补尾部
       return { ok: true, truncated: solvedHere < batch.length, partial: solvedHere };
     }
@@ -2039,12 +2073,36 @@ const LLM = (() => {
 
       // 断流抢救：尝试解析已收到的部分
       const obj = parseJSON(result.content);
-      const arr = obj?.answers || obj;
+      // 鲁棒提取答案数组：兼容 GLM/不同模型可能返回的多种 JSON 结构
+      let arr = null;
+      if (Array.isArray(obj)) {
+        arr = obj;
+      } else if (obj && typeof obj === 'object') {
+        arr = obj.answers;
+        if (!Array.isArray(arr)) {
+          if (arr && typeof arr === 'object') {
+            arr = Object.values(arr);
+          } else if (Array.isArray(obj.questions)) {
+            arr = obj.questions;
+          } else if (Array.isArray(obj.data)) {
+            arr = obj.data;
+          } else if (Array.isArray(obj.results)) {
+            arr = obj.results;
+          } else if (Array.isArray(obj.list)) {
+            arr = obj.list;
+          } else if (obj.idx !== undefined || obj.answer !== undefined) {
+            arr = [obj];
+          } else {
+            arr = Object.values(obj).find(v => Array.isArray(v)) || null;
+          }
+        }
+      }
       if (Array.isArray(arr)) {
         for (const a of arr) {
-          const q = batch[a.idx];
+          if (!a || typeof a !== 'object') continue;
+          const q = batch[a.idx] || batch[a.index] || batch[a.i];
           if (!q || q.aiAnswer) continue;
-          let ai = String(a.answer ?? '').trim();
+          let ai = String(a.answer ?? a.ans ?? a.A ?? '').trim();
           if (!ai) continue;
           if (q.options) {
             ai = ai.toUpperCase().replace(/[^A-Z]/g, '');
@@ -2070,7 +2128,13 @@ const LLM = (() => {
           }
         }
       }
-      if (!Array.isArray(arr) || checkedHere === 0) return { ok: false, truncated: false };
+      if (!Array.isArray(arr) || checkedHere === 0) {
+        if (onProgress) {
+          const preview = (result.content || '(空)').replace(/\s+/g, ' ').slice(0, 80);
+          onProgress(processed, total, checked, `解析失败 · GLM 返回: ${preview}`);
+        }
+        return { ok: false, truncated: false };
+      }
       return { ok: true, truncated: checkedHere < batch.length, partial: checkedHere };
     }
 
