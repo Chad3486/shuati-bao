@@ -842,7 +842,7 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: SOLVE_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true, stream: true });
+      ], { onRetry, maxTokens, withFinish: true });
 
       // 截断：不浪费重试，直接返回 truncated 让上层拆半
       if (result.finishReason === 'length') return { ok: false, truncated: true };
@@ -973,7 +973,7 @@ const LLM = (() => {
       const result = await chat([
         { role: 'system', content: VERIFY_PROMPT },
         { role: 'user', content: JSON.stringify(body) }
-      ], { onRetry, maxTokens, withFinish: true, stream: true });
+      ], { onRetry, maxTokens, withFinish: true });
 
       // 截断：拆半，不浪费重试
       if (result.finishReason === 'length') return { ok: false, truncated: true };
