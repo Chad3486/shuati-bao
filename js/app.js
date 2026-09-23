@@ -77,15 +77,31 @@ const App = (() => {
 
   const typeLabel = { single: '单选', multi: '多选', judge: '判断', fill: '填空' };
 
-  /* ---- 主题：auto 跟随系统 / light / dark，存 meta，class 驱动 ---- */
+  /* ---- 配色方案（6 套，与日间/夜间正交叠加） ---- */
+  const SKINS = [
+    { id: 'classic', name: '极简蓝', c1: '#1652f0', c2: '#3b82f6', light: '#1652f0', dark: '#12151d' },
+    { id: 'aurora', name: '极光', c1: '#4f46e5', c2: '#06b6d4', light: '#4f46e5', dark: '#0e1018' },
+    { id: 'morandi', name: '莫兰迪', c1: '#6b8f71', c2: '#9db894', light: '#6b8f71', dark: '#15171a' },
+    { id: 'sunset', name: '暖阳', c1: '#f97316', c2: '#fbbf24', light: '#f97316', dark: '#191410' },
+    { id: 'rose', name: '玫瑰', c1: '#e11d75', c2: '#fb7185', light: '#e11d75', dark: '#181216' },
+    { id: 'neon', name: '霓虹', c1: '#0891b2', c2: '#22d3ee', light: '#0891b2', dark: '#080c10' }
+  ];
+  const skinOf = id => SKINS.find(s => s.id === id) || SKINS[0];
+
+  /* ---- 主题：auto 跟随系统 / light / dark；配色：skin。存 meta，class/属性驱动 ----
+     同时镜像到 localStorage，供 index.html 首屏内联脚本提前应用，避免闪白 ---- */
   async function applyTheme() {
     const t = (await DB.metaGet('theme')) || 'auto';
+    const skin = (await DB.metaGet('skin')) || 'classic';
     const sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const dark = t === 'dark' || (t === 'auto' && sysDark);
-    document.documentElement.classList.toggle('dark', dark);
+    const root = document.documentElement;
+    root.classList.toggle('dark', dark);
+    root.setAttribute('data-skin', skinOf(skin).id);
     const mc = document.querySelector('meta[name="theme-color"]');
-    if (mc) mc.setAttribute('content', dark ? '#12151d' : '#1652f0');
-    return t;
+    if (mc) mc.setAttribute('content', dark ? skinOf(skin).dark : skinOf(skin).light);
+    try { localStorage.setItem('sb_theme', JSON.stringify({ theme: t, skin: skinOf(skin).id })); } catch (e) { /* 隐私模式忽略 */ }
+    return { theme: t, skin };
   }
 
   /* ---- 断点续做：进度自动保存 ---- */
@@ -1237,8 +1253,8 @@ const App = (() => {
         <div class="card-title">近 ${days.length} 日答题量</div>
         ${days.length ? `<div class="chart">
           ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
-            <div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div>
-            <span class="col-label">${d.slice(5)}</span></div>`).join('')}
+            <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
+            <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
         </div>` : '<div class="muted">暂无答题记录</div>'}
       </div>`;
   }
@@ -1248,6 +1264,7 @@ const App = (() => {
     topbar('设置');
     const cfg = await LLM.getConfig();
     const theme = (await DB.metaGet('theme')) || 'auto';
+    const skin = (await DB.metaGet('skin')) || 'classic';
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">外观</div>
@@ -1256,6 +1273,14 @@ const App = (() => {
           <button data-v="light" class="${theme === 'light' ? 'on' : ''}">☀ 日间</button>
           <button data-v="dark" class="${theme === 'dark' ? 'on' : ''}">🌙 夜间</button>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title">界面风格</div>
+        <div class="skin-grid" id="skin-grid">
+          ${SKINS.map(s => `<button class="skin-item ${s.id === skinOf(skin).id ? 'on' : ''}" data-skin="${s.id}">
+            <i style="--c1:${s.c1};--c2:${s.c2}"></i><span>${s.name}</span></button>`).join('')}
+        </div>
+        <div class="muted small" style="margin-top:10px">风格与日间／夜间可自由组合，选择后立即生效</div>
       </div>
       <div class="card">
         <div class="card-title">AI 接口（AI 辅助录入答案 / AI 解答 / AI 校验 使用）</div>
@@ -1386,6 +1411,17 @@ const App = (() => {
       await DB.metaSet('theme', b.dataset.v);
       applyTheme();
       toast(b.dataset.v === 'auto' ? '已跟随系统' : (b.dataset.v === 'dark' ? '已切换夜间' : '已切换日间'));
+    };
+
+    // 界面风格切换：立即生效并保存
+    const skinGrid = document.getElementById('skin-grid');
+    if (skinGrid) skinGrid.onclick = async (e) => {
+      const b = e.target.closest('button[data-skin]'); if (!b) return;
+      skinGrid.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      await DB.metaSet('skin', b.dataset.skin);
+      applyTheme();
+      toast('已切换「' + skinOf(b.dataset.skin).name + '」');
     };
 
     document.getElementById('save-btn').onclick = async () => {
