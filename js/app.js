@@ -199,12 +199,24 @@ const App = (() => {
         <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
+      <div class="card">
+        <div class="card-title">AI 辅助录入（可选开关）</div>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6">
+          <input type="checkbox" id="ai-assist-toggle" style="margin-top:3px;flex:none">
+          <span>开启后，本地规则<b>匹配不到答案</b>的题，由 AI 直接<b>从答案文件原文智能对位</b>填入：答案照抄原文而非 AI 做题，正确率高；按题型严格校验，校验不过的宁缺毋错。需在「设置」配置 API Key，消耗少量额度；关闭或无 Key 时纯本地解析零调用。</span>
+        </label>
+      </div>
       <div class="card" id="parse-card" style="display:none">
         <div class="card-title">第 2 步 · 解析</div>
         <div class="muted" id="parse-status"></div>
         <div class="progress"><div class="progress-bar" id="parse-bar"></div></div>
         <div id="parse-result"></div>
       </div>`;
+
+    // AI 辅助开关：状态持久化
+    const aiToggle = document.getElementById('ai-assist-toggle');
+    DB.metaGet('aiAssistImport').then(v => { aiToggle.checked = !!v; });
+    aiToggle.onchange = () => DB.metaSet('aiAssistImport', aiToggle.checked);
 
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
@@ -312,6 +324,30 @@ const App = (() => {
           const r = LLM.matchAnswersStructured(res.questions, res.sections, parsedAnswers);
           filled = r.filled; explained = r.explained;
         }
+
+        // AI 辅助录入：开关开启 + 有答案文件 + 本地匹配后仍有缺答案 → AI 从答案原文智能对位
+        let aiFilled = 0, aiExplained = 0;
+        const aiAssistOn = document.getElementById('ai-assist-toggle')?.checked;
+        if (aiAssistOn && aFiles.length && res.questions.some(q => !q.answer)) {
+          const cfg = await LLM.getConfig();
+          if (!cfg.apiKey) {
+            toast('AI 辅助需先在「设置」配置 API Key，本次已跳过');
+          } else {
+            setState('AI 对位答案…');
+            statusEl.textContent = 'AI 辅助录入：从答案文件原文智能对位中…';
+            try {
+              const answerRaw = aFiles.map(x => x.text).join('\n');
+              const r = await LLM.aiMatchAnswers(res.questions, answerRaw, res.sections,
+                (done, total, got, si, sc) => {
+                  statusEl.textContent = `AI 辅助对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
+                },
+                (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…'; });
+              aiFilled = r.filled; aiExplained = r.explained;
+            } catch (e) {
+              toast('AI 辅助失败（不影响本地结果）：' + e.message.slice(0, 60));
+            }
+          }
+        }
         const noAnswer = res.questions.filter(q => !q.answer).length;
 
         const bank = {
@@ -325,9 +361,10 @@ const App = (() => {
         res.questions.forEach(q => q.bankId = bank.id);
         await DB.questionAddMany(res.questions);
         await DB.bankAdd(bank);
-        if (filled) {
-          setState(`✓ ${res.questions.length} 题 · 答案填入 ${filled}`);
-          toast(`提取 ${res.questions.length} 题，配套答案填入 ${filled} 个${explained ? `（含 ${explained} 条解析）` : ''}`);
+        const totalFilled = filled + aiFilled, totalExp = explained + aiExplained;
+        if (totalFilled) {
+          setState(`✓ ${res.questions.length} 题 · 答案填入 ${totalFilled}${aiFilled ? `（AI 辅助 ${aiFilled}）` : ''}`);
+          toast(`提取 ${res.questions.length} 题，答案填入 ${totalFilled} 个${totalExp ? `（含 ${totalExp} 条解析）` : ''}`);
         } else if (noAnswer > 0) {
           setState(`✓ ${res.questions.length} 题（${noAnswer} 题缺答案）`);
           toast(`提取 ${res.questions.length} 题，答案未匹配上，可稍后「补答案」`);
@@ -562,10 +599,11 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">方式一 · 上传答案文件（推荐，免费）</div>
-        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入。</p>
+        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
         <input type="file" id="ans-file-input" multiple accept=".pdf,.docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
+        <div id="ans-ai-match"></div>
       </div>
 
       <div class="card">
@@ -589,8 +627,10 @@ const App = (() => {
     const fileStatus = document.getElementById('ans-file-status');
     const aiStatus = document.getElementById('ans-ai-status');
 
-    // 方式一：答案文件匹配（结构化：章/节/题号精确对位，解析一并填入）
+    // 方式一：答案文件匹配（结构化：章/节/题号精确对位，解析一并填入；对不上的转 AI 智能对位兜底）
     const input = document.getElementById('ans-file-input');
+    const aiMatchBox = document.getElementById('ans-ai-match');
+    let lastAnswerRaw = ''; // 最近一次答案文件原文（供 AI 对位）
     document.getElementById('ans-file-btn').onclick = () => input.click();
     input.onchange = async () => {
       if (!input.files.length) return;
@@ -600,26 +640,74 @@ const App = (() => {
         for (const f of [...input.files]) {
           texts.push(Extractor.cleanText(await Extractor.extract(f)));
         }
-        const parsed = LLM.parseAnswerDocument(texts.join('\n'));
+        lastAnswerRaw = texts.join('\n');
+        const parsed = LLM.parseAnswerDocument(lastAnswerRaw);
         const total = parsed.entries.length || parsed.ordered.length;
         if (!total) {
-          fileStatus.textContent = '⚠ 未识别出答案（支持「2、答案：A（解析：…）」「1.C 2.A」「题号：1 答案：C」、纯序列「A B C D」）';
+          fileStatus.textContent = '⚠ 本地规则未识别出答案条目。文档里确实有答案但格式特殊的话，可点下方「AI 智能对位」直接读原文对位';
+          renderAiMatch();
           return;
         }
         fileStatus.textContent = `识别到 ${total} 个答案，按 章/节/题号 匹配中…`;
         const { filled, explained } = LLM.matchAnswersStructured(noAns, bank.sections, parsed);
-        if (!filled) {
-          fileStatus.textContent = '⚠ 未能匹配到缺答案题目（章节/题号对不上？）';
-          return;
-        }
         for (const q of noAns) if (q.answer) await DB.questionPut(q);
-        fileStatus.textContent = `✓ 成功填入 ${filled} 个答案${explained ? `（含 ${explained} 条解析）` : ''}`;
-        toast(`已补 ${filled} 个答案`);
-        render();
+        const remain = noAns.filter(q => !q.answer).length;
+        if (filled) {
+          toast(`已补 ${filled} 个答案`);
+          if (!remain) {
+            fileStatus.textContent = `✓ 成功填入 ${filled} 个答案${explained ? `（含 ${explained} 条解析）` : ''}，全部补齐`;
+            render();
+            return;
+          }
+          fileStatus.textContent = `✓ 本地规则已填 ${filled} 个${explained ? `（含 ${explained} 条解析）` : ''}，剩 ${remain} 题对不上`;
+        } else {
+          fileStatus.textContent = '⚠ 本地规则未能匹配（章节/题号对不上？），可试 AI 智能对位';
+        }
+        renderAiMatch();
       } catch (e) {
         fileStatus.textContent = '⚠ ' + e.message.slice(0, 100);
       }
     };
+
+    // AI 智能对位兜底：AI 从答案文件原文找答案照抄填入（非 AI 做题），按题型严格校验
+    function renderAiMatch() {
+      const remain = noAns.filter(q => !q.answer).length;
+      aiMatchBox.innerHTML = remain
+        ? `<button class="btn ghost big" id="ans-ai-match-btn">AI 智能对位剩余 ${remain} 题</button>
+           <div class="muted small" style="margin-top:6px">由 AI 从答案文件原文中找出每题答案照抄填入（不是 AI 做题，正确率高；按题型严格校验，过不了校验的宁缺毋错；需 API Key）</div>
+           <div class="muted small" id="ans-ai-match-status"></div>`
+        : '';
+      const btn = document.getElementById('ans-ai-match-btn');
+      if (btn) btn.onclick = runAiMatch;
+    }
+    async function runAiMatch() {
+      const remain = noAns.filter(q => !q.answer);
+      if (!remain.length) return toast('没有缺答案的题了');
+      if (!lastAnswerRaw) return toast('请先选择答案文件');
+      const cfg = await LLM.getConfig();
+      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
+      const btn = document.getElementById('ans-ai-match-btn');
+      const st = document.getElementById('ans-ai-match-status');
+      if (btn) btn.disabled = true;
+      if (st) st.textContent = 'AI 智能对位中…（答案照抄原文，进度自动保存）';
+      try {
+        const r = await LLM.aiMatchAnswers(noAns, lastAnswerRaw, bank.sections,
+          (done, total, got, si, sc) => {
+            if (st) st.textContent = `AI 对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
+          },
+          (att, cool) => { if (st) st.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…'; },
+          async (batch) => { for (const q of batch) if (q.answer) await DB.questionPut(q); });
+        const left = noAns.filter(q => !q.answer).length;
+        if (st) st.textContent = r.filled
+          ? `✓ AI 智能对位填入 ${r.filled} 个答案${r.explained ? `（含 ${r.explained} 条解析）` : ''}` + (left ? `，剩 ${left} 题未在答案原文中找到` : '')
+          : '答案原文中未找到更多答案，可试「方式二 · AI 解答」';
+        toast(`AI 对位补了 ${r.filled} 个答案`);
+        render();
+      } catch (e) {
+        if (st) st.textContent = '⚠ ' + e.message.slice(0, 100);
+        if (btn) { btn.disabled = false; btn.textContent = '重试 AI 智能对位'; }
+      }
+    }
 
     // 方式二：AI 解答（每批自动落库，断网后重进接着来）
     document.getElementById('ans-ai-btn').onclick = async () => {
@@ -1170,7 +1258,7 @@ const App = (() => {
         </div>
       </div>
       <div class="card">
-        <div class="card-title">AI 接口（仅「补答案」的 AI 解答 / AI 校验使用）</div>
+        <div class="card-title">AI 接口（AI 辅助录入答案 / AI 解答 / AI 校验 使用）</div>
         <label class="field"><span>Base URL</span>
           <input id="set-url" value="${escapeHtml(cfg.baseUrl)}" placeholder="https://api.deepseek.com/v1">
         </label>

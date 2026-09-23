@@ -385,6 +385,124 @@ const LLM = (() => {
     return res;
   }
 
+  /* ================= AI 辅助录入 · 从答案文件原文智能对位 =================
+     定位：本地结构化匹配（matchAnswersStructured）的兜底——格式怪异/题号错位/
+     无章节标题导致正则对不上时，交给 AI 按语义从答案原文里找答案照抄填入。
+     关键设计（保正确率）：
+     1. AI 只做「对位+照抄」，明确禁止自己推理做题——答案文件里就是标准答案
+     2. 每题带章节上下文 + 题号 + 题型 + 题干，给 AI 足够对位线索
+     3. 回填前过同一套题型校验（single/judge→单字母且在选项内，multi→字母合法，fill→文本）
+     4. 答案原文超长自动分片轮询；失败批次重试；并发可配 */
+  async function aiMatchAnswers(questions, answerText, sections, onProgress, onRetry, onBatchSave) {
+    const res = { filled: 0, explained: 0 };
+    let pool = questions.filter(q => !q.answer);
+    if (!pool.length || !answerText || !String(answerText).trim()) return res;
+
+    const cfg = await getConfig();
+    const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+    const BATCH = 12;      // 每批题数
+    const SLICE = 48000;   // 答案原文分片大小（字符）
+
+    // 题目侧章节上下文（与 matchAnswersStructured 同源），给 AI 对位线索
+    const secMeta = new Map();
+    let curChapter = null;
+    for (const s of (sections || [])) {
+      const title = s.title || null;
+      const isChap = title && /^第\s*[一二三四五六七八九十\d]+\s*章/.test(title);
+      if (isChap) curChapter = title;
+      secMeta.set(s.secIdx, { chapter: isChap ? title : curChapter, section: isChap ? null : title });
+    }
+    const contextOf = q => {
+      if (!q.key) return null;
+      const m = secMeta.get(+String(q.key).split('-')[0]);
+      return m ? [m.chapter, m.section].filter(Boolean).join(' / ') || null : null;
+    };
+
+    const PROMPT = `你是答案匹配专家。输入包含【题目列表】和【答案文件原文】，答案文件原文里写着每道题的标准答案。
+请从答案文件原文中找出每道题对应的答案（按题号、章节标题、题型、题干内容对位），严格按 JSON 输出（不要 markdown、不要解释文字）：
+{"answers":[{"idx":0,"answer":"C","explanation":"答案文件原文中该题的解析，没有则留空"}]}
+规则：
+- idx 是【题目列表】里每题的序号（从 0 开始）
+- 选择题 answer 为选项字母串，如 "C"、"ACD"；单选题只填 1 个字母
+- 判断题：原文「对/正确/√」→ answer 填 "A"；「错/错误/×」→ answer 填 "B"
+- 填空题 answer 为答案文本
+- 必须照抄答案文件原文中的答案，禁止自己推理做题
+- 答案文件原文里找不到对应答案的题，不要输出该项
+- explanation 仅当答案原文带解析时照抄，否则留空`;
+
+    // 一批题目 + 一片答案原文 → AI 对位 → 校验回填
+    const fillBatch = async (batch, sliceText) => {
+      const body = batch.map((q, i) => ({
+        idx: i,
+        no: q.no ?? undefined,
+        context: contextOf(q) || undefined,
+        type: q.type,
+        stem: String(q.stem || '').slice(0, 60),
+        options: q.options ? Object.keys(q.options).join('') : undefined
+      }));
+      const raw = await chat([
+        { role: 'system', content: PROMPT },
+        { role: 'user', content: '【题目列表】\n' + JSON.stringify(body) + '\n\n【答案文件原文】\n' + sliceText }
+      ], { onRetry });
+      const obj = parseJSON(raw);
+      const arr = obj?.answers || obj;
+      if (!Array.isArray(arr)) throw new Error('AI 返回非 JSON');
+      let got = 0, exp = 0;
+      for (const a of arr) {
+        const q = batch[a?.idx];
+        if (!q || q.answer) continue;
+        let ans = String(a.answer ?? '').trim();
+        if (!ans || ans === 'null') continue;
+        if (q.options && q.type !== 'fill') {
+          // 选项题：同结构化匹配的严格校验
+          const letters = normLetters(ans);
+          if (!letters) continue;                                       // 选项题不收文本答案
+          if ([...letters].some(c => !q.options[c])) continue;           // 字母不在选项里
+          if ((q.type === 'single' || q.type === 'judge') && letters.length !== 1) continue; // 单选/判断必须单字母
+          q.answer = letters;
+        } else {
+          // 填空/无选项题：收文本，限长
+          if (ans.length > 80) ans = ans.slice(0, 80);
+          q.answer = ans;
+        }
+        if (a.explanation && !q.explanation) { q.explanation = String(a.explanation).trim(); exp++; }
+        got++;
+      }
+      return { got, exp };
+    };
+
+    // 分片轮询：答案原文超长时逐片查找（前面片找不到的题进入下一片）
+    const text = String(answerText).trim();
+    const slices = [];
+    for (let i = 0; i < text.length; i += SLICE) slices.push(text.slice(i, i + SLICE));
+
+    for (let si = 0; si < slices.length && pool.length; si++) {
+      let retriesLeft = 1; // 每片失败批重试 1 次
+      while (pool.length) {
+        const batches = [];
+        for (let i = 0; i < pool.length; i += BATCH) batches.push(pool.slice(i, i + BATCH));
+        let bIdx = 0, done = 0;
+        const netFailed = [];
+        await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
+          while (bIdx < batches.length) {
+            const batch = batches[bIdx++];
+            try {
+              const { got, exp } = await fillBatch(batch, slices[si]);
+              res.filled += got; res.explained += exp;
+              if (got && onBatchSave) { try { await onBatchSave(batch); } catch (e) { /* 保存失败不中断 */ } }
+            } catch (e) { netFailed.push(batch); }
+            done++;
+            if (onProgress) onProgress(done, batches.length, res.filled, si + 1, slices.length);
+          }
+        }));
+        pool = pool.filter(q => !q.answer);
+        if (!netFailed.length || !pool.length || retriesLeft-- <= 0) break;
+        pool = netFailed.flat().filter(q => !q.answer);
+      }
+    }
+    return res;
+  }
+
   /* ---- 整体解析 · 纯本地：正则切题 + 逐题解析 + 答案表匹配（0 次 API 调用、无需 API Key） ---- */
   async function parseDocument(fullText, onProgress) {
     const text = Extractor.cleanText(fullText);
@@ -654,5 +772,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, answerLineRatio, solveQuestions, verifyQuestions, testConnection, chat };
+  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, solveQuestions, verifyQuestions, testConnection, chat };
 })();
