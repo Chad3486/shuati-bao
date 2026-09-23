@@ -363,6 +363,45 @@ body {
 .field textarea:focus { outline: none; border-color: var(--primary); }
 
 
+/* ---------- 范式导入 ---------- */
+.canon-spec {
+  white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: 12.5px; line-height: 1.75; color: var(--text);
+  background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px;
+  max-height: 46vh; overflow: auto;
+}
+.canon-area {
+  width: 100%; min-height: 210px; margin-top: 10px;
+  border: 1.5px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 12px; font-size: 13.5px; line-height: 1.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--card); color: var(--text); resize: vertical;
+}
+.canon-area:focus { outline: none; border-color: var(--primary); }
+.canon-stats { display: flex; gap: 8px; margin-bottom: 10px; }
+.canon-stat {
+  flex: 1; min-width: 0; text-align: center; background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 10px 4px;
+}
+.canon-stat b { display: block; font-size: clamp(17px, 5.2vw, 21px); }
+.canon-stat span { font-size: 11.5px; color: var(--muted); }
+.canon-issues {
+  margin-top: 12px; background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.canon-issue-title { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.canon-issue-title.bad { color: var(--bad); }
+.canon-issue {
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  padding: 4px 0; border-bottom: 1px dashed var(--line);
+  overflow-wrap: anywhere;
+}
+.canon-issue:last-child { border-bottom: none; }
+.canon-issue .ln {
+  display: inline-block; min-width: 56px; margin-right: 6px;
+  color: var(--primary); font-weight: 600; font-size: 11.5px;
+}
+
 /* ---------- Toast ---------- */
 #toast {
   position: fixed; bottom: calc(var(--tabbar-h) + 30px); left: 50%; transform: translateX(-50%) translateY(10px);
@@ -1046,14 +1085,16 @@ const Extractor = (() => {
       const v = String(s || '').toUpperCase().replace(/[^A-H]/g, '');
       return v || null;
     };
-    const AT = '[A-H](?:\\s*[、,，／/]?\\s*[A-H]){0,7}';
+    // 分隔符只允许行内空白（[ \t]），不能用 \s —— 否则「答案：A\nA．选项甲」会把下一行
+    // 选项的字母 A 一起吃进来（得到 "AA"，选项行同时被破坏）——1000 题里最常见的漏扫根因
+    const AT = '[A-H](?:[ \\t]*[、,，／/]?[ \\t]*[A-H]){0,7}';
 
     // 1) 显式答案标注（含顿号/逗号分隔的多选答案）
     const ansRes = [
-      new RegExp('[（(]\\s*答案\\s*[:：]?\\s*(' + AT + ')\\s*[)）]'),
-      new RegExp('【\\s*答案\\s*】?\\s*[:：]?\\s*(' + AT + ')'),
-      new RegExp('(?<![A-Za-z])答案\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
-      new RegExp('(?<![A-Za-z])答\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
+      new RegExp('[（(]\\s*答案\\s*[:：]?[ \\t]*(' + AT + ')[ \\t]*[)）]'),
+      new RegExp('【\\s*答案\\s*】?\\s*[:：]?[ \\t]*(' + AT + ')'),
+      new RegExp('(?<![A-Za-z])答案\\s*[:：][ \\t]*(' + AT + ')(?![A-Za-z])'),
+      new RegExp('(?<![A-Za-z])答\\s*[:：][ \\t]*(' + AT + ')(?![A-Za-z])'),
     ];
     for (const re of ansRes) {
       const m = t.match(re);
@@ -1205,7 +1246,18 @@ const Extractor = (() => {
       if (hintType === 'fill' || /（\s*）|\(\s*\)/.test(body)) {
         return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation, _local: true };
       }
-      return null; // 结构不明，交 AI
+      // 3a) 兜底：结构不明也别丢题（旧版此处 return null → 1000 题里总有几道「扫不上」）
+      //     陈述句（无提问词、以句号收尾）→ 判断题；其余 → 填空/简答（答案自己填或 AI 解）
+      if (!/^(姓名|学号|班级|专业|院系|得分|评分|考试时间|注意事项|题号|试卷|第\s*\d+\s*页)/.test(body)) {
+        const asking = /简述|说明|论述|解释|为什么|如何|什么|哪些|试述|计算|证明|比较|列举|名词解释|问答|简答/.test(body);
+        const type = (hintType === 'single' || hintType === 'multi') ? 'fill'
+          : ((!asking && /[。.]$/.test(body)) ? 'judge' : 'fill');
+        return {
+          no, key: hintKey, type, stem: body,
+          options: type === 'judge' ? { 'A': '正确', 'B': '错误' } : null,
+          answer: answer || null, explanation, _local: true, _salvaged: true
+        };
+      }
     }
     return null;
   }
@@ -1994,6 +2046,527 @@ const LLM = (() => {
 
 </script>
   <script>
+/* ========== 范式（标准导入格式）· 一题一块、答案随题，导入零对齐 ==========
+   解决的问题：配套答案文件靠「章/节/题号」对齐，格式一乱就有题扫不上；
+   1000 题再用 AI 对位又太慢。范式把答案直接写进题目块里（答案：X），
+   导入时不需要任何匹配/对齐，一次线性扫描搞定，零 API 调用。
+
+   API：
+   - SPEC            格式说明文本（App 内展示 / 复制）
+   - template()      可直接照抄的模板示例
+   - parse(text)     严格解析范式文本 → { questions, errors, warns, sections, stats }
+   - fromQuestions() 题库 → 范式文本（导出到 Word 改完再导回）
+   - convert(text)   任意文档（旧格式/Word 粘贴）→ 范式文本（本地规则，含缺答案提示）
+   - TYPE_ALIAS/TYPE_LABEL  题型别名与显示名
+===================================================================== */
+const Canon = (() => {
+
+  /* ---- 题型标记别名 → 内部题型（App 内部只有 single/multi/judge/fill） ---- */
+  const TYPE_ALIAS = {
+    '单选': 'single', '单选题': 'single', '单项选择题': 'single', '选择': 'single', '选择题': 'single',
+    '多选': 'multi', '多选题': 'multi', '多项选择': 'multi', '多项选择题': 'multi',
+    '判断': 'judge', '判断题': 'judge',
+    '填空': 'fill', '填空题': 'fill',
+    '简答': 'fill', '简答题': 'fill', '问答': 'fill', '问答题': 'fill',
+    '名词解释': 'fill', '计算': 'fill', '计算题': 'fill', '论述': 'fill', '论述题': 'fill'
+  };
+  const TYPE_LABEL = { single: '单选', multi: '多选', judge: '判断', fill: '填空' };
+
+  const FULL_LETTER = { 'Ａ': 'A', 'Ｂ': 'B', 'Ｃ': 'C', 'Ｄ': 'D', 'Ｅ': 'E', 'Ｆ': 'F', 'Ｇ': 'G', 'Ｈ': 'H' };
+  const BLANK_RE = /（\s*）|\(\s*\)|（[\s\u3000]+）|＿{2,}|_{2,}/;
+  const JUDGE_YES = /^(对|正确|是|√|✓|T|TRUE|Y|YES)$/i;
+  const JUDGE_NO = /^(错|错误|否|×|✗|X|F|FALSE|N|NO)$/i;
+
+  /* ---- 格式说明（App 内「格式说明」按钮展示） ---- */
+  const SPEC = `范式（标准导入格式）· 一题一块，答案跟着题目走，导入零对齐
+
+一、每题三要素（关键：答案行）
+1. 题号行：1. 题干…        ← 题号可省略，省略时自动按顺序编号
+2. 选项行：A. 内容  B. 内容  ← 选择题才需要，每行一个，从 A 开始连续
+3. 答案行：答案：B          ← 有这一行，导入时就不需要任何"答案对齐"
+
+二、完整写法（推荐，照抄即可）
+# 第1章 电力电子器件
+## 1.1 电力二极管
+【单选】1. 电力二极管属于（ ）器件。
+A. 不可控器件
+B. 半控器件
+C. 全控器件
+答案：B
+解析：电力二极管只有通、断两种状态，属于不可控器件。
+
+三、题型标记（可省略，省略时自动判定）
+【单选】【多选】【判断】【填空】
+【简答】【问答】【名词解释】【计算】按填空题处理（答案写文字，多空用 ||| 分隔）
+也可把题型写在节标题里，如「## 判断题」，该节题目默认按判断题处理。
+
+四、答案怎么写
+单选：答案：B
+多选：答案：ABC        （字母连着写，不分顺序）
+判断：答案：对 / 答案：错   （也接受 √ × T F 正确 错误）
+填空：答案：阳极|||阴极|||门极   （多个空用三个竖线 ||| 分隔）
+
+五、注意
+· 一题从「题号行」开始，到下一个「题号行」结束；题干换行会自动并入题干
+· 选项必须从 A 开始连续（A、B、C、D…），中间缺字母会报错提示
+· 解析写一行；紧跟在答案后的普通文字行会自动并入解析
+· Word 自动编号可以关掉：题号省略后程序按出现顺序自动编号
+· 题型标记省略时的判定：有选项 + 多个答案字母 = 多选；选项正好是「正确/错误」= 判断；无选项 = 填空
+· 支持 .txt / .md / .docx（Word 里写好存为 .docx 直接导入）
+· 老格式文档不用重写：用「Word 转换器」一键转成范式，再检查缺答案处即可`;
+
+  /* ---- 模板示例（复制/下载用） ---- */
+  function template() {
+    return `# 第1章 电力电子器件
+## 1.1 电力二极管
+
+【单选】1. 电力二极管属于（ ）器件。
+A. 不可控器件
+B. 半控器件
+C. 全控器件
+答案：B
+解析：电力二极管只有通、断两种状态，属于不可控器件。
+
+【多选】2. 下列属于全控型器件的有（ ）。
+A. 晶闸管
+B. 门极可关断晶闸管
+C. 电力MOSFET
+答案：BC
+解析：晶闸管只能由门极开通、不能由门极关断，属半控型。
+
+【判断】3. 晶闸管属于全控型器件。
+答案：错
+
+【填空】4. 晶闸管的三个电极是＿＿、＿＿、＿＿。
+答案：阳极|||阴极|||门极
+
+（以下为最简写法：无题型标记、无题号，程序自动判定与编号）
+
+下列属于不可控器件的是（ ）。
+A. 电力二极管
+B. 晶闸管
+C. IGBT
+答案：A
+`;
+  }
+
+  /* ================= 解析 ================= */
+
+  function normLine(s) {
+    return String(s == null ? '' : s)
+      .replace(/^\uFEFF/, '')
+      .replace(/[\u00a0\u3000]/g, ' ')
+      .replace(/[\u200b-\u200f\u2028\u2029]/g, '')
+      .replace(/\t/g, ' ')
+      .replace(/\s+$/, '');
+  }
+
+  /* 从答案文本里取选项字母（全角兼容、去重、排序） */
+  function lettersOf(s) {
+    const raw = String(s == null ? '' : s);
+    let out = '';
+    for (const ch of raw) {
+      const c = FULL_LETTER[ch] || ch.toUpperCase();
+      if (c >= 'A' && c <= 'H') out += c;
+    }
+    return [...new Set(out.split(''))].sort().join('') || null;
+  }
+
+  /* 节标题 → 默认题型（「## 判断题」这类写法） */
+  function detectSecType(title) {
+    const t = String(title || '').replace(/\s/g, '');
+    if (!t) return null;
+    if (/判断/.test(t)) return 'judge';
+    if (/多选|多项/.test(t)) return 'multi';
+    if (/单选|单项|选择/.test(t)) return 'single';
+    if (/填空|简答|问答|名词解释|计算|论述/.test(t)) return 'fill';
+    return null;
+  }
+
+  /* 无题号/无标记的「裸行」是否像一道题的题干（用于最简写法；不像的按标题/噪声忽略） */
+  function looksLikeStem(s) {
+    const t = String(s || '').trim();
+    if (!t) return false;
+    if (BLANK_RE.test(t)) return true;              // 含（ ）/＿＿ 空位
+    if (/[。？！?！…：:]$/.test(t)) return true;      // 句子结尾标点
+    if (/^[（(]/.test(t)) return true;
+    return t.replace(/\s/g, '').length >= 12;       // 够长的一整句
+  }
+
+  /* 主解析：范式文本 → 题目数组（带行号级错误/警告） */
+  function parse(text, opts = {}) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const questions = [], errors = [], warns = [], sections = [];
+    let secIdx = -1, secType = null;
+    let cur = null, nextNo = 1, blankBefore = false;
+
+    const err = (ln, msg) => { if (errors.length < 300) errors.push({ line: ln, msg }); };
+    const warn = (ln, msg) => { if (warns.length < 300) warns.push({ line: ln, msg }); };
+
+    function startQuestion(no, forcedType, ln) {
+      const auto = no == null;
+      const useNo = auto ? nextNo : no;
+      nextNo = useNo + 1;
+      cur = {
+        no: useNo, _auto: auto, line: ln, type: forcedType || secType || null,
+        stemLines: [], options: {}, optionOrder: [], answerRaw: null, expLines: []
+      };
+    }
+
+    /* 题干入列：顺带抽取内联答案「…（答案：A）」 */
+    function pushStemBody(t) {
+      const s = String(t == null ? '' : t).trim();
+      if (!s) return;
+      const im = s.match(/[（(]\s*(?:参考答案|正确答案|答案)\s*[:：]\s*([^）)]{1,60}?)\s*[）)]\s*[。.；;，,]?\s*$/);
+      if (im && cur && cur.answerRaw == null) {
+        cur.answerRaw = im[1].trim();
+        const cleaned = s.slice(0, im.index).trim();
+        if (cleaned) cur.stemLines.push(cleaned);
+        return;
+      }
+      cur.stemLines.push(s);
+    }
+
+    /* 收题：判定题型 / 归一答案 / 校验 → 入库 */
+    function flush() {
+      if (!cur) return;
+      const q = cur; cur = null;
+
+      const stem = q.stemLines.join('\n').replace(/\s+/g, ' ').trim();
+      const optKeys = q.optionOrder;
+      const optObj = optKeys.length ? Object.fromEntries(optKeys.map(l => [l, q.options[l]])) : null;
+
+      // 1) 题型判定（无标记时推断）
+      let type = q.type;
+      if (!type) {
+        if (optObj) {
+          const vals = Object.values(optObj).map(v => v.replace(/\s/g, ''));
+          if (optKeys.length === 2 && JUDGE_YES.test(vals[0]) && JUDGE_NO.test(vals[1])) type = 'judge';
+          else if (lettersOf(q.answerRaw) && lettersOf(q.answerRaw).length > 1) type = 'multi';
+          else type = 'single';
+        } else if (q.answerRaw && (JUDGE_YES.test(q.answerRaw.trim()) || JUDGE_NO.test(q.answerRaw.trim()))) {
+          type = 'judge';
+        } else {
+          type = 'fill';
+        }
+      }
+
+      // 2) 题干 / 选项校验
+      if (!stem) { err(q.line, `第 ${q.no} 题：没有题干，已跳过`); return; }
+      if (!optObj && q.optionRejected) {
+        err(q.line, `第 ${q.no} 题：有选项行但无法识别（选项必须从 A 开始连续写，如「A. 内容」），已跳过`);
+        return;
+      }
+      if ((type === 'single' || type === 'multi') && !optObj) {
+        err(q.line, `第 ${q.no} 题：${TYPE_LABEL[type]}题缺少选项行（选项写成「A. 内容」，每行一个），已跳过`);
+        return;
+      }
+      if (optKeys.length) {
+        for (let i = 0; i < optKeys.length; i++) {
+          const want = String.fromCharCode(65 + i);
+          if (optKeys[i] !== want) {
+            warn(q.line, `第 ${q.no} 题：选项字母不连续（${optKeys.join('/')}），缺少 ${want}`);
+            break;
+          }
+        }
+        const empty = optKeys.filter(l => !String(q.options[l] || '').trim());
+        if (empty.length) { err(q.line, `第 ${q.no} 题：选项 ${empty.join('/')} 没有内容，已跳过`); return; }
+      }
+
+      // 3) 答案归一
+      let answer = null;
+      if (type === 'judge') {
+        const v = String(q.answerRaw || '').trim();
+        if (v) {
+          if (JUDGE_YES.test(v)) answer = 'A';
+          else if (JUDGE_NO.test(v)) answer = 'B';
+          else {
+            const L = lettersOf(v);
+            if (L && /^[AB]$/.test(L)) answer = L;
+            else err(q.line, `第 ${q.no} 题：判断题答案「${v.slice(0, 12)}」无法识别（写 对 / 错），已按缺答案处理`);
+          }
+        }
+      } else if (type === 'fill') {
+        const v = String(q.answerRaw || '').replace(/[｜|]{2,}/g, '|||').trim();
+        answer = v || null;
+      } else {
+        const letters = lettersOf(q.answerRaw);
+        if (letters) {
+          const bad = [...letters].filter(c => !optObj[c]);
+          if (bad.length) {
+            err(q.line, `第 ${q.no} 题：答案「${letters}」不在选项内（选项只有 ${optKeys.join('/')}），已忽略该答案`);
+          } else {
+            answer = letters;
+            if (type === 'single' && letters.length > 1) type = 'multi'; // 答案多个字母 → 按多选
+          }
+        }
+      }
+
+      // 4) 填空题空数提示（题干空位 vs 答案分空）
+      if (type === 'fill' && answer) {
+        const blanks = (stem.match(/＿{2,}|_{2,}|（\s*）|\(\s*\)/g) || []).length;
+        const parts = answer.split('|||').length;
+        if (blanks && parts !== blanks) warn(q.line, `第 ${q.no} 题：题干有 ${blanks} 个空，答案分成 ${parts} 段（多空用 ||| 分隔）`);
+      }
+
+      questions.push({
+        no: q.no,
+        key: secIdx + '-' + q.no,
+        secIdx,
+        type,
+        stem,
+        options: type === 'judge' ? { A: '正确', B: '错误' } : (type === 'fill' ? null : optObj),
+        answer,
+        explanation: q.expLines.join('\n').replace(/\s+/g, ' ').trim() || null,
+        _srcLine: q.line
+      });
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const ln = i + 1;
+      let s = normLine(lines[i]);
+      if (!s.trim()) { blankBefore = true; continue; }
+      const prevBlank = blankBefore;
+      blankBefore = false;
+
+      // ① 结构行：# 章 / ## 节
+      let m = s.match(/^\s*(#{1,6})\s*(.+?)\s*$/);
+      if (m) {
+        flush();
+        const title = m[2].trim();
+        secType = detectSecType(title);
+        sections.push({ secIdx: ++secIdx, title, type: secType });
+        nextNo = 1;
+        continue;
+      }
+
+      // ② 题型标记【单选】…（不认识的标记剥掉后按普通行继续）
+      let rest = s, forcedType = null;
+      const tm = s.match(/^\s*[【\[]\s*([^】\]]{1,12}?)\s*[】\]]\s*([\s\S]*)$/);
+      if (tm) {
+        const key = tm[1].replace(/\s/g, '');
+        if (TYPE_ALIAS[key]) { forcedType = TYPE_ALIAS[key]; rest = tm[2]; }
+        else if (/^(参考答案|正确答案|答案)$/.test(key)) { if (cur) cur.answerRaw = tm[2].trim(); else warn(ln, '答案出现在题目之外，已忽略'); continue; }
+        else if (/^(答案解析|解析|解释|说明)$/.test(key)) { if (cur) cur.expLines.push(tm[2].trim()); continue; }
+        else { rest = tm[2]; warn(ln, `未识别的标记「【${key}】」，已忽略标记`); }
+      }
+
+      // ③ 题号行（「1. 题干」/「1、题干」/「第1题 题干」；「2.5kV」这类小数点不算题号）
+      const qm = rest.match(/^\s*(?:第\s*)?(\d{1,4})\s*(?:题)?\s*[.、．)）](?!\d)\s*([\s\S]*)$/)
+        || rest.match(/^\s*第\s*(\d{1,4})\s*题\s*[:：]?\s*([\s\S]*)$/);
+      if (qm) {
+        const no = +qm[1];
+        const body = qm[2].trim();
+        const isStart = forcedType != null || !cur || no === nextNo ||
+          (cur.answerRaw != null) || cur.optionOrder.length >= 2 ||
+          (cur.stemLines.length === 0) ||
+          (cur._auto && !cur.optionOrder.length && cur.answerRaw == null && no === cur.no);
+        if (isStart) {
+          flush();
+          startQuestion(no, forcedType, ln);
+          if (body) pushStemBody(body);
+          continue;
+        }
+        // 否则视为题干续行（如「2.5kV…」这类以数字开头的换行）
+      } else if (forcedType != null) {
+        // 只有题型标记、没有题号：新题（题号自动），rest 继续按普通行处理
+        flush();
+        startQuestion(null, forcedType, ln);
+      }
+
+      // ④ 选项行
+      const om = rest.match(/^\s*([A-Ha-hＡ-Ｈ])\s*[.、．)）:：]\s*([\s\S]+)$/);
+      if (om && cur) {
+        const letter = FULL_LETTER[om[1]] || om[1].toUpperCase();
+        const content = om[2].trim();
+        // 题干里「A、B两系统互联…（ ）」式误判：内容含空括号且较长 → 当题干
+        if (BLANK_RE.test(content) && content.replace(/\s/g, '').length > 10) {
+          pushStemBody(rest);
+          continue;
+        }
+        if (!cur.optionOrder.length && letter !== 'A') { cur.optionRejected = true; warn(ln, `选项必须从 A 开始，「${letter}.」已忽略`); continue; }
+        if (cur.options[letter] != null) { cur.optionRejected = true; warn(ln, `选项 ${letter} 重复出现，已忽略后一个`); continue; }
+        cur.optionOrder.push(letter);
+        cur.options[letter] = content;
+        continue;
+      }
+
+      // ⑤ 答案行
+      const am = rest.match(/^\s*(?:参考答案|正确答案|答案|答)\s*[:：]\s*([\s\S]*)$/);
+      if (am) {
+        if (!cur) warn(ln, '答案出现在题目之外，已忽略');
+        else if (cur.answerRaw != null) warn(ln, `第 ${cur.no} 题出现多个答案行，以第一个为准`);
+        else cur.answerRaw = am[1].trim();
+        continue;
+      }
+
+      // ⑥ 解析行
+      const em = rest.match(/^\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*)$/);
+      if (em) {
+        if (cur) cur.expLines.push(em[1].trim());
+        else warn(ln, '解析出现在题目之外，已忽略');
+        continue;
+      }
+
+      // ⑦ 题干内联答案（兼容「题干…（答案：A）。」）—— 交由 pushStemBody 统一处理
+      // ⑧ 普通文字：可能是新题（最简写法：无题号、无标记），否则并入题干/解析
+      if (cur) {
+        const finished = cur.answerRaw != null || cur.optionOrder.length >= 2;
+        // 新题的判据：上一题已收尾 + 这行像题干 + （前面有空行 或 还没写解析 或 行内有空位/问号）
+        const canStartNew = finished && looksLikeStem(rest) &&
+          (prevBlank || !cur.expLines.length || BLANK_RE.test(rest) || /[？?]\s*$/.test(rest));
+        if (canStartNew) {
+          flush();
+          startQuestion(null, null, ln);
+          pushStemBody(rest);
+          continue;
+        }
+        if (cur.answerRaw != null) cur.expLines.push(rest.trim());
+        else pushStemBody(rest);
+      } else if (looksLikeStem(rest)) {
+        startQuestion(null, null, ln);
+        pushStemBody(rest);
+      } else {
+        warn(ln, `题目之外的文字（疑似标题），已忽略：「${rest.trim().slice(0, 24)}」`);
+      }
+    }
+    flush();
+
+    const byType = { single: 0, multi: 0, judge: 0, fill: 0 };
+    for (const q of questions) byType[q.type]++;
+    const missing = questions.filter(q => !q.answer).length;
+    return {
+      questions, errors, warns, sections,
+      stats: {
+        total: questions.length, byType, missing,
+        answered: questions.length - missing,
+        errors: errors.length, warns: warns.length, sections: sections.length
+      }
+    };
+  }
+
+  /* ================= 序列化（题库 / 转换结果 → 范式文本） ================= */
+
+  function secIdxOf(q) {
+    if (q.secIdx != null) return q.secIdx;
+    const k = String(q.key || '');
+    const i = parseInt(k.split('-')[0], 10);
+    return Number.isFinite(i) ? i : 0;
+  }
+
+  function serialize(questions, sections, opts = {}) {
+    const list = [...questions].sort((a, b) => (secIdxOf(a) - secIdxOf(b)) || ((a.no ?? 0) - (b.no ?? 0)));
+    const secMap = new Map((sections || []).map(s => [s.secIdx, s.title]));
+    const out = [];
+    if (opts.title) out.push('# ' + opts.title, '');
+    let lastSec = null;
+    for (const q of list) {
+      const si = secIdxOf(q);
+      if (si !== lastSec) {
+        const t = secMap.get(si);
+        if (t) out.push('## ' + t, '');
+        lastSec = si;
+      }
+      const head = `【${TYPE_LABEL[q.type] || '填空'}】${q.no != null ? q.no + '. ' : ''}${cleanStem(q.stem)}`;
+      out.push(head);
+      if (q.options && q.type !== 'judge') {
+        for (const k of Object.keys(q.options).sort()) out.push(`${k}. ${q.options[k]}`);
+      }
+      if (q.type === 'judge') {
+        out.push('答案：' + (q.answer === 'A' ? '对' : q.answer === 'B' ? '错' : ''));
+      } else {
+        out.push('答案：' + (q.answer || ''));
+      }
+      if (q.explanation) out.push('解析：' + String(q.explanation).replace(/\s+/g, ' ').trim());
+      out.push('');
+    }
+    return out.join('\n');
+  }
+
+  /* 题干清洗：单行化 + 去掉转换残留的尾部「答案：」「（答案：）」空壳
+     （旧格式文档里「题干。\n答案：」这种断行会让答案行落进题干） */
+  function cleanStem(s) {
+    return String(s == null ? '' : s)
+      .replace(/\s*\n\s*/g, ' ')
+      .replace(/\s*[（(]?\s*(?:参考答案|正确答案|答案)\s*[:：]?\s*[)）]?\s*$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /* 题库 → 范式文本 */
+  function fromQuestions(questions, sections, opts = {}) {
+    return serialize(questions || [], sections || [], opts);
+  }
+
+  /* ================= Word 转换器：任意文档 → 范式文本 =================
+     复用成熟的本地解析流水线（cleanText → splitQuestions → parseOneQuestion），
+     再按 章/节/题号 做一次本地答案匹配；匹配不到的题答案留空（写「答案：」），
+     由用户在文本框里补，或用「AI 解题」批量补。全程零 API 调用。 */
+
+  /* 文本里是否已经带范式特征（题型标记 或 行首答案行） */
+  const CANON_MARK_RE = /[【\[]\s*(?:单选|多选|判断|填空|选择|简答|问答|名词解释|计算|论述)题?\s*[】\]]/;
+  const CANON_ANS_RE = /^[ \t　]*(?:参考答案|正确答案|答案)\s*[:：]/m;
+
+  function convert(text) {
+    if (typeof Extractor === 'undefined') throw new Error('转换器需要 Extractor 模块');
+    const src = String(text || '').replace(/\r\n?/g, '\n').trim();
+
+    const clean = Extractor.cleanText(src);
+    const split = Extractor.splitQuestions(clean);
+    const qs = [];
+    for (const it of split.items) {
+      const q = Extractor.parseOneQuestion(it.no, it.text, it.type, it.key);
+      if (q && q.stem) { q.secIdx = it.secIdx; qs.push(q); }
+    }
+
+    /* 已经是范式（带题型标记 / 行首答案行）且范式解析出的题数不少于旧管线
+       → 原样保留，不再二次拆改：转换幂等、反复转换不会把范式拆坏。
+       注意：只有「题型标记」才能无条件认定；仅凭「答案：」行时还要求范式解析
+       零错误且确实解析出答案，否则旧格式文档（题末答案表）会被误当范式吞掉 */
+    const marked = CANON_MARK_RE.test(src);
+    if (marked || CANON_ANS_RE.test(src)) {
+      const pre = parse(src);
+      const ok = pre.stats.total > 0 && pre.stats.total >= qs.length &&
+        (marked || (pre.errors.length === 0 && pre.stats.answered > 0));
+      if (ok) {
+        return {
+          text: src + '\n',
+          stats: {
+            total: pre.stats.total, byType: pre.stats.byType, missing: pre.stats.missing,
+            answered: pre.stats.answered, filled: 0, explained: 0
+          },
+          problems: [], passthrough: true,
+          errors: pre.errors, warns: pre.warns
+        };
+      }
+    }
+
+    // 文末答案表 / 逐行答案条目：按 章/节/题号 本地匹配（无 AI）
+    let filled = 0, explained = 0;
+    if (typeof LLM !== 'undefined' && qs.length) {
+      try {
+        const parsed = LLM.parseAnswerDocument(clean);
+        if (parsed.entries.length || parsed.ordered.length) {
+          const r = LLM.matchAnswersStructured(qs, split.sections, parsed);
+          filled = r.filled; explained = r.explained;
+        }
+      } catch (e) { /* 答案表匹配失败不影响转换 */ }
+    }
+    const text2 = serialize(qs, split.sections);
+    const missing = qs.filter(q => !q.answer).length;
+    const byType = { single: 0, multi: 0, judge: 0, fill: 0 };
+    for (const q of qs) byType[q.type]++;
+    return {
+      text: text2,
+      stats: { total: qs.length, byType, missing, answered: qs.length - missing, filled, explained },
+      problems: split.problems || []
+    };
+  }
+
+  return { SPEC, template, parse, fromQuestions, convert, TYPE_ALIAS, TYPE_LABEL };
+})();
+</script>
+  <script>
 /* ========== 答题会话逻辑 ========== */
 class QuizSession {
   /**
@@ -2138,6 +2711,7 @@ const App = (() => {
   /* ================= 路由 ================= */
   const routes = {
     '': pageHome, 'home': pageHome,
+    'canon': pageCanon,
     'import': pageImport,
     'answers': pageAnswers,
     'bank': pageBankQuestions,
@@ -2204,6 +2778,69 @@ const App = (() => {
 
   function confirmDialog(msg) { return window.confirm(msg); }
 
+  /* ---- 文件小工具（浏览器 / APK 通用） ---- */
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const url = fr.result || '';
+        const i = url.indexOf(',');
+        resolve(i >= 0 ? url.slice(i + 1) : '');
+      };
+      fr.onerror = () => reject(fr.error || new Error('读取失败'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  /* 保存文本文件：APK 走 JS 桥接写系统 Download 目录，浏览器走 <a download> */
+  async function saveTextFile(fileName, text, mime = 'text/plain') {
+    const blob = new Blob([text], { type: mime + ';charset=utf-8' });
+    const bridge = typeof window !== 'undefined' && window.AndroidBridge;
+    const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
+    if (isApk) {
+      const b64 = await blobToBase64(blob);
+      if (!b64) throw new Error('文件内容为空');
+      const res = ('' + (bridge.saveFile(fileName, b64) || '')).trim();
+      if (res.startsWith('OK:')) return { path: res.slice(3) };
+      if (res.startsWith('NEED_PERMISSION:')) throw new Error(res.slice(16) + '（授予后再点一次）');
+      throw new Error(res || '原生保存失败');
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    return { path: fileName };
+  }
+
+  /* 读任意题库文件为纯文本（.txt/.md 直读；PDF/DOCX 走提取器） */
+  async function readAnyText(file) {
+    const n = file.name.toLowerCase();
+    if (/\.(txt|md|markdown|text)$/.test(n)) return await file.text();
+    return await Extractor.extract(file);
+  }
+
+  /* 复制到剪贴板（APK WebView 可能没有 clipboard API，降级用临时 textarea） */
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* 降级 */ }
+    try {
+      const t = document.createElement('textarea');
+      t.value = text;
+      t.style.position = 'fixed';
+      t.style.opacity = '0';
+      document.body.appendChild(t);
+      t.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(t);
+      return ok;
+    } catch (e) { return false; }
+  }
+
   const typeLabel = { single: '单选', multi: '多选', judge: '判断', fill: '填空' };
 
   /* ---- 主题：auto 跟随系统 / light / dark，存 meta，class 驱动 ---- */
@@ -2265,10 +2902,11 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入文件（PDF / Word）</button>
+      <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
+      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（PDF / Word 自动解析）</button>
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       <div class="bank-list">
-        ${banks.length === 0 ? `<div class="empty">还没有题库<br>点击上方按钮导入 PDF / Word 文件开始</div>` :
+        ${banks.length === 0 ? `<div class="empty">还没有题库<br>点击上方按钮开始导入</div>` :
         banks.map(b => {
           const na = noAnsMap[b.id] || 0;
           return `
@@ -2314,6 +2952,262 @@ const App = (() => {
     await DB.bankRename(id, n);
     render();
     toast('已改名');
+  }
+
+  /* ================= 页面：范式导入（零对齐 · 一题一块答案随题） ================= */
+  let canonParsed = null;   // 最近一次「解析预览」的结果（文本框一改就失效）
+
+  function pageCanon() {
+    topbar('范式导入', '#/home');
+    $view().innerHTML = `
+      <div class="card">
+        <div class="card-title">范式 · 一题一块，答案跟着题目走</div>
+        <p class="muted small">答案直接写在题目里（<b>答案：B</b>），导入时<b>不需要任何「答案对齐」</b>——不再有扫不上的题；1000 题也是一次线性扫描，零 API 调用、秒级完成。</p>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-spec-btn">格式说明</button>
+          <button class="btn ghost" id="canon-tpl-fill">填入模板</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-tpl-copy">复制模板</button>
+          <button class="btn ghost" id="canon-tpl-dl">下载模板</button>
+        </div>
+      </div>
+
+      <div class="card" id="canon-spec-card" style="display:none">
+        <div class="card-title">格式说明</div>
+        <pre class="canon-spec"></pre>
+      </div>
+
+      <div class="card">
+        <div class="card-title">① 贴入范式文本</div>
+        <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-pick">载入文件</button>
+          <button class="btn ghost" id="canon-conv">Word 转换器</button>
+        </div>
+        <input type="file" id="canon-file" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
+        <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc,.pdf" style="display:none">
+        <div class="muted small" id="canon-file-status"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-clear">清空</button>
+          <button class="btn primary" id="canon-check">解析预览</button>
+        </div>
+        <div class="muted small" id="canon-count"></div>
+      </div>
+
+      <div class="card" id="canon-report" style="display:none">
+        <div class="card-title">② 解析结果</div>
+        <div id="canon-report-body"></div>
+      </div>
+
+      <div class="card" id="canon-ai-card" style="display:none">
+        <div class="card-title">③ AI 解题（可选）</div>
+        <p class="muted small">让 AI 直接做缺答案的题，答案写回上面的文本框（可再人工核对后导入）。需在「设置」里配置 API Key。</p>
+        <button class="btn ghost big" id="canon-ai-btn"></button>
+        <div class="muted small" id="canon-ai-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">④ 导入题库</div>
+        <label class="field"><span>题库名称（留空自动命名）</span>
+          <input id="canon-name" placeholder="例如：电力电子技术 期末题库">
+        </label>
+        <button class="btn primary big" id="canon-import">导入题库</button>
+        <div class="muted small" id="canon-import-status"></div>
+      </div>`;
+
+    const ta = document.getElementById('canon-text');
+    const fileStatus = document.getElementById('canon-file-status');
+    const countEl = document.getElementById('canon-count');
+    const reportCard = document.getElementById('canon-report');
+    const reportBody = document.getElementById('canon-report-body');
+    const aiCard = document.getElementById('canon-ai-card');
+    const aiBtn = document.getElementById('canon-ai-btn');
+    const aiStatus = document.getElementById('canon-ai-status');
+    const importStatus = document.getElementById('canon-import-status');
+    document.querySelector('#canon-spec-card .canon-spec').textContent = Canon.SPEC;
+
+    // 文本框一改，上次的解析结果就失效（防止导入了旧内容）
+    const invalidate = () => {
+      canonParsed = null;
+      aiCard.style.display = 'none';
+      reportCard.style.display = 'none';
+      const n = ta.value.replace(/\s/g, '').length;
+      countEl.textContent = n ? `当前文本 ${ta.value.length} 字符` : '';
+    };
+    ta.addEventListener('input', invalidate);
+
+    document.getElementById('canon-spec-btn').onclick = () => {
+      const c = document.getElementById('canon-spec-card');
+      c.style.display = c.style.display === 'none' ? '' : 'none';
+    };
+    document.getElementById('canon-tpl-fill').onclick = () => {
+      ta.value = Canon.template();
+      invalidate();
+      countEl.textContent = '模板已填入：照着改即可（题型标记可省略）';
+    };
+    document.getElementById('canon-tpl-copy').onclick = async () => {
+      toast(await copyText(Canon.template()) ? '模板已复制到剪贴板' : '复制失败，请用「下载模板」');
+    };
+    document.getElementById('canon-tpl-dl').onclick = async () => {
+      try {
+        const r = await saveTextFile('刷题宝-范式模板.txt', Canon.template());
+        toast('模板已保存：' + r.path);
+      } catch (e) { toast('保存失败：' + e.message.slice(0, 60)); }
+    };
+    document.getElementById('canon-clear').onclick = () => {
+      ta.value = '';
+      invalidate();
+      fileStatus.textContent = '';
+      importStatus.textContent = '';
+    };
+
+    // 载入范式文件（.txt/.md/.docx）
+    const fileInput = document.getElementById('canon-file');
+    document.getElementById('canon-pick').onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const f = fileInput.files[0];
+      fileInput.value = '';
+      if (!f) return;
+      fileStatus.textContent = `载入 ${f.name}…`;
+      try {
+        ta.value = await readAnyText(f);
+        invalidate();
+        fileStatus.textContent = `✓ 已载入 ${f.name}（${ta.value.length} 字符），点「解析预览」`;
+      } catch (e) {
+        fileStatus.textContent = '⚠ ' + e.message.slice(0, 100);
+      }
+    };
+
+    // Word 转换器：旧格式文档（题目+答案表 / 内联答案）→ 范式文本
+    const oldInput = document.getElementById('canon-old');
+    document.getElementById('canon-conv').onclick = () => oldInput.click();
+    oldInput.onchange = async () => {
+      const f = oldInput.files[0];
+      oldInput.value = '';
+      if (!f) return;
+      fileStatus.textContent = `转换 ${f.name}…`;
+      try {
+        const raw = await readAnyText(f);
+        const res = Canon.convert(raw);
+        ta.value = res.text;
+        invalidate();
+        const s = res.stats;
+        fileStatus.textContent = res.passthrough
+          ? `✓ 这份文档本来就是范式，已原样保留（${s.total} 题）`
+          : `✓ 转换完成：${s.total} 题 · 答案 ${s.answered}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
+            + (res.problems?.length ? `；⚠ ${res.problems.slice(0, 3).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? '缺号' + p.missingNos.slice(0, 8).join('、') : ''}`).join('；')}` : '');
+        runCheck();
+      } catch (e) {
+        fileStatus.textContent = '⚠ ' + e.message.slice(0, 120);
+      }
+    };
+
+    document.getElementById('canon-check').onclick = () => runCheck();
+
+    /* ---- 解析预览 ---- */
+    function runCheck() {
+      const text = ta.value;
+      if (text.replace(/\s/g, '').length < 5) { toast('请先贴入范式文本'); return null; }
+      const r = Canon.parse(text);
+      canonParsed = r;
+      const s = r.stats;
+      const typeStr = Object.keys(s.byType).filter(k => s.byType[k])
+        .map(k => `${Canon.TYPE_LABEL[k]} ${s.byType[k]}`).join(' · ');
+      reportCard.style.display = '';
+      reportBody.innerHTML = `
+        <div class="canon-stats">
+          <div class="canon-stat"><b>${s.total}</b><span>题目</span></div>
+          <div class="canon-stat"><b style="color:var(--ok)">${s.answered}</b><span>有答案</span></div>
+          <div class="canon-stat"><b style="color:${s.missing ? 'var(--bad)' : 'var(--ok)'}">${s.missing}</b><span>缺答案</span></div>
+          <div class="canon-stat"><b style="color:${s.errors ? 'var(--bad)' : 'var(--ok)'}">${s.errors}</b><span>格式错误</span></div>
+        </div>
+        <div class="muted small">${typeStr || '—'}${s.sections ? ` · ${s.sections} 个章节` : ''}</div>
+        ${r.errors.length ? `<div class="canon-issues">
+          <div class="canon-issue-title bad">⚠ ${r.errors.length} 处格式错误（这些题不会被导入）</div>
+          ${r.errors.slice(0, 30).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
+          ${r.errors.length > 30 ? '<div class="muted small">…仅显示前 30 条</div>' : ''}
+        </div>` : ''}
+        ${r.warns.length ? `<div class="canon-issues">
+          <div class="canon-issue-title">提示 ${r.warns.length} 处（不影响导入）</div>
+          ${r.warns.slice(0, 20).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
+          ${r.warns.length > 20 ? '<div class="muted small">…仅显示前 20 条</div>' : ''}
+        </div>` : ''}`;
+
+      const noAns = r.questions.filter(q => !q.answer);
+      if (noAns.length) {
+        aiCard.style.display = '';
+        aiBtn.disabled = false;
+        aiBtn.textContent = `AI 解答缺答案的 ${noAns.length} 题`;
+        aiStatus.textContent = '也可以直接在文本框里补「答案：」，再点「解析预览」';
+      } else {
+        aiCard.style.display = 'none';
+      }
+      return r;
+    }
+
+    /* ---- AI 解题：补缺答案，写回文本框 ---- */
+    aiBtn.onclick = async () => {
+      const r = canonParsed || runCheck();
+      if (!r) return;
+      const noAns = r.questions.filter(q => !q.answer);
+      if (!noAns.length) return toast('没有缺答案的题了');
+      const cfg = await LLM.getConfig();
+      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
+      aiBtn.disabled = true;
+      aiStatus.textContent = 'AI 解题中…（自适应批量、进度实时反馈）';
+      try {
+        const solved = await LLM.solveQuestions(noAns, (done, total, got, note) => {
+          if (total <= 0) { if (note) aiStatus.textContent = note; return; }
+          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解题中：${done}/${total} 批 · 已得 ${got} 个答案`;
+        }, (c, a, cool) => {
+          aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…';
+        });
+        // 答案写回文本框（AI 答案仅供练习参考，可人工核对后再导入）
+        const left = r.questions.filter(q => !q.answer).length;
+        ta.value = Canon.fromQuestions(r.questions, r.sections);
+        const re = runCheck();
+        aiStatus.textContent = `✓ AI 补了 ${solved} 个答案，已写回文本框（可人工核对）`
+          + (left ? `；剩 ${left} 题未解出` : '')
+          + (re?.stats.errors ? `；⚠ 文本有 ${re.stats.errors} 处格式错误` : '');
+        toast(`AI 补了 ${solved} 个答案`);
+      } catch (e) {
+        aiStatus.textContent = '⚠ ' + e.message.slice(0, 120);
+        aiBtn.disabled = false;
+      }
+    };
+
+    /* ---- 导入题库 ---- */
+    document.getElementById('canon-import').onclick = async () => {
+      const r = canonParsed || runCheck();
+      if (!r) return;
+      if (!r.stats.total) {
+        importStatus.textContent = '⚠ 没有解析到任何题目，请对照「格式说明」检查（题目要有题干行，选择题要有 A./B. 选项行）';
+        return;
+      }
+      if (!confirmDialog(`导入 ${r.stats.total} 题到新题库？${r.stats.missing ? `\n其中 ${r.stats.missing} 题缺答案，导入后可在题库列表「补答案」。` : ''}`)) return;
+      const name = (document.getElementById('canon-name').value.trim()
+        || `范式导入 ${new Date().toLocaleDateString()}`).slice(0, 40);
+      const bank = {
+        id: DB.uid(),
+        name,
+        createdAt: Date.now(),
+        count: r.questions.length,
+        source: '范式导入',
+        sections: r.sections && r.sections.length ? r.sections : null
+      };
+      const qs = r.questions.map(q => {
+        const o = { ...q, id: DB.uid(), bankId: bank.id };
+        delete o._srcLine;
+        return o;
+      });
+      await DB.questionAddMany(qs);
+      await DB.bankAdd(bank);
+      const noAns = qs.filter(q => !q.answer).length;
+      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`;
+      toast(`已导入 ${qs.length} 题`);
+      navigate('#/home');
+    };
   }
 
   /* ================= 页面：导入 ================= */
@@ -2566,6 +3460,11 @@ const App = (() => {
           <button class="btn ghost" id="sel-unans">只选缺答案</button>
           <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="exp-canon">导出范式</button>
+          <button class="btn ghost" id="copy-canon">复制范式</button>
+        </div>
+        <div class="muted small" style="margin-top:6px">导出范式后可在 Word 里补答案 / 加题 / 改题干，再回「范式导入」贴回来覆盖建库（答案随题，无需再对齐）</div>
         <div class="muted small" id="pick-info" style="margin-top:8px">共 ${qs.length} 题</div>
         <div class="muted small" style="margin-top:4px">灰色 = 缺答案，也能勾选练习：练习时点右上角 ✎ 自己填答案</div>
         <div id="no-grid">
@@ -2640,6 +3539,18 @@ const App = (() => {
       session = new QuizSession(list, { shuffle: false });
       if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
       navigate('#/quiz');
+    };
+
+    // 导出 / 复制范式：题库 → 范式文本（Word 里改完再「范式导入」贴回来）
+    const canonText = () => Canon.fromQuestions(qs, bank.sections, { title: bank.name });
+    document.getElementById('exp-canon').onclick = async () => {
+      try {
+        const r = await saveTextFile(`${bank.name}-范式.txt`, canonText());
+        toast('已导出范式：' + r.path);
+      } catch (e) { toast('导出失败：' + e.message.slice(0, 60)); }
+    };
+    document.getElementById('copy-canon').onclick = async () => {
+      toast(await copyText(canonText()) ? `已复制 ${qs.length} 题的范式文本` : '复制失败，请用「导出范式」');
     };
 
     // 删除选中 → 移入回收站（可恢复；彻底删除需在回收站二次确认）
@@ -3421,22 +4332,7 @@ const App = (() => {
       </div>
       <div class="muted small center">刷题宝 · 本地题库存储于浏览器 IndexedDB<br>手机浏览器打开即用，可"添加到主屏幕"当 APP 使用</div>`;
 
-    // Blob → base64（APK 中 WebView 不触发 <a download>，需走 JS 桥接原生直接写入 Download 目录）
-    function blobToBase64(blob) {
-      return new Promise((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => {
-          const url = fr.result || '';
-          // data:application/json;base64,xxx...  去掉 data:*/*;base64, 前缀
-          const i = url.indexOf(',');
-          resolve(i >= 0 ? url.slice(i + 1) : '');
-        };
-        fr.onerror = () => reject(fr.error || new Error('blobToBase64 失败'));
-        fr.readAsDataURL(blob);
-      });
-    }
-
-    // 备份：导出全部题库 JSON
+    // 备份：导出全部题库 JSON（APK 走原生桥接写 Download，浏览器走 <a download>）
     document.getElementById('backup-btn').onclick = async () => {
       const st = document.getElementById('backup-status');
       try {
@@ -3445,32 +4341,8 @@ const App = (() => {
         const all = { version: 1, exportedAt: new Date().toISOString(), banks, questions: {} };
         for (const b of banks) all.questions[b.id] = await DB.questionsByBank(b.id);
         const fileName = `刷题宝备份_${new Date().toISOString().slice(0, 10)}.json`;
-        const blob = new Blob([JSON.stringify(all)], { type: 'application/json' });
-
-        // APK 环境：走 JS 桥接原生保存到系统 Download 目录 → 文件管理器直接可见
-        const bridge = (typeof window !== 'undefined') && window.AndroidBridge;
-        const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
-        if (isApk) {
-          const b64 = await blobToBase64(blob);
-          if (!b64) throw new Error('文件内容为空');
-          const res = ('' + (bridge.saveFile(fileName, b64) || '')).trim();
-          if (res.startsWith('OK:')) {
-            const path = res.slice(3);
-            st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题 → ${path}`;
-          } else if (res.startsWith('NEED_PERMISSION:')) {
-            st.textContent = '⚠ ' + res.slice(16) + '（授予后再点一次导出）';
-          } else {
-            throw new Error(res || '原生保存失败');
-          }
-        } else {
-          // 浏览器 / PWA：走标准 <a download>
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = fileName;
-          a.click();
-          URL.revokeObjectURL(a.href);
-          st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题`;
-        }
+        const r = await saveTextFile(fileName, JSON.stringify(all), 'application/json');
+        st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题 → ${r.path}`;
       } catch (e) {
         st.textContent = '⚠ ' + (e.message || String(e)).slice(0, 80);
       }

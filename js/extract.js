@@ -365,14 +365,16 @@ const Extractor = (() => {
       const v = String(s || '').toUpperCase().replace(/[^A-H]/g, '');
       return v || null;
     };
-    const AT = '[A-H](?:\\s*[、,，／/]?\\s*[A-H]){0,7}';
+    // 分隔符只允许行内空白（[ \t]），不能用 \s —— 否则「答案：A\nA．选项甲」会把下一行
+    // 选项的字母 A 一起吃进来（得到 "AA"，选项行同时被破坏）——1000 题里最常见的漏扫根因
+    const AT = '[A-H](?:[ \\t]*[、,，／/]?[ \\t]*[A-H]){0,7}';
 
     // 1) 显式答案标注（含顿号/逗号分隔的多选答案）
     const ansRes = [
-      new RegExp('[（(]\\s*答案\\s*[:：]?\\s*(' + AT + ')\\s*[)）]'),
-      new RegExp('【\\s*答案\\s*】?\\s*[:：]?\\s*(' + AT + ')'),
-      new RegExp('(?<![A-Za-z])答案\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
-      new RegExp('(?<![A-Za-z])答\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
+      new RegExp('[（(]\\s*答案\\s*[:：]?[ \\t]*(' + AT + ')[ \\t]*[)）]'),
+      new RegExp('【\\s*答案\\s*】?\\s*[:：]?[ \\t]*(' + AT + ')'),
+      new RegExp('(?<![A-Za-z])答案\\s*[:：][ \\t]*(' + AT + ')(?![A-Za-z])'),
+      new RegExp('(?<![A-Za-z])答\\s*[:：][ \\t]*(' + AT + ')(?![A-Za-z])'),
     ];
     for (const re of ansRes) {
       const m = t.match(re);
@@ -524,7 +526,18 @@ const Extractor = (() => {
       if (hintType === 'fill' || /（\s*）|\(\s*\)/.test(body)) {
         return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation, _local: true };
       }
-      return null; // 结构不明，交 AI
+      // 3a) 兜底：结构不明也别丢题（旧版此处 return null → 1000 题里总有几道「扫不上」）
+      //     陈述句（无提问词、以句号收尾）→ 判断题；其余 → 填空/简答（答案自己填或 AI 解）
+      if (!/^(姓名|学号|班级|专业|院系|得分|评分|考试时间|注意事项|题号|试卷|第\s*\d+\s*页)/.test(body)) {
+        const asking = /简述|说明|论述|解释|为什么|如何|什么|哪些|试述|计算|证明|比较|列举|名词解释|问答|简答/.test(body);
+        const type = (hintType === 'single' || hintType === 'multi') ? 'fill'
+          : ((!asking && /[。.]$/.test(body)) ? 'judge' : 'fill');
+        return {
+          no, key: hintKey, type, stem: body,
+          options: type === 'judge' ? { 'A': '正确', 'B': '错误' } : null,
+          answer: answer || null, explanation, _local: true, _salvaged: true
+        };
+      }
     }
     return null;
   }

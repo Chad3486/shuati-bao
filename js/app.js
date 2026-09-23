@@ -9,6 +9,7 @@ const App = (() => {
   /* ================= 路由 ================= */
   const routes = {
     '': pageHome, 'home': pageHome,
+    'canon': pageCanon,
     'import': pageImport,
     'answers': pageAnswers,
     'bank': pageBankQuestions,
@@ -75,6 +76,69 @@ const App = (() => {
 
   function confirmDialog(msg) { return window.confirm(msg); }
 
+  /* ---- 文件小工具（浏览器 / APK 通用） ---- */
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const url = fr.result || '';
+        const i = url.indexOf(',');
+        resolve(i >= 0 ? url.slice(i + 1) : '');
+      };
+      fr.onerror = () => reject(fr.error || new Error('读取失败'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  /* 保存文本文件：APK 走 JS 桥接写系统 Download 目录，浏览器走 <a download> */
+  async function saveTextFile(fileName, text, mime = 'text/plain') {
+    const blob = new Blob([text], { type: mime + ';charset=utf-8' });
+    const bridge = typeof window !== 'undefined' && window.AndroidBridge;
+    const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
+    if (isApk) {
+      const b64 = await blobToBase64(blob);
+      if (!b64) throw new Error('文件内容为空');
+      const res = ('' + (bridge.saveFile(fileName, b64) || '')).trim();
+      if (res.startsWith('OK:')) return { path: res.slice(3) };
+      if (res.startsWith('NEED_PERMISSION:')) throw new Error(res.slice(16) + '（授予后再点一次）');
+      throw new Error(res || '原生保存失败');
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    return { path: fileName };
+  }
+
+  /* 读任意题库文件为纯文本（.txt/.md 直读；PDF/DOCX 走提取器） */
+  async function readAnyText(file) {
+    const n = file.name.toLowerCase();
+    if (/\.(txt|md|markdown|text)$/.test(n)) return await file.text();
+    return await Extractor.extract(file);
+  }
+
+  /* 复制到剪贴板（APK WebView 可能没有 clipboard API，降级用临时 textarea） */
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* 降级 */ }
+    try {
+      const t = document.createElement('textarea');
+      t.value = text;
+      t.style.position = 'fixed';
+      t.style.opacity = '0';
+      document.body.appendChild(t);
+      t.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(t);
+      return ok;
+    } catch (e) { return false; }
+  }
+
   const typeLabel = { single: '单选', multi: '多选', judge: '判断', fill: '填空' };
 
   /* ---- 主题：auto 跟随系统 / light / dark，存 meta，class 驱动 ---- */
@@ -136,10 +200,11 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入文件（PDF / Word）</button>
+      <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
+      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（PDF / Word 自动解析）</button>
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       <div class="bank-list">
-        ${banks.length === 0 ? `<div class="empty">还没有题库<br>点击上方按钮导入 PDF / Word 文件开始</div>` :
+        ${banks.length === 0 ? `<div class="empty">还没有题库<br>点击上方按钮开始导入</div>` :
         banks.map(b => {
           const na = noAnsMap[b.id] || 0;
           return `
@@ -185,6 +250,262 @@ const App = (() => {
     await DB.bankRename(id, n);
     render();
     toast('已改名');
+  }
+
+  /* ================= 页面：范式导入（零对齐 · 一题一块答案随题） ================= */
+  let canonParsed = null;   // 最近一次「解析预览」的结果（文本框一改就失效）
+
+  function pageCanon() {
+    topbar('范式导入', '#/home');
+    $view().innerHTML = `
+      <div class="card">
+        <div class="card-title">范式 · 一题一块，答案跟着题目走</div>
+        <p class="muted small">答案直接写在题目里（<b>答案：B</b>），导入时<b>不需要任何「答案对齐」</b>——不再有扫不上的题；1000 题也是一次线性扫描，零 API 调用、秒级完成。</p>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-spec-btn">格式说明</button>
+          <button class="btn ghost" id="canon-tpl-fill">填入模板</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-tpl-copy">复制模板</button>
+          <button class="btn ghost" id="canon-tpl-dl">下载模板</button>
+        </div>
+      </div>
+
+      <div class="card" id="canon-spec-card" style="display:none">
+        <div class="card-title">格式说明</div>
+        <pre class="canon-spec"></pre>
+      </div>
+
+      <div class="card">
+        <div class="card-title">① 贴入范式文本</div>
+        <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-pick">载入文件</button>
+          <button class="btn ghost" id="canon-conv">Word 转换器</button>
+        </div>
+        <input type="file" id="canon-file" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
+        <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc,.pdf" style="display:none">
+        <div class="muted small" id="canon-file-status"></div>
+        <div class="btn-row">
+          <button class="btn ghost" id="canon-clear">清空</button>
+          <button class="btn primary" id="canon-check">解析预览</button>
+        </div>
+        <div class="muted small" id="canon-count"></div>
+      </div>
+
+      <div class="card" id="canon-report" style="display:none">
+        <div class="card-title">② 解析结果</div>
+        <div id="canon-report-body"></div>
+      </div>
+
+      <div class="card" id="canon-ai-card" style="display:none">
+        <div class="card-title">③ AI 解题（可选）</div>
+        <p class="muted small">让 AI 直接做缺答案的题，答案写回上面的文本框（可再人工核对后导入）。需在「设置」里配置 API Key。</p>
+        <button class="btn ghost big" id="canon-ai-btn"></button>
+        <div class="muted small" id="canon-ai-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">④ 导入题库</div>
+        <label class="field"><span>题库名称（留空自动命名）</span>
+          <input id="canon-name" placeholder="例如：电力电子技术 期末题库">
+        </label>
+        <button class="btn primary big" id="canon-import">导入题库</button>
+        <div class="muted small" id="canon-import-status"></div>
+      </div>`;
+
+    const ta = document.getElementById('canon-text');
+    const fileStatus = document.getElementById('canon-file-status');
+    const countEl = document.getElementById('canon-count');
+    const reportCard = document.getElementById('canon-report');
+    const reportBody = document.getElementById('canon-report-body');
+    const aiCard = document.getElementById('canon-ai-card');
+    const aiBtn = document.getElementById('canon-ai-btn');
+    const aiStatus = document.getElementById('canon-ai-status');
+    const importStatus = document.getElementById('canon-import-status');
+    document.querySelector('#canon-spec-card .canon-spec').textContent = Canon.SPEC;
+
+    // 文本框一改，上次的解析结果就失效（防止导入了旧内容）
+    const invalidate = () => {
+      canonParsed = null;
+      aiCard.style.display = 'none';
+      reportCard.style.display = 'none';
+      const n = ta.value.replace(/\s/g, '').length;
+      countEl.textContent = n ? `当前文本 ${ta.value.length} 字符` : '';
+    };
+    ta.addEventListener('input', invalidate);
+
+    document.getElementById('canon-spec-btn').onclick = () => {
+      const c = document.getElementById('canon-spec-card');
+      c.style.display = c.style.display === 'none' ? '' : 'none';
+    };
+    document.getElementById('canon-tpl-fill').onclick = () => {
+      ta.value = Canon.template();
+      invalidate();
+      countEl.textContent = '模板已填入：照着改即可（题型标记可省略）';
+    };
+    document.getElementById('canon-tpl-copy').onclick = async () => {
+      toast(await copyText(Canon.template()) ? '模板已复制到剪贴板' : '复制失败，请用「下载模板」');
+    };
+    document.getElementById('canon-tpl-dl').onclick = async () => {
+      try {
+        const r = await saveTextFile('刷题宝-范式模板.txt', Canon.template());
+        toast('模板已保存：' + r.path);
+      } catch (e) { toast('保存失败：' + e.message.slice(0, 60)); }
+    };
+    document.getElementById('canon-clear').onclick = () => {
+      ta.value = '';
+      invalidate();
+      fileStatus.textContent = '';
+      importStatus.textContent = '';
+    };
+
+    // 载入范式文件（.txt/.md/.docx）
+    const fileInput = document.getElementById('canon-file');
+    document.getElementById('canon-pick').onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const f = fileInput.files[0];
+      fileInput.value = '';
+      if (!f) return;
+      fileStatus.textContent = `载入 ${f.name}…`;
+      try {
+        ta.value = await readAnyText(f);
+        invalidate();
+        fileStatus.textContent = `✓ 已载入 ${f.name}（${ta.value.length} 字符），点「解析预览」`;
+      } catch (e) {
+        fileStatus.textContent = '⚠ ' + e.message.slice(0, 100);
+      }
+    };
+
+    // Word 转换器：旧格式文档（题目+答案表 / 内联答案）→ 范式文本
+    const oldInput = document.getElementById('canon-old');
+    document.getElementById('canon-conv').onclick = () => oldInput.click();
+    oldInput.onchange = async () => {
+      const f = oldInput.files[0];
+      oldInput.value = '';
+      if (!f) return;
+      fileStatus.textContent = `转换 ${f.name}…`;
+      try {
+        const raw = await readAnyText(f);
+        const res = Canon.convert(raw);
+        ta.value = res.text;
+        invalidate();
+        const s = res.stats;
+        fileStatus.textContent = res.passthrough
+          ? `✓ 这份文档本来就是范式，已原样保留（${s.total} 题）`
+          : `✓ 转换完成：${s.total} 题 · 答案 ${s.answered}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
+            + (res.problems?.length ? `；⚠ ${res.problems.slice(0, 3).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? '缺号' + p.missingNos.slice(0, 8).join('、') : ''}`).join('；')}` : '');
+        runCheck();
+      } catch (e) {
+        fileStatus.textContent = '⚠ ' + e.message.slice(0, 120);
+      }
+    };
+
+    document.getElementById('canon-check').onclick = () => runCheck();
+
+    /* ---- 解析预览 ---- */
+    function runCheck() {
+      const text = ta.value;
+      if (text.replace(/\s/g, '').length < 5) { toast('请先贴入范式文本'); return null; }
+      const r = Canon.parse(text);
+      canonParsed = r;
+      const s = r.stats;
+      const typeStr = Object.keys(s.byType).filter(k => s.byType[k])
+        .map(k => `${Canon.TYPE_LABEL[k]} ${s.byType[k]}`).join(' · ');
+      reportCard.style.display = '';
+      reportBody.innerHTML = `
+        <div class="canon-stats">
+          <div class="canon-stat"><b>${s.total}</b><span>题目</span></div>
+          <div class="canon-stat"><b style="color:var(--ok)">${s.answered}</b><span>有答案</span></div>
+          <div class="canon-stat"><b style="color:${s.missing ? 'var(--bad)' : 'var(--ok)'}">${s.missing}</b><span>缺答案</span></div>
+          <div class="canon-stat"><b style="color:${s.errors ? 'var(--bad)' : 'var(--ok)'}">${s.errors}</b><span>格式错误</span></div>
+        </div>
+        <div class="muted small">${typeStr || '—'}${s.sections ? ` · ${s.sections} 个章节` : ''}</div>
+        ${r.errors.length ? `<div class="canon-issues">
+          <div class="canon-issue-title bad">⚠ ${r.errors.length} 处格式错误（这些题不会被导入）</div>
+          ${r.errors.slice(0, 30).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
+          ${r.errors.length > 30 ? '<div class="muted small">…仅显示前 30 条</div>' : ''}
+        </div>` : ''}
+        ${r.warns.length ? `<div class="canon-issues">
+          <div class="canon-issue-title">提示 ${r.warns.length} 处（不影响导入）</div>
+          ${r.warns.slice(0, 20).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
+          ${r.warns.length > 20 ? '<div class="muted small">…仅显示前 20 条</div>' : ''}
+        </div>` : ''}`;
+
+      const noAns = r.questions.filter(q => !q.answer);
+      if (noAns.length) {
+        aiCard.style.display = '';
+        aiBtn.disabled = false;
+        aiBtn.textContent = `AI 解答缺答案的 ${noAns.length} 题`;
+        aiStatus.textContent = '也可以直接在文本框里补「答案：」，再点「解析预览」';
+      } else {
+        aiCard.style.display = 'none';
+      }
+      return r;
+    }
+
+    /* ---- AI 解题：补缺答案，写回文本框 ---- */
+    aiBtn.onclick = async () => {
+      const r = canonParsed || runCheck();
+      if (!r) return;
+      const noAns = r.questions.filter(q => !q.answer);
+      if (!noAns.length) return toast('没有缺答案的题了');
+      const cfg = await LLM.getConfig();
+      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
+      aiBtn.disabled = true;
+      aiStatus.textContent = 'AI 解题中…（自适应批量、进度实时反馈）';
+      try {
+        const solved = await LLM.solveQuestions(noAns, (done, total, got, note) => {
+          if (total <= 0) { if (note) aiStatus.textContent = note; return; }
+          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解题中：${done}/${total} 批 · 已得 ${got} 个答案`;
+        }, (c, a, cool) => {
+          aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…';
+        });
+        // 答案写回文本框（AI 答案仅供练习参考，可人工核对后再导入）
+        const left = r.questions.filter(q => !q.answer).length;
+        ta.value = Canon.fromQuestions(r.questions, r.sections);
+        const re = runCheck();
+        aiStatus.textContent = `✓ AI 补了 ${solved} 个答案，已写回文本框（可人工核对）`
+          + (left ? `；剩 ${left} 题未解出` : '')
+          + (re?.stats.errors ? `；⚠ 文本有 ${re.stats.errors} 处格式错误` : '');
+        toast(`AI 补了 ${solved} 个答案`);
+      } catch (e) {
+        aiStatus.textContent = '⚠ ' + e.message.slice(0, 120);
+        aiBtn.disabled = false;
+      }
+    };
+
+    /* ---- 导入题库 ---- */
+    document.getElementById('canon-import').onclick = async () => {
+      const r = canonParsed || runCheck();
+      if (!r) return;
+      if (!r.stats.total) {
+        importStatus.textContent = '⚠ 没有解析到任何题目，请对照「格式说明」检查（题目要有题干行，选择题要有 A./B. 选项行）';
+        return;
+      }
+      if (!confirmDialog(`导入 ${r.stats.total} 题到新题库？${r.stats.missing ? `\n其中 ${r.stats.missing} 题缺答案，导入后可在题库列表「补答案」。` : ''}`)) return;
+      const name = (document.getElementById('canon-name').value.trim()
+        || `范式导入 ${new Date().toLocaleDateString()}`).slice(0, 40);
+      const bank = {
+        id: DB.uid(),
+        name,
+        createdAt: Date.now(),
+        count: r.questions.length,
+        source: '范式导入',
+        sections: r.sections && r.sections.length ? r.sections : null
+      };
+      const qs = r.questions.map(q => {
+        const o = { ...q, id: DB.uid(), bankId: bank.id };
+        delete o._srcLine;
+        return o;
+      });
+      await DB.questionAddMany(qs);
+      await DB.bankAdd(bank);
+      const noAns = qs.filter(q => !q.answer).length;
+      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`;
+      toast(`已导入 ${qs.length} 题`);
+      navigate('#/home');
+    };
   }
 
   /* ================= 页面：导入 ================= */
@@ -437,6 +758,11 @@ const App = (() => {
           <button class="btn ghost" id="sel-unans">只选缺答案</button>
           <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="exp-canon">导出范式</button>
+          <button class="btn ghost" id="copy-canon">复制范式</button>
+        </div>
+        <div class="muted small" style="margin-top:6px">导出范式后可在 Word 里补答案 / 加题 / 改题干，再回「范式导入」贴回来覆盖建库（答案随题，无需再对齐）</div>
         <div class="muted small" id="pick-info" style="margin-top:8px">共 ${qs.length} 题</div>
         <div class="muted small" style="margin-top:4px">灰色 = 缺答案，也能勾选练习：练习时点右上角 ✎ 自己填答案</div>
         <div id="no-grid">
@@ -511,6 +837,18 @@ const App = (() => {
       session = new QuizSession(list, { shuffle: false });
       if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
       navigate('#/quiz');
+    };
+
+    // 导出 / 复制范式：题库 → 范式文本（Word 里改完再「范式导入」贴回来）
+    const canonText = () => Canon.fromQuestions(qs, bank.sections, { title: bank.name });
+    document.getElementById('exp-canon').onclick = async () => {
+      try {
+        const r = await saveTextFile(`${bank.name}-范式.txt`, canonText());
+        toast('已导出范式：' + r.path);
+      } catch (e) { toast('导出失败：' + e.message.slice(0, 60)); }
+    };
+    document.getElementById('copy-canon').onclick = async () => {
+      toast(await copyText(canonText()) ? `已复制 ${qs.length} 题的范式文本` : '复制失败，请用「导出范式」');
     };
 
     // 删除选中 → 移入回收站（可恢复；彻底删除需在回收站二次确认）
@@ -1292,22 +1630,7 @@ const App = (() => {
       </div>
       <div class="muted small center">刷题宝 · 本地题库存储于浏览器 IndexedDB<br>手机浏览器打开即用，可"添加到主屏幕"当 APP 使用</div>`;
 
-    // Blob → base64（APK 中 WebView 不触发 <a download>，需走 JS 桥接原生直接写入 Download 目录）
-    function blobToBase64(blob) {
-      return new Promise((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => {
-          const url = fr.result || '';
-          // data:application/json;base64,xxx...  去掉 data:*/*;base64, 前缀
-          const i = url.indexOf(',');
-          resolve(i >= 0 ? url.slice(i + 1) : '');
-        };
-        fr.onerror = () => reject(fr.error || new Error('blobToBase64 失败'));
-        fr.readAsDataURL(blob);
-      });
-    }
-
-    // 备份：导出全部题库 JSON
+    // 备份：导出全部题库 JSON（APK 走原生桥接写 Download，浏览器走 <a download>）
     document.getElementById('backup-btn').onclick = async () => {
       const st = document.getElementById('backup-status');
       try {
@@ -1316,32 +1639,8 @@ const App = (() => {
         const all = { version: 1, exportedAt: new Date().toISOString(), banks, questions: {} };
         for (const b of banks) all.questions[b.id] = await DB.questionsByBank(b.id);
         const fileName = `刷题宝备份_${new Date().toISOString().slice(0, 10)}.json`;
-        const blob = new Blob([JSON.stringify(all)], { type: 'application/json' });
-
-        // APK 环境：走 JS 桥接原生保存到系统 Download 目录 → 文件管理器直接可见
-        const bridge = (typeof window !== 'undefined') && window.AndroidBridge;
-        const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
-        if (isApk) {
-          const b64 = await blobToBase64(blob);
-          if (!b64) throw new Error('文件内容为空');
-          const res = ('' + (bridge.saveFile(fileName, b64) || '')).trim();
-          if (res.startsWith('OK:')) {
-            const path = res.slice(3);
-            st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题 → ${path}`;
-          } else if (res.startsWith('NEED_PERMISSION:')) {
-            st.textContent = '⚠ ' + res.slice(16) + '（授予后再点一次导出）';
-          } else {
-            throw new Error(res || '原生保存失败');
-          }
-        } else {
-          // 浏览器 / PWA：走标准 <a download>
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = fileName;
-          a.click();
-          URL.revokeObjectURL(a.href);
-          st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题`;
-        }
+        const r = await saveTextFile(fileName, JSON.stringify(all), 'application/json');
+        st.textContent = `✓ 已导出 ${banks.length} 个题库、${banks.reduce((s, b) => s + b.count, 0)} 题 → ${r.path}`;
       } catch (e) {
         st.textContent = '⚠ ' + (e.message || String(e)).slice(0, 80);
       }

@@ -355,6 +355,45 @@ body {
 .field textarea:focus { outline: none; border-color: var(--primary); }
 
 
+/* ---------- 范式导入 ---------- */
+.canon-spec {
+  white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: 12.5px; line-height: 1.75; color: var(--text);
+  background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px;
+  max-height: 46vh; overflow: auto;
+}
+.canon-area {
+  width: 100%; min-height: 210px; margin-top: 10px;
+  border: 1.5px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 12px; font-size: 13.5px; line-height: 1.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--card); color: var(--text); resize: vertical;
+}
+.canon-area:focus { outline: none; border-color: var(--primary); }
+.canon-stats { display: flex; gap: 8px; margin-bottom: 10px; }
+.canon-stat {
+  flex: 1; min-width: 0; text-align: center; background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 10px 4px;
+}
+.canon-stat b { display: block; font-size: clamp(17px, 5.2vw, 21px); }
+.canon-stat span { font-size: 11.5px; color: var(--muted); }
+.canon-issues {
+  margin-top: 12px; background: var(--surface-2);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.canon-issue-title { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.canon-issue-title.bad { color: var(--bad); }
+.canon-issue {
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  padding: 4px 0; border-bottom: 1px dashed var(--line);
+  overflow-wrap: anywhere;
+}
+.canon-issue:last-child { border-bottom: none; }
+.canon-issue .ln {
+  display: inline-block; min-width: 56px; margin-right: 6px;
+  color: var(--primary); font-weight: 600; font-size: 11.5px;
+}
+
 /* ---------- Toast ---------- */
 #toast {
   position: fixed; bottom: calc(var(--tabbar-h) + 30px); left: 50%; transform: translateX(-50%) translateY(10px);
