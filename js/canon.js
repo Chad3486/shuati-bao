@@ -145,6 +145,50 @@ C. IGBT
     return t.replace(/\s/g, '').length >= 12;       // 够长的一整句
   }
 
+  /* 裸行（无题号、无题型标记）当题干的强信号——文档前言/统计行/书名行必须排除掉，
+     否则「共收录 768 道题目 | 涵盖 7 个章节」会被当成一道题 */
+  function bareStem(s) {
+    const t = String(s || '').trim();
+    if (!t) return false;
+    if (/[|｜]/.test(t)) return false;                             // 统计/表格行
+    if (BLANK_RE.test(t)) return true;                             // 有空位 → 一定是题
+    if (/[。！？!?…]\s*$/.test(t) || /^[（(]/.test(t)) return true;  // 句末标点 / 括号开头
+    if (/共\s*\d+\s*(道|题|个)|涵盖\s*\d+\s*个/.test(t)) return false; // 文档前言统计
+    if (/[）)]\s*$/.test(t)) return false;                          // 「…（含解析）」书名式结尾
+    return t.replace(/\s/g, '').length >= 12;
+  }
+
+  /* 无 # 的结构行：章标题（第一章 …）/ 独立题型标题行（单选题）→ 当节处理 */
+  const CHAPTER_RE = /^第\s*[一二三四五六七八九十百\d]+\s*[章节篇部]/;
+  const TYPE_TITLE_RE = /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/;
+  function isChapterLine(s) {
+    const t = String(s || '').trim();
+    if (!CHAPTER_RE.test(t)) return false;
+    if (t.length > 40) return false;
+    if (/[？?。！!；;：:]$/.test(t)) return false;            // 题干式结尾不算标题
+    return true;
+  }
+
+  /* 一行里写了多个选项（Word 常见：「A.甲    B.乙    C.丙」）→ 拆成 [{letter,content}]；
+     只认「行首或空白之后 + 字母 + 分隔符」的位置，避免题干里的「A、B两系统」被切开 */
+  function splitInlineOptions(line) {
+    const s = String(line || '');
+    const re = /(^|[\s\u3000])([A-Ha-hＡ-Ｈ])\s*[.、．)）:：]\s*/g;
+    const marks = [];
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      marks.push({ idx: m.index + m[1].length, letter: FULL_LETTER[m[2]] || m[2].toUpperCase(), end: re.lastIndex });
+      if (re.lastIndex === m.index) re.lastIndex++;          // 防御：避免零宽匹配死循环
+    }
+    if (marks.length < 2) return null;
+    const out = [];
+    for (let i = 0; i < marks.length; i++) {
+      const stop = i + 1 < marks.length ? marks[i + 1].idx : s.length;
+      out.push({ letter: marks[i].letter, content: s.slice(marks[i].end, stop).trim() });
+    }
+    return out;
+  }
+
   /* 主解析：范式文本 → 题目数组（带行号级错误/警告） */
   function parse(text, opts = {}) {
     const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
@@ -292,6 +336,16 @@ C. IGBT
         continue;
       }
 
+      // ①b 无 # 的结构行：章标题（第一章 …）/ 独立题型标题行（单选题）→ 当节处理
+      if (isChapterLine(s) || TYPE_TITLE_RE.test(s.trim())) {
+        flush();
+        const title = s.trim();
+        secType = detectSecType(title);
+        sections.push({ secIdx: ++secIdx, title, type: secType });
+        nextNo = 1;
+        continue;
+      }
+
       // ② 题型标记【单选】…（不认识的标记剥掉后按普通行继续）
       let rest = s, forcedType = null;
       const tm = s.match(/^\s*[【\[]\s*([^】\]]{1,12}?)\s*[】\]]\s*([\s\S]*)$/);
@@ -326,11 +380,26 @@ C. IGBT
         startQuestion(null, forcedType, ln);
       }
 
-      // ④ 选项行
+      // ④ 选项行（含「A.甲  B.乙  C.丙」一行多选项的写法）
       const om = rest.match(/^\s*([A-Ha-hＡ-Ｈ])\s*[.、．)）:：]\s*([\s\S]+)$/);
       if (om && cur) {
         const letter = FULL_LETTER[om[1]] || om[1].toUpperCase();
         const content = om[2].trim();
+        // 一行多选项（Word 里最常见）：字母从「下一个期望的字母」起连续、每段都有内容 → 采纳
+        const parts = splitInlineOptions(rest);
+        if (parts && parts.length >= 2) {
+          let expect = cur.optionOrder.length
+            ? String.fromCharCode(cur.optionOrder[cur.optionOrder.length - 1].charCodeAt(0) + 1) : 'A';
+          let ok = true;
+          for (const p of parts) {
+            if (p.letter !== expect || !p.content || cur.options[p.letter] != null) { ok = false; break; }
+            expect = String.fromCharCode(expect.charCodeAt(0) + 1);
+          }
+          if (ok) {
+            for (const p of parts) { cur.optionOrder.push(p.letter); cur.options[p.letter] = p.content; }
+            continue;
+          }
+        }
         // 题干里「A、B两系统互联…（ ）」式误判：内容含空括号且较长 → 当题干
         if (BLANK_RE.test(content) && content.replace(/\s/g, '').length > 10) {
           pushStemBody(rest);
@@ -365,7 +434,7 @@ C. IGBT
       if (cur) {
         const finished = cur.answerRaw != null || cur.optionOrder.length >= 2;
         // 新题的判据：上一题已收尾 + 这行像题干 + （前面有空行 或 还没写解析 或 行内有空位/问号）
-        const canStartNew = finished && looksLikeStem(rest) &&
+        const canStartNew = finished && bareStem(rest) &&
           (prevBlank || !cur.expLines.length || BLANK_RE.test(rest) || /[？?]\s*$/.test(rest));
         if (canStartNew) {
           flush();
@@ -375,11 +444,11 @@ C. IGBT
         }
         if (cur.answerRaw != null) cur.expLines.push(rest.trim());
         else pushStemBody(rest);
-      } else if (looksLikeStem(rest)) {
+      } else if (bareStem(rest)) {
         startQuestion(null, null, ln);
         pushStemBody(rest);
       } else {
-        warn(ln, `题目之外的文字（疑似标题），已忽略：「${rest.trim().slice(0, 24)}」`);
+        warn(ln, `题目之外的文字（疑似标题/前言），已忽略：「${rest.trim().slice(0, 24)}」`);
       }
     }
     flush();

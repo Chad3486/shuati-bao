@@ -130,6 +130,10 @@ const Extractor = (() => {
       if (!t || t.length > 40) continue;
       if (/^[A-H]\s*[.、．:：)）]/.test(t)) continue; // 选项行
       if (/^\s*\d{1,3}\s*[.、．)）]/.test(t)) continue; // 数字题号行
+      // 答案行 / 解析行：每道题后面都跟一行，天然「重复」，绝不能当页眉页脚删掉
+      //（曾把「答案：D」当重复短行删除 → 整套题答案全丢，就是「答案扫不上」的主因）
+      if (/^(?:参考答案|正确答案|标准答案|答案|答)\s*[:：]?/.test(t)) continue;
+      if (/^(?:答案解析|解析|解释|说明)\s*[:：]/.test(t)) continue;
       if (isStructural(t)) continue; // 章节题型结构行
       counts.set(t, (counts.get(t) || 0) + 1);
     }
@@ -247,6 +251,10 @@ const Extractor = (() => {
 
     function isAnswerLine(line) {
       const s = line.trim();
+      // 选项行（「A.xxx  B.xxx  C.xxx」）绝不是答案表行——否则含数字+字母的选项行
+      // （如「A.CQ≫C0  B.CQ≪C0  C.CQ=C0  D.CQ、C0…」「A.1A  B.2A  C.5A」）
+      // 会被 ansPairRe 数出 ≥3 对而整行丢弃，连带该题答案一起丢
+      if (/^[A-Ha-h]\s*[.、．)）:：]/.test(s)) return false;
       // 「答案：B    解析：…」是单题答案行，绝非答案表行（答案表行是「1.C 2.A 3.B」式）。
       // 否则计算题答案里的「6.75A、3.9A」等数字+字母会被误计成答案对而整行丢弃。
       if (/^(?:答案|答)\s*[:：]/.test(s) || /(?:答案解析|解析|解释|说明)\s*[:：]/.test(s)) return false;
