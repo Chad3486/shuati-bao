@@ -194,12 +194,7 @@ const App = (() => {
       <div class="card">
         <div class="card-title">第 1 步 · 选择文件</div>
         <p class="muted">支持多选 PDF、DOCX。文件中的题目和答案将被解析为结构化题库（选择题/填空题/判断题）。</p>
-        <div class="card-title" style="margin-top:12px">录入模式</div>
-        <div class="seg" id="seg-mode">
-          <button data-v="smart" class="on">⚡ 智能（快·免费为主）</button>
-          <button data-v="ai">🤖 纯AI（慢·最全）</button>
-        </div>
-        <p class="muted small" id="mode-desc">智能：本地秒级解析为主，疑难格式才用 AI。纯AI：AI 逐块扫描全文找题并与本地结果合并去重，漏题最少，但耗时和费用较高，数量仍不准时用。</p>
+        <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用（扫描版 PDF 会自动 OCR）。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc" style="display:none">
         <div id="file-list" class="file-list"></div>
@@ -212,65 +207,12 @@ const App = (() => {
       </div>`;
 
     const input = document.getElementById('file-input');
-    let importMode = 'smart';
-    const segMode = document.getElementById('seg-mode');
-    segMode.onclick = (e) => {
-      const b = e.target.closest('button[data-v]'); if (!b) return;
-      segMode.querySelectorAll('button').forEach(x => x.classList.remove('on'));
-      b.classList.add('on');
-      importMode = b.dataset.v;
-    };
     document.getElementById('pick-btn').onclick = () => input.click();
-    input.onchange = () => handleFiles([...input.files], importMode);
-
-    // 断点续扫：有未完成的纯AI任务时提示继续（同一文件）
-    DB.metaGet('aiScanTask').then(task => {
-      if (!task || !task.bankId) return;
-      const hint = document.createElement('div');
-      hint.className = 'card';
-      hint.style.borderLeft = '4px solid var(--primary)';
-      hint.innerHTML = `
-        <b>有未完成的 AI 扫描</b>
-        <div class="muted small">${escapeHtml(task.file || '')} 已扫 ${task.doneChunks?.length || 0} 块（题库已实时保存 ${task.totalHint || 0} 题）</div>
-        <div class="btn-row">
-          <button class="btn primary" id="resume-scan">重新选此文件继续</button>
-          <button class="btn ghost" id="drop-scan">放弃</button>
-        </div>
-        <div class="muted small" style="margin-top:6px">继续=重新选择同一文件，已扫过的块自动跳过（不重复计费）；放弃=清除任务（已扫的题保留在该题库）</div>`;
-      const list = $view().querySelector('.file-list');
-      list.parentNode.insertBefore(hint, list);
-      hint.querySelector('#resume-scan').onclick = () => {
-        toast('请选择同一个文件，将跳过已扫块');
-        input.dataset.resumeTask = JSON.stringify(task);
-        input.click();
-      };
-      hint.querySelector('#drop-scan').onclick = async () => {
-        await DB.metaSet('aiScanTask', null);
-        hint.remove();
-        toast('已清除任务');
-      };
-    });
-
-    // 恢复模式：选择的文件若与任务同名，则带上已扫块集合
-    input.onchange = () => {
-      let resumeTask = null;
-      try { resumeTask = JSON.parse(input.dataset.resumeTask || 'null'); } catch (e) { /* 忽略 */ }
-      if (resumeTask) {
-        delete input.dataset.resumeTask;
-        handleFiles([...input.files], 'ai', resumeTask);
-      } else {
-        handleFiles([...input.files], importMode);
-      }
-    };
+    input.onchange = () => handleFiles([...input.files]);
   }
 
-  async function handleFiles(files, importMode = 'smart', resumeTask = null) {
+  async function handleFiles(files) {
     if (!files.length) return;
-    const cfg = await LLM.getConfig();
-    if (!cfg.apiKey) {
-      toast('请先到「设置」配置 API Key');
-      return navigate('#/settings');
-    }
 
     const listEl = document.getElementById('file-list');
     const card = document.getElementById('parse-card');
@@ -306,48 +248,15 @@ const App = (() => {
           row.querySelector('.file-state').innerHTML = '⚠ 无文本';
           continue;
         }
-        setState(importMode === 'ai' ? '纯AI 扫描中…' : 'AI 解析…');
+        setState('本地解析…');
         bar.style.width = '5%';
         const t0 = Date.now();
 
-        // 纯AI：断点续扫任务（中途退出可继续，已扫块零重发）
-        let bank = null;
-        let persist = null;
-        if (importMode === 'ai') {
-          const resuming = resumeTask && resumeTask.file === f.name;
-          if (resuming) {
-            // 续扫：沿用原题库（已扫的题已在库里，put 覆盖同 id / 追加新题）
-            bank = await DB.bankGet(resumeTask.bankId);
-            toast(`续扫模式：跳过已扫 ${resumeTask.doneChunks?.length || 0} 块`);
-          }
-          if (!bank) bank = { id: DB.uid(), name: f.name.replace(/\.(pdf|docx|doc)$/i, ''), createdAt: Date.now(), count: 0, source: f.name };
-          await DB.bankAdd(bank);
-          const doneSet = new Set(resuming ? (resumeTask.doneChunks || []) : []);
-          persist = {
-            doneSet,
-            savedQs: [],
-            loadHistory: async () => (resuming ? await DB.questionsByBank(bank.id) : []),
-            save: async (chunkIdx, qs) => {
-              persist.doneSet.add(chunkIdx);
-              persist.savedQs.push(...qs);
-              await DB.questionAddMany(qs.map(q => ({ ...q, bankId: bank.id })));
-              bank.count = (bank.count || 0) + qs.length;
-              await DB.bankAdd(bank);
-              await DB.metaSet('aiScanTask', { bankId: bank.id, file: f.name, doneChunks: [...persist.doneSet], totalHint: bank.count, time: Date.now() });
-            }
-          };
-        }
-
         const res = await LLM.parseDocument(text, (done, total, got) => {
           const elapsed = Math.round((Date.now() - t0) / 1000);
-          const eta = done ? Math.round(elapsed / done * (total - done)) : 0;
-          statusEl.textContent = `AI 扫描中：${done}/${total} 块 · 已提取 ${got} 题 · 已用 ${elapsed}s · 预计还需 ${eta}s${importMode === 'ai' ? ' · 进度实时保存' : ''}`;
+          statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
           bar.style.width = Math.round(done / total * 95) + '%';
-        }, (chunkIdx, attempt, coolSec) => {
-          statusEl.textContent = coolSec > 0
-            ? `⏳ API 限流，冷却 ${coolSec}s 后重试（第 ${attempt} 次，第 ${chunkIdx + 1} 块）— 已扫进度已保存`
-            : `网络波动，重试中（第 ${attempt} 次）… 已扫进度已保存`;
-        }, { mode: importMode, persist });
+        });
         if (!res.questions.length) {
           setState('未发现题目');
           continue;
@@ -359,28 +268,14 @@ const App = (() => {
           setState(`⚠ ${degradedCount} 题均为残缺题（选项缺字母），已全部跳过`);
           continue;
         }
-        if (importMode === 'ai') {
-          // 扫描完成：清任务；把扫描期间的原始题全部替换为最终合并去重结果
-          await DB.metaSet('aiScanTask', null);
-          await DB.bankDelete(bank.id);
-          bank = {
-            id: DB.uid(),
-            name: f.name.replace(/\.(pdf|docx|doc)$/i, ''),
-            createdAt: Date.now(),
-            count: res.questions.length,
-            source: f.name,
-            sections: res.sections || null
-          };
-        } else {
-          bank = {
-            id: DB.uid(),
-            name: f.name.replace(/\.(pdf|docx|doc)$/i, ''),
-            createdAt: Date.now(),
-            count: res.questions.length,
-            source: f.name,
-            sections: res.sections || null
-          };
-        }
+        const bank = {
+          id: DB.uid(),
+          name: f.name.replace(/\.(pdf|docx|doc)$/i, ''),
+          createdAt: Date.now(),
+          count: res.questions.length,
+          source: f.name,
+          sections: res.sections || null
+        };
         res.questions.forEach(q => q.bankId = bank.id);
         await DB.questionAddMany(res.questions);
         await DB.bankAdd(bank);
@@ -390,22 +285,13 @@ const App = (() => {
         } else {
           setState(`✓ ${res.questions.length} 题`);
         }
-        // 模式报告
+        // 解析报告
         const problemsText = res.problems?.length
           ? '；⚠ ' + res.problems.slice(0, 5).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? (p.dupNos.length ? '·' : '') + '缺号' + p.missingNos.slice(0, 10).join('、') : ''}`).join('；')
           : '';
-        if (res.mode === 'ai') {
-          const note = `🤖 纯AI录入完成：代码切割 ${res.splitTotal} 题 · 本地解析 ${res.localCount} · AI 扫到 ${res.aiCount} · 合并去重后 ${res.questions.length} 题${degradedCount ? ` · 跳过 ${degradedCount} 道残缺` : ''}`;
-          statusEl.textContent = note + problemsText;
-          if (res.aiCount > res.questions.length) toast(`注意：AI 扫描结果与切割数有出入，建议核对题量`);
-        } else if (res.mode === 'split') {
-          const speedNote = res.aiCount > 0
-            ? `⚡ 本地解析 ${res.localCount} 题 + AI 兜底 ${res.aiCount} 题`
-            : `⚡ 全部 ${res.localCount} 题本地秒级解析（0 次 API 调用）`;
-          const warn = [];
-          if (degradedCount > 0) warn.push(`自动跳过 ${degradedCount} 道残缺题`);
-          statusEl.textContent = speedNote + (warn.length ? '；' + warn.join('；') : '') + problemsText;
-        }
+        const warn = [];
+        if (degradedCount > 0) warn.push(`自动跳过 ${degradedCount} 道残缺题`);
+        statusEl.textContent = `⚡ 全部 ${res.localCount} 题本地解析（0 次 API 调用）` + (warn.length ? '；' + warn.join('；') : '') + problemsText;
       } catch (e) {
         console.error(e);
         setState('失败');
@@ -416,7 +302,7 @@ const App = (() => {
     bar.style.width = '100%';
     statusEl.textContent = '全部完成';
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
-      <div class="muted small">缺答案的题可在题库列表点「补答案」（上传答案文件或 AI 解答）；扫描版 PDF 会自动 OCR（较慢）；.doc 需另存为 .docx</div>`;
+      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；扫描版 PDF 会自动 OCR（较慢）；.doc 需另存为 .docx</div>`;
   }
 
   /* ================= 页面：题目列表（多选题号练习） ================= */
@@ -459,9 +345,13 @@ const App = (() => {
           <button class="btn ghost" id="sel-all">全选</button>
           <button class="btn ghost" id="sel-none">全不选</button>
           <button class="btn ghost" id="sel-noans">只选有答案</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="sel-unans">只选缺答案</button>
           <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
         <div class="muted small" id="pick-info" style="margin-top:8px">共 ${qs.length} 题</div>
+        <div class="muted small" style="margin-top:4px">灰色 = 缺答案，也能勾选练习：练习时点右上角 ✎ 自己填答案</div>
         <div id="no-grid">
           ${groups.map((g, gi) => `
           <div class="sec-group">
@@ -472,7 +362,7 @@ const App = (() => {
             </div>
             <div class="no-grid">
               ${g.idxs.map(i => `
-              <label class="no-cell ${qs[i].answer ? '' : 'no-ans'}">
+              <label class="no-cell ${qs[i].answer ? '' : 'no-ans'}" title="${qs[i].answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}">
                 <input type="checkbox" value="${i}" ${qs[i].answer ? 'checked' : ''}>
                 <span>${qs[i].no ?? i + 1}</span>
               </label>`).join('')}
@@ -487,7 +377,7 @@ const App = (() => {
         .sec-head b { flex:1; font-size:14px; }
         .no-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
         .no-cell { display:flex; align-items:center; gap:4px; background:#f7f9fc; border-radius:8px; padding:4px 8px; font-size:13px; cursor:pointer; }
-        .no-cell.no-ans { opacity:.45; }
+        .no-cell.no-ans { opacity:.55; border:1px dashed var(--line, #e3e8f0); }
         .no-cell input { margin:0; }
       </style>`;
 
@@ -509,6 +399,10 @@ const App = (() => {
       boxes().forEach((b, i) => b.checked = !!qs[i].answer);
       update();
     };
+    document.getElementById('sel-unans').onclick = () => {
+      boxes().forEach((b, i) => b.checked = !qs[i].answer);
+      update();
+    };
     // 本节全选
     grid.querySelectorAll('button[data-sec]').forEach(btn => {
       btn.onclick = () => {
@@ -524,10 +418,11 @@ const App = (() => {
     goBtn.onclick = async () => {
       const sel = checkedIdx();
       if (!sel.length) return toast('请先勾选题号');
-      const list = sel.map(i => qs[i]).filter(q => q.answer);
-      if (!list.length) return toast('选中的题都没有答案，请先「补答案」');
-      if (list.length < sel.length) toast(`已跳过 ${sel.length - list.length} 道缺答案的题`);
+      // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
+      const list = sel.map(i => qs[i]);
+      const noAnsCount = list.filter(q => !q.answer).length;
       session = new QuizSession(list, { shuffle: false });
+      if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
       navigate('#/quiz');
     };
 
@@ -838,26 +733,32 @@ const App = (() => {
   }
 
   /* ================= 页面：答题 ================= */
-  function pageQuiz() {
+  async function pageQuiz() {
     if (!session || session.finished) return navigate('#/quiz-result');
     const q = session.current;
     topbar(`${session.pos} / ${session.total}`, '#/quiz-setup');
     const multi = q.type === 'multi';
     const optKeys = q.options ? Object.keys(q.options) : [];
+    const starSet = new Set(await DB.starIds());
 
     $view().innerHTML = `
       <div class="quiz-head">
         <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
         <span class="quiz-prog">${session.progress.done} 已答</span>
+        <button class="star-btn" id="sheet-btn" title="答题卡" style="font-size:19px">▦</button>
         <button class="star-btn" id="star-btn" title="收藏本题">☆</button>
         <button class="star-btn" id="edit-btn" title="修改答案与解析" style="font-size:19px">✎</button>
       </div>
+      <div class="card" id="sheet-card" style="display:none"></div>
       <div class="card" id="edit-card" style="display:none"></div>
+      ${!q.answer ? `<div class="card" style="border-left:4px solid var(--bad)">
+        <div class="small" style="color:var(--bad)">本题暂无标准答案 —— 点右上角 ✎ 填入答案与解析后即可作答判分（不填也能直接翻下一题）</div>
+      </div>` : ''}
       <div class="card">
         <div class="stem">${renderStem(q)}</div>
         ${q.type === 'fill' ? `
           <div class="fill-area">
-            ${q.answer.split('|||').map((_, i) => `<input type="text" class="fill-input" placeholder="第 ${i + 1} 空" inputmode="text">`).join('')}
+            ${(q.answer || '').split('|||').map((_, i) => `<input type="text" class="fill-input" placeholder="第 ${i + 1} 空" inputmode="text">`).join('')}
             <button class="btn primary" id="fill-submit">提交答案</button>
           </div>` : `
           <div class="options">
@@ -878,8 +779,44 @@ const App = (() => {
     const judgeArea = document.getElementById('judge-area');
     const nextBtn = document.getElementById('next-btn');
     const answered = session.answered.get(q.id);
+    const sheetCard = document.getElementById('sheet-card');
+    const sheetBtn = document.getElementById('sheet-btn');
+    let sheetOpen = false;
+
+    /* ---- 答题卡：题号总览 + 状态着色 + 点题号跳题 ---- */
+    function renderSheet() {
+      const p = session.progress;
+      const cells = session.list.map((item, i) => {
+        const a = session.answered.get(item.id);
+        const cls = ['sheet-cell'];
+        if (a) cls.push(a.correct ? 'done' : 'wrong');
+        if (i === session.index) cls.push('cur');
+        if (starSet.has(item.id)) cls.push('star');
+        return `<button class="${cls.join(' ')}" data-i="${i}">${i + 1}</button>`;
+      }).join('');
+      sheetCard.innerHTML = `
+        <div class="card-title">答题卡 · 已答 ${p.done}/${p.total}${p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : ''}</div>
+        <div class="sheet-grid">${cells}</div>
+        <div class="sheet-legend">
+          <span><i></i>未答</span>
+          <span><i class="done"></i>答对</span>
+          <span><i class="wrong"></i>答错</span>
+          <span><i class="cur"></i>当前题</span>
+          <span>★ 收藏</span>
+        </div>
+        <div class="muted small" style="margin-top:8px">点题号直接跳到该题；已答过的题可随时回看答案与解析</div>`;
+      sheetCard.querySelectorAll('.sheet-cell').forEach(b => {
+        b.onclick = () => {
+          session.jump(+b.dataset.i);
+          saveProgress();
+          render();
+        };
+      });
+    }
 
     function showResult(res) {
+      // 缺标准答案：不判分（先去 ✎ 补答案）
+      if (res.noAnswer) return toast('本题暂无标准答案 —— 点右上角 ✎ 填入答案后即可作答判分');
       judgeArea.style.display = '';
       judgeArea.className = 'judge-area show ' + (res.correct ? 'ok' : 'bad');
       const yourAns = q.type === 'fill' ? res.userAnswer : res.userAnswer;
@@ -907,9 +844,13 @@ const App = (() => {
         document.querySelectorAll('.fill-input').forEach(i => i.disabled = true);
         const fs = document.getElementById('fill-submit'); if (fs) fs.style.display = 'none';
       }
+      // 答题卡开着时实时更新对错着色
+      if (sheetOpen) renderSheet();
     }
 
     if (answered) showResult(answered);
+    // 缺标准答案的题：不判分，直接允许翻下一题
+    if (!q.answer) nextBtn.style.display = '';
 
     if (q.type === 'fill') {
       const submit = () => {
@@ -954,15 +895,27 @@ const App = (() => {
       else render(); // hash 未变，手动渲染
     };
 
-    // 收藏本题：异步回填状态，点击切换
+    // 答题卡开关
+    if (sheetBtn) sheetBtn.onclick = () => {
+      sheetOpen = !sheetOpen;
+      if (sheetOpen) {
+        renderSheet();
+        sheetCard.style.display = '';
+        sheetCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        sheetCard.style.display = 'none';
+      }
+    };
+
+    // 收藏本题：状态已在渲染时读好，点击切换
     const starBtn = document.getElementById('star-btn');
-    DB.starIds().then(ids => {
-      if (starBtn && ids.includes(q.id)) { starBtn.textContent = '★'; starBtn.classList.add('on'); }
-    });
+    if (starBtn && starSet.has(q.id)) { starBtn.textContent = '★'; starBtn.classList.add('on'); }
     if (starBtn) starBtn.onclick = async () => {
       const added = await DB.starToggle(q.id);
       starBtn.textContent = added ? '★' : '☆';
       starBtn.classList.toggle('on', added);
+      if (added) starSet.add(q.id); else starSet.delete(q.id);
+      if (sheetOpen) renderSheet();
       toast(added ? '已收藏' : '已取消收藏');
     };
 
@@ -1050,7 +1003,7 @@ const App = (() => {
         const q = session.current;
         const answered = session.answered.has(q.id);
         if (dx < 0) { // 左滑 → 下一题
-          if (!answered) return toast('请先作答再翻下一题');
+          if (!answered && q.answer) return toast('请先作答再翻下一题');
           if (nextBtn.style.display !== 'none') nextBtn.click();
         } else if (session.index > 0) { // 右滑 → 上一题
           document.getElementById('skip-btn').click();
@@ -1165,7 +1118,7 @@ const App = (() => {
         </div>
       </div>
       <div class="card">
-        <div class="card-title">AI 解析接口（OpenAI 兼容）</div>
+        <div class="card-title">AI 接口（仅「补答案」的 AI 解答 / AI 校验使用）</div>
         <label class="field"><span>Base URL</span>
           <input id="set-url" value="${escapeHtml(cfg.baseUrl)}" placeholder="https://api.deepseek.com/v1">
         </label>

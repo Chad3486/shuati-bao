@@ -104,125 +104,6 @@ const LLM = (() => {
     return null;
   }
 
-  /* ---- 解析提示词（两步走 · 第一步：只提取题目，不解答） ---- */
-  const SYSTEM_PROMPT = `你是专业的题目结构化引擎。从用户给的资料文本中【只提取】题目结构，【不要自己解答】。
-
-【提取规则】
-1. 题型 type：single=单选题、multi=多选题、judge=判断题、fill=填空题
-2. no 是题目的原始题号（整数），原文没有题号时省略该字段
-3. 判断题转换为 single，options 固定为 {"A":"正确","B":"错误"}
-4. options 是对象 {"A":"...","B":"...","C":"...","D":"..."}，键为字母
-5. answer 只在原文明确给出时填写（题后标注、括号内、或随附答案表）；原文没有答案时【必须省略 answer 字段，严禁自己解答或猜测】
-6. 填空题 answer 为原文标注的标准答案文本，多空用 ||| 分隔；原文没有则省略
-7. explanation 提取原文解析文字，没有则省略
-8. stem 要完整（含材料、图表描述文字如有）
-9. 残缺题（缺题干/缺选项）直接丢弃
-10. 多选题如果无法确认，默认 single
-11. 逐行扫描，不要遗漏任何一道题；也不要把同一道题输出两次
-
-【输出格式】严格输出json（不要markdown代码块、不要任何解释文字）：
-{"questions":[{"no":1,"type":"single","stem":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"answer":"C","explanation":"可选"}]}
-没有答案时：{"no":1,"type":"single","stem":"...","options":{...}}
-本块没有题目时输出 {"questions":[]}`;
-
-  const ANSWER_TABLE_PROMPT = `\n\n【随附答案表】以下是本文件的答案汇总（题号→答案）。仅当题号能对应上时才把 answer 填入对应题目；对应不上的题目保持省略 answer：`;
-
-  /* ---- 单块解析 ---- */
-  async function parseChunk(chunkText, answerTable, onRetry) {
-    let user = '资料文本：\n' + chunkText;
-    const trimmed = sliceAnswerTable(answerTable, chunkText);
-    if (trimmed && trimmed.trim()) {
-      user += ANSWER_TABLE_PROMPT + '\n' + trimmed;
-    }
-    const raw = await chat([
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: user }
-    ], { onRetry });
-    const obj = parseJSON(raw);
-    if (!obj) throw new Error('LLM 返回无法解析为 JSON');
-    const qs = obj.questions || obj;
-    if (!Array.isArray(qs)) throw new Error('LLM 返回格式异常');
-    return normalize(qs);
-  }
-
-  /* ---- 答案表按块内题号裁剪：只发本块相关的行，大幅省 token ---- */
-  function sliceAnswerTable(table, chunkText) {
-    if (!table || !table.trim()) return table;
-    // 提取本块出现的题号（行首 "12." "12、" "12）"）
-    const nums = new Set();
-    const re = /(?:^|\n)\s*(\d{1,3})\s*[.、．)）]/g;
-    let m;
-    while ((m = re.exec(chunkText)) !== null) nums.add(+m[1]);
-    if (!nums.size) return table;
-    // 一行行过滤：行内出现的题号若与块内题号有交集则保留；标题/说明行保留
-    const kept = [];
-    for (const line of table.split('\n')) {
-      if (!line.trim()) continue;
-      if (/参考答案|答案速查|答案表|答案汇总/.test(line)) { kept.push(line); continue; }
-      const lineNums = [];
-      const pr = /(\d{1,3})\s*[.、．:：)]?\s*[A-D]/g;
-      let pm;
-      while ((pm = pr.exec(line)) !== null) lineNums.push(+pm[1]);
-      if (!lineNums.length) { kept.push(line); continue; }
-      if (lineNums.some(n => nums.has(n))) kept.push(line);
-    }
-    return kept.join('\n');
-  }
-
-  /* ---- 标准化/校验（答案可空：noAnswer 标记，等待第二步补答案） ---- */
-  function normalize(qs) {
-    const valid = [];
-    for (const q of qs) {
-      if (!q || typeof q !== 'object') continue;
-      const stem = String(q.stem || '').trim();
-      if (!stem) continue;
-      const answer = String(q.answer ?? '').trim();
-      const no = parseInt(q.no, 10) || null;
-
-      let type = String(q.type || 'single').toLowerCase();
-      if (!['single', 'multi', 'judge', 'fill'].includes(type)) type = 'single';
-
-      if (type === 'fill') {
-        valid.push({ no, type, stem, options: null, answer: answer || null, explanation: String(q.explanation || '').trim() || null });
-        continue;
-      }
-
-      // 选项处理
-      let options = q.options;
-      if (options && !Array.isArray(options) && typeof options === 'object') {
-        const keys = Object.keys(options).sort();
-        if (keys.length >= 2) {
-          const opt = {};
-          for (const k of keys) opt[k.toUpperCase()] = String(options[k]).trim();
-          let ans = answer.toUpperCase().replace(/[^A-Z]/g, '');
-          if (type === 'single' && ans.length > 1) type = 'multi';
-          if (type === 'multi' && ans.length === 1) type = 'single';
-          // 校验答案字母必须在选项键内，防止幻觉答案
-          if (ans && [...ans].some(c => !opt[c])) ans = '';
-          valid.push({ no, type, stem, options: opt, answer: ans || null, explanation: String(q.explanation || '').trim() || null });
-        }
-      } else if (Array.isArray(options) && options.length >= 2) {
-        // 数组形式选项转对象
-        const letters = 'ABCDEFGH';
-        const opt = {};
-        options.forEach((v, i) => opt[letters[i]] = String(v).trim());
-        let ans = answer.toUpperCase().replace(/[^A-Z]/g, '');
-        if (ans && [...ans].some(c => !opt[c])) ans = '';
-        valid.push({ no, type, stem, options: opt, answer: ans || null, explanation: String(q.explanation || '').trim() || null });
-      } else if (type === 'judge') {
-        // 无选项判断题兜底
-        if (answer) {
-          const a = answer.replace(/[^A-Za-z对错正误]/g, '');
-          const isA = /a|对|正/i.test(a);
-          valid.push({ no, type: 'single', stem, options: { 'A': '正确', 'B': '错误' }, answer: isA ? 'A' : 'B', explanation: String(q.explanation || '').trim() || null });
-        } else {
-          valid.push({ no, type: 'single', stem, options: { 'A': '正确', 'B': '错误' }, answer: null, explanation: null });
-        }
-      }
-    }
-    return valid;
-  }
-
   /* ---- 从全文提取文末答案表（启发式） ---- */
   function findAnswerTable(text) {
     const lines = text.split('\n');
@@ -246,247 +127,40 @@ const LLM = (() => {
     return tableLines.join('\n');
   }
 
-  /* ---- 整体解析 · 本地优先：正则解析全部题目，仅疑难题送 AI ----
-     opts.mode: 'smart'（默认，快）| 'ai'（纯AI录入：AI 全文扫描 + 本地切割双路合并，最全但慢） ---- */
-  async function parseDocument(fullText, onProgress, onRetry, opts = {}) {
+  /* ---- 整体解析 · 纯本地：正则切题 + 逐题解析 + 答案表匹配（0 次 API 调用、无需 API Key） ---- */
+  async function parseDocument(fullText, onProgress) {
     const text = Extractor.cleanText(fullText);
     const answerTable = findAnswerTable(text);
 
     // 1) 确定性切题
     const split = Extractor.splitQuestions(text);
 
-    // ===== 纯 AI 模式：AI 全文扫描 + 本地解析 双路合并 =====
-    if (opts.mode === 'ai') {
-      // 本地一路（瞬间完成，免费）——透传节题型/节键
-      const localQs = [];
-      for (const it of split.items) {
-        const q = Extractor.parseOneQuestion(it.no, it.text, it.type, it.key);
-        if (q) localQs.push(q);
-      }
-      if (answerTable && answerTable.trim()) {
-        const { map, mode } = parseAnswerMap(answerTable);
-        if (mode !== 'none') matchAnswers(localQs.filter(q => !q.answer), map, mode);
-      }
+    // 2) 本地正则解析（毫秒级、零费用）——透传节题型/节键
+    const questions = [];
+    for (const it of split.items) {
+      const q = Extractor.parseOneQuestion(it.no, it.text, it.type, it.key);
+      if (q && q.stem) questions.push(q);
+    }
+    for (const q of questions) delete q._local;
 
-      // AI 一路：LLM 分块全文扫描（题目数多、慢）——persist 支持断点续扫
-      const legacy = await parseDocumentLegacy(text, answerTable, onProgress, onRetry, opts.persist);
-      let aiQs = legacy.questions || [];
-      // 续扫：把上次已扫块落的题并入（它们不在本轮 all 里）
-      if (opts.persist && opts.persist.loadHistory) {
-        try {
-          const hist = await opts.persist.loadHistory();
-          if (Array.isArray(hist) && hist.length) aiQs = [...hist, ...aiQs];
-        } catch (e) { /* 忽略 */ }
-      }
-
-      // 合并：key 对齐（同 key 取"有答案"者优先，答案互补）→ 无 key 按题干去重
-      const byKey = new Map();
-      const byStem = new Map();
-      const put = q => {
-        if (q.key != null) {
-          const old = byKey.get(q.key);
-          if (!old) { byKey.set(q.key, q); }
-          else {
-            if (!old.answer && q.answer) { q.explanation = q.explanation || old.explanation; byKey.set(q.key, q); }
-            else if (!old.explanation && q.explanation) old.explanation = q.explanation;
-          }
-        } else {
-          const skey = 'S' + String(q.stem || '').replace(/\s+/g, '').slice(0, 60);
-          if (!byStem.has(skey)) byStem.set(skey, q);
-        }
-      };
-      aiQs.forEach(put);
-      localQs.forEach(put); // 本地后放：题干信息更可靠，同 key 时本地覆盖（若本地有答案）
-
-      let questions = [...byKey.values(), ...byStem.values()].filter(q => q.stem);
-      questions.sort((a, b) => (a.no ?? 9999) - (b.no ?? 9999));
-      for (const q of questions) delete q._local;
-
-      const answered = questions.filter(q => q.answer).length;
-      return {
-        questions, answered, noAnswer: questions.length - answered,
-        mode: 'ai',
-        splitTotal: split.total, aiCount: aiQs.length, localCount: localQs.length,
-        degraded: questions.filter(q => q._degraded).length,
-        missingNos: split.missingNos, dupNos: split.dupNos, problems: split.problems,
-        sections: split.sections,
-        dropped: Math.max(0, split.total - questions.filter(q => q.no != null).length)
-      };
+    // 3) 答案表本地匹配：给解析出来但没带答案的题填答案
+    if (answerTable && answerTable.trim()) {
+      const { map, mode } = parseAnswerMap(answerTable);
+      if (mode !== 'none') matchAnswers(questions.filter(q => !q.answer), map, mode);
     }
 
-    if (split.total >= 5) {
-      // 2) 本地正则解析（毫秒级、零费用）——透传节题型/节键
-      const local = [];
-      const needAI = [];
-      for (const it of split.items) {
-        const q = Extractor.parseOneQuestion(it.no, it.text, it.type, it.key);
-        if (q) local.push(q);
-        else needAI.push(it);
-      }
+    if (onProgress) onProgress(1, 1, questions.length);
 
-      // 3) 答案表本地匹配：给本地解析成功但无答案的题填答案
-      let tableFilled = 0;
-      if (answerTable && answerTable.trim()) {
-        const { map, mode } = parseAnswerMap(answerTable);
-        if (mode !== 'none') {
-          // 只对"整个文件答案都缺"的情况做序列匹配（题号模式按题号）
-          const localNoAns = local.filter(q => !q.answer);
-          tableFilled = matchAnswers(localNoAns, map, mode);
-        }
-      }
-
-      // 4) AI 兜底：仅解析失败的题
-      const cfg = await getConfig();
-      const concurrency = Math.max(1, Math.min(8, parseInt(cfg.concurrency, 10) || 4));
-      const aiQuestions = [];
-      let aiDone = 0;
-
-      if (needAI.length) {
-        if (!cfg.apiKey) {
-          // 没配 Key：跳过 AI 兜底，只返回本地结果（带提示）
-          if (onProgress) onProgress(1, 1, local.length);
-        } else {
-          const BATCH = 6;
-          const batches = [];
-          for (let i = 0; i < needAI.length; i += BATCH) batches.push(needAI.slice(i, i + BATCH));
-
-          const STRUCT_PROMPT = `你是题目结构化转换器。输入是已按题号切割好的题目原文数组（本地正则无法解析的疑难格式），每项含 idx、no、sec（小节题型提示，可能为 null）、raw。把每道 raw 转成结构化 JSON。
-
-【规则】
-1. 每项必须输出，idx/no 原样返回
-2. type：single/multi/judge/fill；sec 非空时 type 必须与 sec 一致（如 sec="judge" 则输出判断题，options 固定 {"A":"正确","B":"错误"}）；sec 为 null 时自行判断
-3. PDF转制的 raw 中选项可能乱序（如 D 出现在 A 前），请按选项字母标记识别并在 options 中按字母正确归位
-4. 若选项确实缺失，不要编造选项；无法解析输出 {"idx":..,"skip":true}
-5. options {"A":"..."}；填空题省略
-6. answer 仅原文明确给出时填；严禁自己解答
-
-【输出】严格 json：{"questions":[{"idx":0,"no":1,"type":"single","stem":"...","options":{...},"answer":"C"}]}`;
-
-          let idx = 0;
-          let lastError = null;
-          async function worker() {
-            while (idx < batches.length) {
-              const my = idx++;
-              const batch = batches[my];
-              const body = batch.map((q, i) => ({ idx: i, no: q.no, sec: q.type || null, raw: q.text }));
-              for (let round = 0; round < 2; round++) {
-                try {
-                  let user = '题目数组：\n' + JSON.stringify(body, null, 1);
-                  const trimmed = sliceAnswerTable(answerTable, body.map(b => b.no + '. x').join('\n'));
-                  if (trimmed && trimmed.trim()) user += ANSWER_TABLE_PROMPT + '\n' + trimmed;
-                  const raw = await chat([
-                    { role: 'system', content: STRUCT_PROMPT },
-                    { role: 'user', content: user }
-                  ], { onRetry: (a, c) => onRetry && onRetry(my, a, c) });
-                  const obj = parseJSON(raw);
-                  const arr = obj?.questions || obj;
-                  if (Array.isArray(arr)) {
-                    for (const item of arr) {
-                      if (item.skip) continue;
-                      const src = batch[item.idx] || batch.find(b => b.no === item.no);
-                      if (!src) continue;
-                      // sec 提示优先（本地切割的节题型更可靠）
-                      const hint = src.type && item.type !== src.type ? src.type : item.type;
-                      const qs = normalize([{ ...item, no: src.no, key: src.key, type: hint }]);
-                      if (qs.length) aiQuestions.push(qs[0]);
-                    }
-                  }
-                  break;
-                } catch (e) {
-                  lastError = e;
-                  if (round === 0) await new Promise(r => setTimeout(r, 8000));
-                }
-              }
-              aiDone++;
-              if (onProgress) onProgress(aiDone, batches.length, local.length + aiQuestions.length);
-            }
-          }
-          await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
-          if (!local.length && !aiQuestions.length && lastError) throw lastError;
-        }
-      } else {
-        if (onProgress) onProgress(1, 1, local.length);
-      }
-
-      // 5) 合并 + 排序（清 _local；去重键=节-题号，修复各节同号覆盖）
-      const all = [...local, ...aiQuestions];
-      for (const q of all) delete q._local;
-      const byKey = new Map();
-      for (const q of all) if (!byKey.has(q.key ?? 'N' + q.no)) byKey.set(q.key ?? 'N' + q.no, q);
-      const questions = split.items.map(it => byKey.get(it.key)).filter(Boolean)
-        .sort((a, b) => (a.key ?? '').localeCompare(b.key ?? '', 'zh', { numeric: true }));
-
-      const answered = questions.filter(q => q.answer).length;
-      return {
-        questions, answered, noAnswer: questions.length - answered,
-        splitTotal: split.total, localCount: local.length, aiCount: aiQuestions.length,
-        degraded: all.filter(q => q._degraded).length,
-        missingNos: split.missingNos, dupNos: split.dupNos, problems: split.problems,
-        sections: split.sections,
-        dropped: split.total - questions.length,
-        mode: 'split'
-      };
-    }
-
-    // fallback：题号不规整的文件（<5 题），走旧分块扫描
-    return await parseDocumentLegacy(text, answerTable, onProgress, onRetry);
-  }
-
-  /* ---- 旧模式：LLM 扫描分块（题号不规整时的兜底；persist 支持断点续扫） ---- */
-  async function parseDocumentLegacy(text, answerTable, onProgress, onRetry, persist) {
-    const chunks = Extractor.chunk(text);
-    const all = [];
-    let done = 0;
-    let failed = 0;
-    let lastError = null;
-
-    const cfg = await getConfig();
-    const concurrency = Math.max(1, Math.min(8, parseInt(cfg.concurrency, 10) || 4));
-    // 断点续扫：跳过已完成块（persist.doneSet），每块完成回调 persist.save 落库
-    let startIdx = 0;
-    if (persist && persist.doneSet) {
-      while (startIdx < chunks.length && persist.doneSet.has(startIdx)) startIdx++;
-    }
-    let idx = startIdx;
-    async function worker() {
-      while (idx < chunks.length) {
-        const my = idx++;
-        for (let round = 0; round < 2; round++) {
-          try {
-            const qs = await parseChunk(chunks[my], answerTable, (attempt, coolSec) => {
-              if (onRetry) onRetry(my, attempt, coolSec);
-            });
-            all.push(...qs);
-            if (persist && persist.save) {
-              try { await persist.save(my, qs); } catch (e) { /* 保存失败不中断扫描 */ }
-            }
-            break;
-          } catch (e) {
-            if (round === 0) {
-              await new Promise(r => setTimeout(r, 8000));
-              continue;
-            }
-            failed++;
-            lastError = e;
-          }
-        }
-        done++;
-        if (onProgress) onProgress(done + startIdx, chunks.length, all.length);
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, chunks.length - startIdx)) }, worker));
-
-    if (!all.length && lastError) throw lastError;
-
-    const seen = new Set();
-    const unique = all.filter(q => {
-      const key = q.no != null ? 'N' + q.no : 'S' + q.stem.replace(/\s+/g, '').slice(0, 60);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    const answered = unique.filter(q => q.answer).length;
-    return { questions: unique, answered, noAnswer: unique.length - answered, failedChunks: failed, totalChunks: chunks.length, mode: 'legacy' };
+    const answered = questions.filter(q => q.answer).length;
+    return {
+      questions, answered, noAnswer: questions.length - answered,
+      splitTotal: split.total, localCount: questions.length, aiCount: 0,
+      degraded: questions.filter(q => q._degraded).length,
+      missingNos: split.missingNos, dupNos: split.dupNos, problems: split.problems,
+      sections: split.sections,
+      dropped: Math.max(0, split.total - questions.length),
+      mode: 'local'
+    };
   }
 
   /* ================= 第二步 · 答案补全 ================= */

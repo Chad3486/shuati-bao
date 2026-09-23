@@ -56,6 +56,8 @@ class QuizSession {
   submit(userAnswer) {
     const q = this.current;
     if (!q || this.answered.has(q.id)) return null;
+    // 缺标准答案：不判分（由用户先在 ✎ 里补答案），交给页面提示
+    if (!q.answer) return { noAnswer: true };
 
     let correct = false;
     if (q.type === 'fill') {
@@ -65,7 +67,8 @@ class QuizSession {
       correct = norm(userAnswer) === norm(q.answer);
     }
 
-    this.answered.set(q.id, { userAnswer, correct, q });
+    // 连答案/解析一起存下来：翻回上一题时才能原样显示（否则只剩 userAnswer/correct）
+    this.answered.set(q.id, { userAnswer, correct, q, answer: q.answer, explanation: q.explanation });
     DB.recordAdd({
       questionId: q.id,
       bankId: q.bankId,
