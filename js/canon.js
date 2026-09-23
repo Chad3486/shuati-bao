@@ -161,6 +161,9 @@ C. IGBT
   /* 无 # 的结构行：章标题（第一章 …）/ 独立题型标题行（单选题）→ 当节处理 */
   const CHAPTER_RE = /^第\s*[一二三四五六七八九十百\d]+\s*[章节篇部]/;
   const TYPE_TITLE_RE = /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/;
+  // 「一、单选题」「二、多选题」这类中文序号题型标题——Word 题库里最常见，
+  // 不认的话该节的题型提示会丢（判断题会被误判成填空题）
+  const TYPE_TITLE_NUM_RE = /^[一二三四五六七八九十]+\s*[、.．]\s*(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/;
   function isChapterLine(s) {
     const t = String(s || '').trim();
     if (!CHAPTER_RE.test(t)) return false;
@@ -195,6 +198,7 @@ C. IGBT
     const questions = [], errors = [], warns = [], sections = [];
     let secIdx = -1, secType = null;
     let cur = null, nextNo = 1, blankBefore = false;
+    let curChapter = null;   // 当前章（单元）——后续节标题带上它，题库才有单元分组
 
     const err = (ln, msg) => { if (errors.length < 300) errors.push({ line: ln, msg }); };
     const warn = (ln, msg) => { if (warns.length < 300) warns.push({ line: ln, msg }); };
@@ -336,26 +340,61 @@ C. IGBT
         continue;
       }
 
-      // ①b 无 # 的结构行：章标题（第一章 …）/ 独立题型标题行（单选题）→ 当节处理
-      if (isChapterLine(s) || TYPE_TITLE_RE.test(s.trim())) {
+      // ①b 无 # 的结构行：章标题（第一章 …）/ 中文序号题型标题（一、单选题）/
+      //     独立题型标题行（单选题）→ 当节处理。章 = 单元，带进节标题里，
+      //     否则「第一章 xxx / 一、单选题」只剩「一、单选题」，导入后就没有单元了
+      if (isChapterLine(s) || TYPE_TITLE_RE.test(s.trim()) || TYPE_TITLE_NUM_RE.test(s.trim())) {
         flush();
-        const title = s.trim();
-        secType = detectSecType(title);
-        sections.push({ secIdx: ++secIdx, title, type: secType });
+        const raw = s.trim();
+        if (isChapterLine(raw)) {
+          curChapter = raw.slice(0, 40);
+          secType = detectSecType(raw);
+          sections.push({ secIdx: ++secIdx, title: curChapter, type: secType });
+        } else {
+          secType = detectSecType(raw);
+          const title = curChapter ? (curChapter + ' · ' + raw).slice(0, 70) : raw;
+          sections.push({ secIdx: ++secIdx, title, type: secType });
+        }
         nextNo = 1;
         continue;
       }
 
-      // ② 题型标记【单选】…（不认识的标记剥掉后按普通行继续）
-      let rest = s, forcedType = null;
-      const tm = s.match(/^\s*[【\[]\s*([^】\]]{1,12}?)\s*[】\]]\s*([\s\S]*)$/);
-      if (tm) {
-        const key = tm[1].replace(/\s/g, '');
-        if (TYPE_ALIAS[key]) { forcedType = TYPE_ALIAS[key]; rest = tm[2]; }
-        else if (/^(参考答案|正确答案|答案)$/.test(key)) { if (cur) cur.answerRaw = tm[2].trim(); else warn(ln, '答案出现在题目之外，已忽略'); continue; }
-        else if (/^(答案解析|解析|解释|说明)$/.test(key)) { if (cur) cur.expLines.push(tm[2].trim()); continue; }
-        else { rest = tm[2]; warn(ln, `未识别的标记「【${key}】」，已忽略标记`); }
+      // ② 行内标记【…】：题型 / 答案 / 解析——一行里可能连写多个
+      //    （Word 里常见「【答案】C  【解析】主磁通…」）。旧版只认行首那一个，
+      //    于是「【解析】…」整段留在题干/选项里；更糟的是答案正文里的公式字母
+      //    （如「U≈E=4.44fNΦ」里的 E、F）会被当成答案字母，答出「AEF」这种假答案
+      let rest = s, forcedType = null, markerOnly = false;
+      {
+        const MARK_RE = /[【\[]\s*([^】\]]{1,12}?)\s*[】\]]/g;
+        const marks = [];
+        let mk;
+        while ((mk = MARK_RE.exec(s)) !== null) {
+          marks.push({ key: mk[1].replace(/\s/g, ''), start: mk.index, bodyStart: MARK_RE.lastIndex });
+          if (MARK_RE.lastIndex === mk.index) MARK_RE.lastIndex++;   // 防御：零宽匹配死循环
+        }
+        if (marks.length) {
+          rest = s.slice(0, marks[0].start).trim();                  // 第一个标记之前的文字
+          for (let k = 0; k < marks.length; k++) {
+            const stop = k + 1 < marks.length ? marks[k + 1].start : s.length;
+            const body = s.slice(marks[k].bodyStart, stop).trim();
+            const key = marks[k].key;
+            if (TYPE_ALIAS[key]) {
+              // 首个标记是题型 → 其后的正文继续按题干/选项处理
+              if (k === 0) { forcedType = TYPE_ALIAS[key]; rest = (rest ? rest + ' ' : '') + body; }
+            } else if (/^(参考答案|正确答案|答案)$/.test(key)) {
+              if (cur) { if (cur.answerRaw == null) cur.answerRaw = body; }
+              else warn(ln, '答案出现在题目之外，已忽略');
+            } else if (/^(答案解析|解析|解释|说明)$/.test(key)) {
+              if (cur) cur.expLines.push(body); else warn(ln, '解析出现在题目之外，已忽略');
+            } else {
+              warn(ln, `未识别的标记「【${key}】」，已忽略标记`);
+              rest = (rest ? rest + ' ' : '') + body;
+            }
+          }
+          markerOnly = !rest;   // 整行只有答案/解析标记 → 不是题干行
+        }
       }
+      if (markerOnly) continue;
 
       // ③ 题号行（「1. 题干」/「1、题干」/「第1题 题干」；「2.5kV」这类小数点不算题号）
       const qm = rest.match(/^\s*(?:第\s*)?(\d{1,4})\s*(?:题)?\s*[.、．)）](?!\d)\s*([\s\S]*)$/)
@@ -461,6 +500,7 @@ C. IGBT
       stats: {
         total: questions.length, byType, missing,
         answered: questions.length - missing,
+        explained: questions.filter(q => q.explanation).length,
         errors: errors.length, warns: warns.length, sections: sections.length
       }
     };
@@ -547,14 +587,17 @@ C. IGBT
     const marked = CANON_MARK_RE.test(src);
     if (marked || CANON_ANS_RE.test(src)) {
       const pre = parse(src);
-      const ok = pre.stats.total > 0 && pre.stats.total >= qs.length &&
-        (marked || (pre.errors.length === 0 && pre.stats.answered > 0));
+      // 带题型标记 = 明确是范式文本 → 一律原样保留（哪怕有格式错误，也交给「解析预览」
+      // 逐条报错，绝不二次拆改用户自己写的文本）
+      const ok = marked || (pre.stats.total > 0 && pre.stats.total >= qs.length &&
+        pre.errors.length === 0 && pre.stats.answered > 0);
       if (ok) {
         return {
           text: src + '\n',
           stats: {
             total: pre.stats.total, byType: pre.stats.byType, missing: pre.stats.missing,
-            answered: pre.stats.answered, filled: 0, explained: 0
+            answered: pre.stats.answered, explained: pre.stats.explained, filled: 0,
+            sections: pre.stats.sections
           },
           problems: [], passthrough: true,
           errors: pre.errors, warns: pre.warns
@@ -563,13 +606,13 @@ C. IGBT
     }
 
     // 文末答案表 / 逐行答案条目：按 章/节/题号 本地匹配（无 AI）
-    let filled = 0, explained = 0;
+    let filled = 0;
     if (typeof LLM !== 'undefined' && qs.length) {
       try {
         const parsed = LLM.parseAnswerDocument(clean);
         if (parsed.entries.length || parsed.ordered.length) {
           const r = LLM.matchAnswersStructured(qs, split.sections, parsed);
-          filled = r.filled; explained = r.explained;
+          filled = r.filled;
         }
       } catch (e) { /* 答案表匹配失败不影响转换 */ }
     }
@@ -577,9 +620,15 @@ C. IGBT
     const missing = qs.filter(q => !q.answer).length;
     const byType = { single: 0, multi: 0, judge: 0, fill: 0 };
     for (const q of qs) byType[q.type]++;
+    // explained = 最终带解析的题数（内嵌「解析：…」「【解析】…」与答案表里的解析都算），
+    // 让界面能明确显示「解析 402」，而不是永远 0（用户会以为解析丢了）
+    const explainedCnt = qs.filter(q => q.explanation).length;
     return {
       text: text2,
-      stats: { total: qs.length, byType, missing, answered: qs.length - missing, filled, explained },
+      stats: {
+        total: qs.length, byType, missing, answered: qs.length - missing,
+        filled, explained: explainedCnt, sections: split.sections.length
+      },
       problems: split.problems || []
     };
   }

@@ -275,6 +275,8 @@ const Extractor = (() => {
     let secIdx = 0;        // 节序号（每节自增）
     let curType = null;    // 当前节题型提示
     let lastQNo = 0;       // 上一题号（检测回到1）
+    let curChapter = null; // 当前章（单元）标题，如「第一章 磁路及变压器」
+    let chapPart = 0;      // 章内隐式分组计数
     for (const line of lines) {
       const trimmed = line.trim();
       if (ansHeadRe.test(trimmed)) {
@@ -283,14 +285,20 @@ const Extractor = (() => {
         continue;
       }
       if (inAnswerZone) continue;
-      // S1：题型小节 / 章标题
+      // S1：题型小节 / 章标题。章 = 单元，必须带进节标题里——
+      //     否则「第一章 xxx / 一、单选题」只剩「一、单选题」，
+      //     导入后题库就没有单元了（多章同名小节还会互相混淆）
       if (isSecLine(trimmed) || isChapter(trimmed)) {
         const t = secType(trimmed);
-        if (t || isChapter(trimmed)) {
+        const isChap = isChapter(trimmed);
+        if (t || isChap) {
           if (cur) { items.push(cur); cur = null; }
           secIdx++;
           curType = t;
-          sections.push({ secIdx, title: trimmed.slice(0, 30), type: t });
+          if (isChap) { curChapter = trimmed.slice(0, 30); chapPart = 0; }
+          const title = isChap ? curChapter
+            : (curChapter ? (curChapter + ' · ' + trimmed).slice(0, 60) : trimmed.slice(0, 30));
+          sections.push({ secIdx, title, type: t });
           lastQNo = 0; // 显式节标题后重置题号，防止下一题 no=1 误触发隐式开节
           continue;
         }
@@ -307,7 +315,8 @@ const Extractor = (() => {
         if (no === 1 && lastQNo > 1) {
           secIdx++;
           curType = null; // 隐式节无类型提示
-          sections.push({ secIdx, title: null, type: null });
+          chapPart++;
+          sections.push({ secIdx, title: curChapter ? (curChapter + ' · 第' + chapPart + '组') : null, type: null });
         }
         lastQNo = no;
         if (cur) items.push(cur);
@@ -411,9 +420,13 @@ const Extractor = (() => {
       }
     }
 
-    // 1b) 解析提取：内嵌式「答案：D    解析：…」或「（解析：…）」，并剔除避免污染选项
+    // 1b) 解析提取：内嵌式「答案：D    解析：…」「（解析：…）」或 Word 里最常见的
+    //     「【解析】…」（无冒号）——必须在这里剔除，否则整段解析会黏进最后一个选项，
+    //     既丢了讲解、又把选项内容污染掉
     let explanation = null;
     const expRes = [
+      // 【解析】… / 【答案解析】…（无冒号；到下一个【标记或文末为止）
+      /[【\[]\s*(?:答案解析|解析|解释|说明)\s*[】\]]\s*[:：]?\s*([\s\S]*?)\s*(?=[【\[]|$)/,
       /[（(]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[)）]/,
       /(?:答案解析|解析|解释|说明)\s*[:：]\s*([\s\S]+)$/,
     ];

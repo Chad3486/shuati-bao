@@ -370,13 +370,13 @@ body {
   background: var(--card); color: var(--text); resize: vertical;
 }
 .canon-area:focus { outline: none; border-color: var(--primary); }
-.canon-stats { display: flex; gap: 8px; margin-bottom: 10px; }
+.canon-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .canon-stat {
-  flex: 1; min-width: 0; text-align: center; background: var(--surface-2);
+  flex: 1 1 0; min-width: 58px; text-align: center; background: var(--surface-2);
   border-radius: var(--radius-sm); padding: 10px 4px;
 }
 .canon-stat b { display: block; font-size: clamp(17px, 5.2vw, 21px); }
-.canon-stat span { font-size: 11.5px; color: var(--muted); }
+.canon-stat span { font-size: 11px; color: var(--muted); }
 .canon-issues {
   margin-top: 12px; background: var(--surface-2);
   border-radius: var(--radius-sm); padding: 10px 12px;

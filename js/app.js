@@ -360,7 +360,8 @@ const App = (() => {
       importStatus.textContent = '';
     };
 
-    // 载入范式文件（.txt/.md/.docx）
+    // 载入文件（.txt/.md/.docx/.pdf）：统一走转换器——
+    // 已经是范式 → 原样保留；老格式文档 → 自动转成范式（避免把原始 Word 直接当范式解析出乱码）
     const fileInput = document.getElementById('canon-file');
     document.getElementById('canon-pick').onclick = () => fileInput.click();
     fileInput.onchange = async () => {
@@ -369,9 +370,15 @@ const App = (() => {
       if (!f) return;
       fileStatus.textContent = `载入 ${f.name}…`;
       try {
-        ta.value = await readAnyText(f);
+        const raw = await readAnyText(f);
+        const res = Canon.convert(raw);
+        ta.value = res.text;
         invalidate();
-        fileStatus.textContent = `✓ 已载入 ${f.name}（${ta.value.length} 字符），点「解析预览」`;
+        const s = res.stats;
+        fileStatus.textContent = res.passthrough
+          ? `✓ ${f.name} 本来就是范式，已原样载入（${s.total} 题）`
+          : `✓ 已载入并自动转换：${f.name} · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0} · 缺答案 ${s.missing}`;
+        runCheck();
       } catch (e) {
         fileStatus.textContent = '⚠ ' + e.message.slice(0, 100);
       }
@@ -393,7 +400,7 @@ const App = (() => {
         const s = res.stats;
         fileStatus.textContent = res.passthrough
           ? `✓ 这份文档本来就是范式，已原样保留（${s.total} 题）`
-          : `✓ 转换完成：${s.total} 题 · 答案 ${s.answered}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
+          : `✓ 转换完成：${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
             + (res.problems?.length ? `；⚠ ${res.problems.slice(0, 3).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? '缺号' + p.missingNos.slice(0, 8).join('、') : ''}`).join('；')}` : '');
         runCheck();
       } catch (e) {
@@ -417,6 +424,7 @@ const App = (() => {
         <div class="canon-stats">
           <div class="canon-stat"><b>${s.total}</b><span>题目</span></div>
           <div class="canon-stat"><b style="color:var(--ok)">${s.answered}</b><span>有答案</span></div>
+          <div class="canon-stat"><b style="color:${s.explained ? 'var(--ok)' : 'var(--muted, #888)'}">${s.explained || 0}</b><span>带解析</span></div>
           <div class="canon-stat"><b style="color:${s.missing ? 'var(--bad)' : 'var(--ok)'}">${s.missing}</b><span>缺答案</span></div>
           <div class="canon-stat"><b style="color:${s.errors ? 'var(--bad)' : 'var(--ok)'}">${s.errors}</b><span>格式错误</span></div>
         </div>
@@ -769,7 +777,7 @@ const App = (() => {
           ${groups.map((g, gi) => `
           <div class="sec-group">
             <div class="sec-head">
-              <b>${escapeHtml(g.title)}${g.type ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
+              <b>${escapeHtml(g.title)}${g.type && !String(g.title).includes(TYPE_NAME[g.type] || '\u0000') ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
               <span class="muted small">${g.idxs.length} 题</span>
               <button class="btn ghost" style="padding:2px 10px;font-size:12px" data-sec="${gi}">本节全选</button>
             </div>
