@@ -114,9 +114,15 @@ const Extractor = (() => {
   }
 
   /* ---- 噪声行检测：统计出现≥3次的短行（页眉页脚）+ 关键词兜底 ----
-     排除：选项行（A. 开头）与数字题号行 ---- */
+     排除：选项行（A. 开头）、数字题号行、结构性行（章/节/题型标题——
+     多章节文件里「一、单选题」每章重复出现是正常结构，绝不能当噪声删） ---- */
   function detectNoiseLines(lines) {
     const noise = new Set();
+    // 结构性行：章标题 / 中文序号节标题 / 独立题型标题行
+    const isStructural = t =>
+      /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
+      /^[一二三四五六七八九十]+\s*[、.．]/.test(t) ||
+      /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(t);
     // 统计重复短行
     const counts = new Map();
     for (const line of lines) {
@@ -124,9 +130,10 @@ const Extractor = (() => {
       if (!t || t.length > 40) continue;
       if (/^[A-H]\s*[.、．:：)）]/.test(t)) continue; // 选项行
       if (/^\s*\d{1,3}\s*[.、．)）]/.test(t)) continue; // 数字题号行
+      if (isStructural(t)) continue; // 章节题型结构行
       counts.set(t, (counts.get(t) || 0) + 1);
     }
-    for (const [t, c] of counts) if (c >= 3) noise.add(t);
+    for (const [t, c] of counts) if (c >= 3 && !isStructural(t)) noise.add(t);
     // 关键词兜底（即使只出现一次也是页眉页脚）
     const kw = /国家电网|统一服务热线|微信公众号|小程序|网校地址|hzdwpx|第\s*\d+\s*页/;
     for (const line of lines) {
@@ -364,11 +371,52 @@ const Extractor = (() => {
       if (tm) { answer = tm[1]; t = t.replace(tm[0], '（　）'); }
     }
 
-    // 2) 选项提取：集合校验（允许乱序/缺1个中间字母）
+    // 2) 选项提取
     const lines = t.split('\n');
     const marks = [];
     let flat = '';
     for (const line of lines) { flat += line + '\n'; }
+    // 2a) 行首选项标记（选项独立成行时最可靠；题干里的「A、B、C三相」等行内字样不会误入）
+    const lineMarks = [];
+    const lmRe = /(?:^|\n)[ \t　]*([A-H])\s*[.、．:：)）]\s*/g;
+    let lm;
+    while ((lm = lmRe.exec(flat)) !== null) {
+      const letterPos = lm.index + lm[0].indexOf(lm[1]);
+      lineMarks.push({ letter: lm[1], start: letterPos, markLen: lm.index + lm[0].length - letterPos });
+    }
+    // 剔除内容含「空答案括号」的假标记：如题干行「A、B两系统互联……（ ）。」开头的 A、
+    const emptyBracket = /（\s*）|\(\s*\)|（[\s　]+）/;
+    const keptLine = [];
+    for (let i = 0; i < lineMarks.length; i++) {
+      const from = lineMarks[i].start + lineMarks[i].markLen;
+      const to = i + 1 < lineMarks.length ? lineMarks[i + 1].start : flat.length;
+      const content = flat.slice(from, to);
+      if (emptyBracket.test(content) && content.replace(/\s/g, '').length > 10) continue; // 是题干不是选项
+      keptLine.push(lineMarks[i]);
+    }
+    const lineSet = [...new Set(keptLine.map(x => x.letter))].sort();
+    let lineGaps = 0;
+    for (let i = 1; i < lineSet.length; i++) lineGaps += lineSet[i].charCodeAt(0) - lineSet[i - 1].charCodeAt(0) - 1;
+    if (lineSet.length >= 2 && lineSet[0] === 'A' && lineGaps <= 1) {
+      const stem = flat.slice(0, keptLine[0].start).trim();
+      const options = {};
+      const seenL2 = new Set();
+      const uniq2 = keptLine.filter(mk => { if (seenL2.has(mk.letter)) return false; seenL2.add(mk.letter); return true; });
+      uniq2.forEach((mk, i) => {
+        const from = mk.start + mk.markLen;
+        const to = i + 1 < uniq2.length ? uniq2[i + 1].start : flat.length;
+        options[mk.letter] = flat.slice(from, to).replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+      });
+      if (Object.values(options).every(v => v.length > 0) && stem.length >= 5) {
+        let type = 'single';
+        if (hintType === 'multi' || (answer && answer.length > 1)) type = 'multi';
+        const vals = Object.values(options).map(v => v.replace(/\s/g, ''));
+        if (lineSet.length === 2 && /正确|对|√/.test(vals[0]) && /错误|错|×/.test(vals[1])) type = 'single';
+        if (answer && [...answer].some(c => !options[c])) answer = null;
+        return { no, key: hintKey, type, stem, options, answer: answer || null, explanation: null, _local: true, _degraded: lineGaps > 0 || keptLine.length !== uniq2.length || undefined };
+      }
+    }
+    // 2b) 回退：行内标记（兼容「正确的是？A.xx B.yy」式行内选项）
     const optMarkRe = /([A-H])\s*[.、．:：)）]\s*/g;
     let m2;
     while ((m2 = optMarkRe.exec(flat)) !== null) {

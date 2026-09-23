@@ -193,7 +193,7 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">第 1 步 · 选择文件</div>
-        <p class="muted">支持多选 PDF、DOCX。文件中的题目和答案将被解析为结构化题库（选择题/填空题/判断题）。</p>
+        <p class="muted">支持多选 PDF、DOCX。题目文件可与<b>配套答案文件</b>一起选中：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 精确匹配填入答案与解析。</p>
         <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用（扫描版 PDF 会自动 OCR）。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc" style="display:none">
@@ -234,10 +234,11 @@ const App = (() => {
       rows.set(i, row);
     });
 
+    // 第 1 步 · 全部提取文本
+    const texts = new Map();
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
-      const row = rows.get(i);
-      const stateEl = row.querySelector('.file-state');
+      const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
       setState('提取文本…');
       try {
@@ -245,13 +246,49 @@ const App = (() => {
         const text = Extractor.cleanText(raw);
         if (text.replace(/\s/g, '').length < 50) {
           setState('失败');
-          row.querySelector('.file-state').innerHTML = '⚠ 无文本';
+          stateEl.innerHTML = '⚠ 无文本';
           continue;
         }
-        setState('本地解析…');
-        bar.style.width = '5%';
-        const t0 = Date.now();
+        texts.set(i, text);
+      } catch (e) {
+        console.error(e);
+        setState('失败');
+        stateEl.innerHTML = '⚠ 失败';
+        toast(files[i].name + '：' + e.message.slice(0, 80));
+      }
+    }
 
+    // 第 2 步 · 区分题目文件 / 配套答案文件（文件名含「答案」或答案行占比≥30%）
+    const qFiles = [], aFiles = [];
+    files.forEach((f, i) => {
+      const text = texts.get(i);
+      if (text == null) return;
+      const isAns = /答案|answer/i.test(f.name) || LLM.answerLineRatio(text) >= 0.3;
+      rows.get(i).querySelector('.file-state').textContent = isAns ? '答案文件' : '题目文件';
+      (isAns ? aFiles : qFiles).push({ f, i, text });
+    });
+    if (!qFiles.length) {
+      statusEl.textContent = aFiles.length
+        ? '⚠ 只识别到答案文件，请把题目文件和答案文件一起选中导入'
+        : '⚠ 没有可解析的文件';
+      bar.style.width = '100%';
+      return;
+    }
+
+    // 第 3 步 · 合并解析所有答案文件
+    let parsedAnswers = null;
+    if (aFiles.length) {
+      parsedAnswers = LLM.parseAnswerDocument(aFiles.map(x => x.text).join('\n'));
+    }
+
+    // 第 4 步 · 逐个解析题目文件 + 配套答案填入
+    for (const { f, i, text } of qFiles) {
+      const stateEl = rows.get(i).querySelector('.file-state');
+      const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
+      setState('本地解析…');
+      bar.style.width = '5%';
+      const t0 = Date.now();
+      try {
         const res = await LLM.parseDocument(text, (done, total, got) => {
           const elapsed = Math.round((Date.now() - t0) / 1000);
           statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
@@ -268,6 +305,15 @@ const App = (() => {
           setState(`⚠ ${degradedCount} 题均为残缺题（选项缺字母），已全部跳过`);
           continue;
         }
+
+        // 配套答案：按 章/节/题号 精确填入（含解析）
+        let filled = 0, explained = 0;
+        if (parsedAnswers) {
+          const r = LLM.matchAnswersStructured(res.questions, res.sections, parsedAnswers);
+          filled = r.filled; explained = r.explained;
+        }
+        const noAnswer = res.questions.filter(q => !q.answer).length;
+
         const bank = {
           id: DB.uid(),
           name: f.name.replace(/\.(pdf|docx|doc)$/i, ''),
@@ -279,9 +325,12 @@ const App = (() => {
         res.questions.forEach(q => q.bankId = bank.id);
         await DB.questionAddMany(res.questions);
         await DB.bankAdd(bank);
-        if (res.noAnswer > 0) {
-          setState(`✓ ${res.questions.length} 题（${res.noAnswer} 题缺答案）`);
-          toast(`提取 ${res.questions.length} 题，其中 ${res.noAnswer} 题缺答案，可稍后补`);
+        if (filled) {
+          setState(`✓ ${res.questions.length} 题 · 答案填入 ${filled}`);
+          toast(`提取 ${res.questions.length} 题，配套答案填入 ${filled} 个${explained ? `（含 ${explained} 条解析）` : ''}`);
+        } else if (noAnswer > 0) {
+          setState(`✓ ${res.questions.length} 题（${noAnswer} 题缺答案）`);
+          toast(`提取 ${res.questions.length} 题，答案未匹配上，可稍后「补答案」`);
         } else {
           setState(`✓ ${res.questions.length} 题`);
         }
@@ -291,11 +340,12 @@ const App = (() => {
           : '';
         const warn = [];
         if (degradedCount > 0) warn.push(`自动跳过 ${degradedCount} 道残缺题`);
+        if (aFiles.length && filled === 0) warn.push('答案文件未匹配到任何题目（章节/题号对不上）');
         statusEl.textContent = `⚡ 全部 ${res.localCount} 题本地解析（0 次 API 调用）` + (warn.length ? '；' + warn.join('；') : '') + problemsText;
       } catch (e) {
         console.error(e);
         setState('失败');
-        row.querySelector('.file-state').innerHTML = '⚠ 失败';
+        stateEl.innerHTML = '⚠ 失败';
         toast(f.name + '：' + e.message.slice(0, 80));
       }
     }
@@ -512,9 +562,9 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">方式一 · 上传答案文件（推荐，免费）</div>
-        <p class="muted small">支持答案表 PDF/Word/图片，格式如「1.C 2.A 3.B」或「题号：1 答案：C」，也支持纯序列「A B C D」。</p>
-        <button class="btn primary big" id="ans-file-btn">选择答案文件</button>
-        <input type="file" id="ans-file-input" accept=".pdf,.docx,.doc,.txt" style="display:none">
+        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入。</p>
+        <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
+        <input type="file" id="ans-file-input" multiple accept=".pdf,.docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
       </div>
 
@@ -539,29 +589,31 @@ const App = (() => {
     const fileStatus = document.getElementById('ans-file-status');
     const aiStatus = document.getElementById('ans-ai-status');
 
-    // 方式一：答案文件匹配
+    // 方式一：答案文件匹配（结构化：章/节/题号精确对位，解析一并填入）
     const input = document.getElementById('ans-file-input');
     document.getElementById('ans-file-btn').onclick = () => input.click();
     input.onchange = async () => {
-      const f = input.files[0];
-      if (!f) return;
+      if (!input.files.length) return;
       fileStatus.textContent = '提取答案文本…';
       try {
-        const raw = await Extractor.extract(f);
-        const text = Extractor.cleanText(raw);
-        const { map, mode } = LLM.parseAnswerMap(text);
-        if (mode === 'none') {
-          fileStatus.textContent = '⚠ 未识别出答案（需「题号+答案」或连续的 A-D 序列）';
+        const texts = [];
+        for (const f of [...input.files]) {
+          texts.push(Extractor.cleanText(await Extractor.extract(f)));
+        }
+        const parsed = LLM.parseAnswerDocument(texts.join('\n'));
+        const total = parsed.entries.length || parsed.ordered.length;
+        if (!total) {
+          fileStatus.textContent = '⚠ 未识别出答案（支持「2、答案：A（解析：…）」「1.C 2.A」「题号：1 答案：C」、纯序列「A B C D」）';
           return;
         }
-        fileStatus.textContent = `识别到 ${map.size} 个答案（${mode === 'numbered' ? '按题号' : '按顺序'}），匹配中…`;
-        const filled = LLM.matchAnswers(noAns, map, mode);
+        fileStatus.textContent = `识别到 ${total} 个答案，按 章/节/题号 匹配中…`;
+        const { filled, explained } = LLM.matchAnswersStructured(noAns, bank.sections, parsed);
         if (!filled) {
-          fileStatus.textContent = '⚠ 未能匹配到缺答案题目（题号对不上？）';
+          fileStatus.textContent = '⚠ 未能匹配到缺答案题目（章节/题号对不上？）';
           return;
         }
         for (const q of noAns) if (q.answer) await DB.questionPut(q);
-        fileStatus.textContent = `✓ 成功填入 ${filled} 个答案`;
+        fileStatus.textContent = `✓ 成功填入 ${filled} 个答案${explained ? `（含 ${explained} 条解析）` : ''}`;
         toast(`已补 ${filled} 个答案`);
         render();
       } catch (e) {
