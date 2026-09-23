@@ -376,7 +376,7 @@ const App = (() => {
         invalidate();
         const s = res.stats;
         fileStatus.textContent = res.passthrough
-          ? `✓ ${f.name} 本来就是范式，已原样载入（${s.total} 题）`
+          ? `✓ ${f.name} 已是范式格式，原样载入 · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}`
           : `✓ 已载入并自动转换：${f.name} · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0} · 缺答案 ${s.missing}`;
         runCheck();
       } catch (e) {
@@ -399,8 +399,8 @@ const App = (() => {
         invalidate();
         const s = res.stats;
         fileStatus.textContent = res.passthrough
-          ? `✓ 这份文档本来就是范式，已原样保留（${s.total} 题）`
-          : `✓ 转换完成：${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
+          ? `✓ ${f.name} 已是范式格式，原样保留 · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}`
+          : `✓ 转换完成：${f.name} · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
             + (res.problems?.length ? `；⚠ ${res.problems.slice(0, 3).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? '缺号' + p.missingNos.slice(0, 8).join('、') : ''}`).join('；')}` : '');
         runCheck();
       } catch (e) {

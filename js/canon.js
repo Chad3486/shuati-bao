@@ -330,10 +330,21 @@ C. IGBT
       blankBefore = false;
 
       // ① 结构行：# 章 / ## 节
+      //    章 = 单元。写 `# 第一章 xxx` + `## 一、单选题` 时，节标题自动带上章，
+      //    题库里才有单元分组（否则只剩「一、单选题」，多章同名小节还会混在一起）
       let m = s.match(/^\s*(#{1,6})\s*(.+?)\s*$/);
       if (m) {
         flush();
-        const title = m[2].trim();
+        const lvl = m[1].length;
+        const raw = m[2].trim();
+        // 一级标题：像「第一章 …」的才算单元；否则当文档标题（如题库名），不参与单元前缀
+        if (isChapterLine(raw)) curChapter = raw.slice(0, 40);
+        else if (lvl === 1) curChapter = null;
+        let title = raw;
+        if (lvl > 1 && curChapter && !raw.includes(curChapter)
+            && !/^第\s*[一二三四五六七八九十\d]+\s*[章节]/.test(raw)) {
+          title = (curChapter + ' · ' + raw).slice(0, 70);
+        }
         secType = detectSecType(title);
         sections.push({ secIdx: ++secIdx, title, type: secType });
         nextNo = 1;
@@ -520,12 +531,24 @@ C. IGBT
     const secMap = new Map((sections || []).map(s => [s.secIdx, s.title]));
     const out = [];
     if (opts.title) out.push('# ' + opts.title, '');
-    let lastSec = null;
+    let lastSec = null, lastChap = null;
     for (const q of list) {
       const si = secIdxOf(q);
       if (si !== lastSec) {
         const t = secMap.get(si);
-        if (t) out.push('## ' + t, '');
+        if (t) {
+          // 「第一章 磁路及变压器 · 一、单选题」→ 章单独写一行，节标题回到「一、单选题」。
+          // 解析时会把章再拼回节标题（题库里就有单元了），文本也更接近 Word 大纲的样子
+          const mm = t.match(/^(第\s*[一二三四五六七八九十\d]+\s*章[^·]*?)\s*·\s*(.+)$/);
+          if (mm) {
+            const chap = mm[1].trim();
+            if (chap !== lastChap) { out.push('# ' + chap, ''); lastChap = chap; }
+            out.push('## ' + mm[2].trim(), '');
+          } else {
+            out.push('## ' + t, '');
+            lastChap = null;
+          }
+        }
         lastSec = si;
       }
       const head = `【${TYPE_LABEL[q.type] || '填空'}】${q.no != null ? q.no + '. ' : ''}${cleanStem(q.stem)}`;
