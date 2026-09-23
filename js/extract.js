@@ -158,6 +158,10 @@ const Extractor = (() => {
     const isSec = s => /^\s*[一二三四五六七八九十][、.]/.test(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
     const isAnsHead = s => /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案)/.test(s);
+    // 独立题型标题行（无中文序号，如「单选题」单独成行）——是结构行，不能并进上一行
+    const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
+    // 答案行（「答案：D    解析：…」）——必须独立，并入选项行会污染选项内容
+    const isAnsLine = s => /^答案\s*[:：]/.test(s);
     for (const line of lines) {
       const t = line.trim();
       if (!t) { pendingBlank = true; continue; }
@@ -165,7 +169,7 @@ const Extractor = (() => {
         const prev = merged[merged.length - 1];
         const prevEnds = /[\u4e00-\u9fffA-Za-z0-9，。；：、？！）】》""''%,:;?)]$/.test(prev);
         const nextStarts = /^[\u4e00-\u9fff]/.test(t);
-        if (prevEnds && nextStarts && !isNewQ(t) && !isOpt(t) && !isSec(t) && !isChapter(t) && !isAnsHead(t)) {
+        if (prevEnds && nextStarts && !isNewQ(t) && !isOpt(t) && !isSec(t) && !isChapter(t) && !isAnsHead(t) && !isTypeTitle(t) && !isAnsLine(t)) {
           merged[merged.length - 1] = prev + t; // 合并时丢弃中间空行
           pendingBlank = false;
           continue;
@@ -230,7 +234,8 @@ const Extractor = (() => {
       if (/填空/.test(s)) return 'fill';
       return null;
     };
-    const isSecLine = s => /^[一二三四五六七八九十]\s*[、.．]\s*\S/.test(s) && !/^\s*\d/.test(s);
+    const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
+    const isSecLine = s => (/^[一二三四五六七八九十]\s*[、.．]\s*\S/.test(s) && !/^\s*\d/.test(s)) || isTypeTitle(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
 
     // 预扫描
@@ -241,6 +246,10 @@ const Extractor = (() => {
     const hasMainStyle = mainStyleCount >= 5;
 
     function isAnswerLine(line) {
+      const s = line.trim();
+      // 「答案：B    解析：…」是单题答案行，绝非答案表行（答案表行是「1.C 2.A 3.B」式）。
+      // 否则计算题答案里的「6.75A、3.9A」等数字+字母会被误计成答案对而整行丢弃。
+      if (/^(?:答案|答)\s*[:：]/.test(s) || /(?:答案解析|解析|解释|说明)\s*[:：]/.test(s)) return false;
       let c = 0; const re = new RegExp(ansPairRe.source, 'g');
       while (re.exec(line) !== null) c++;
       return c >= 3;
@@ -351,24 +360,60 @@ const Extractor = (() => {
     let t = text;
     let answer = null;
 
-    // 1) 显式答案标注
+    // 0) 答案字母串归一化：兼容「ABCD」「A、B、C、D」「A,B」「A B」等写法
+    const normAns = s => {
+      const v = String(s || '').toUpperCase().replace(/[^A-H]/g, '');
+      return v || null;
+    };
+    const AT = '[A-H](?:\\s*[、,，／/]?\\s*[A-H]){0,7}';
+
+    // 1) 显式答案标注（含顿号/逗号分隔的多选答案）
     const ansRes = [
-      /[（(]\s*答案\s*[:：]?\s*([A-H]{1,4})\s*[)）]/,
-      /【\s*答案\s*】?\s*[:：]?\s*([A-H]{1,4})/,
-      /(?<![A-Za-z])答案\s*[:：]\s*([A-H]{1,4})(?![A-Za-z])/,
-      /(?<![A-Za-z])答\s*[:：]\s*([A-H]{1,4})(?![A-Za-z])/,
+      new RegExp('[（(]\\s*答案\\s*[:：]?\\s*(' + AT + ')\\s*[)）]'),
+      new RegExp('【\\s*答案\\s*】?\\s*[:：]?\\s*(' + AT + ')'),
+      new RegExp('(?<![A-Za-z])答案\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
+      new RegExp('(?<![A-Za-z])答\\s*[:：]\\s*(' + AT + ')(?![A-Za-z])'),
     ];
     for (const re of ansRes) {
       const m = t.match(re);
-      if (m) { answer = m[1]; t = t.replace(m[0], ''); break; }
+      if (m) { answer = normAns(m[1]); t = t.replace(m[0], ' '); break; }
     }
     if (!answer) {
       const jm = t.match(/[（(]\s*答案\s*[:：]?\s*(对|错|正确|错误)\s*[)）]/) || t.match(/答案\s*[:：]\s*(对|错|正确|错误)/);
-      if (jm) { answer = /对|正确/.test(jm[1]) ? 'A' : 'B'; t = t.replace(jm[0], ''); }
+      if (jm) { answer = /对|正确/.test(jm[1]) ? 'A' : 'B'; t = t.replace(jm[0], ' '); }
     }
     if (!answer) {
       const tm = t.match(/[（(]\s*([A-H])\s*[)）](?=\s*$|\n)/);
       if (tm) { answer = tm[1]; t = t.replace(tm[0], '（　）'); }
+    }
+
+    // 1a) 兜底：答案段带分组标签（如「单端：A、C；双端：B、D、E」）——仅当整段严格是
+    //     「短标签: + 字母 + 分隔符」形状时才采纳，避免把文本型答案误当选项（宁缺毋错）
+    if (!answer) {
+      const seg = t.match(/(?<![A-Za-z])答案\s*[:：]\s*([^\n]{1,80}?)(?=\s*(?:答案解析|解析|解释|说明)\s*[:：]|$)/);
+      if (seg) {
+        const body = seg[1].trim();
+        const shape = /^(?:[\u4e00-\u9fff]{1,6}\s*[:：]\s*)?[A-H](?:\s*[、,，；;／/\s]\s*(?:[\u4e00-\u9fff]{1,6}\s*[:：]\s*)?[A-H])*\s*[。.；;]?$/;
+        if (shape.test(body)) {
+          const letters = [...new Set(body.toUpperCase().replace(/[^A-H]/g, ''))].sort();
+          if (letters.length) answer = letters.join('');
+        }
+      }
+    }
+
+    // 1b) 解析提取：内嵌式「答案：D    解析：…」或「（解析：…）」，并剔除避免污染选项
+    let explanation = null;
+    const expRes = [
+      /[（(]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[)）]/,
+      /(?:答案解析|解析|解释|说明)\s*[:：]\s*([\s\S]+)$/,
+    ];
+    for (const re of expRes) {
+      const m = t.match(re);
+      if (m) {
+        explanation = (m[1] || '').replace(/\s+/g, ' ').trim() || null;
+        t = t.replace(m[0], ' ');
+        break;
+      }
     }
 
     // 2) 选项提取
@@ -413,7 +458,7 @@ const Extractor = (() => {
         const vals = Object.values(options).map(v => v.replace(/\s/g, ''));
         if (lineSet.length === 2 && /正确|对|√/.test(vals[0]) && /错误|错|×/.test(vals[1])) type = 'single';
         if (answer && [...answer].some(c => !options[c])) answer = null;
-        return { no, key: hintKey, type, stem, options, answer: answer || null, explanation: null, _local: true, _degraded: lineGaps > 0 || keptLine.length !== uniq2.length || undefined };
+        return { no, key: hintKey, type, stem, options, answer: answer || null, explanation, _local: true, _degraded: lineGaps > 0 || keptLine.length !== uniq2.length || undefined };
       }
     }
     // 2b) 回退：行内标记（兼容「正确的是？A.xx B.yy」式行内选项）
@@ -461,7 +506,7 @@ const Extractor = (() => {
             type = 'single';
           }
           if (answer && [...answer].some(c => !options[c])) answer = null;
-          return { no, key: hintKey, type, stem, options, answer: answer || null, explanation: null, _local: true, _degraded: degraded || undefined };
+          return { no, key: hintKey, type, stem, options, answer: answer || null, explanation, _local: true, _degraded: degraded || undefined };
         }
       }
     }
@@ -471,13 +516,13 @@ const Extractor = (() => {
     if (body.length >= 5) {
       if (hintType === 'judge') {
         // 判断题：无选项结构，固定 正确/错误
-        return { no, key: hintKey, type: 'judge', stem: body, options: { 'A': '正确', 'B': '错误' }, answer: answer || null, explanation: null, _local: true };
+        return { no, key: hintKey, type: 'judge', stem: body, options: { 'A': '正确', 'B': '错误' }, answer: answer || null, explanation, _local: true };
       }
       if (/_{3,}|_{2,}/.test(body)) {
-        return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation: null, _local: true };
+        return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation, _local: true };
       }
       if (hintType === 'fill' || /（\s*）|\(\s*\)/.test(body)) {
-        return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation: null, _local: true };
+        return { no, key: hintKey, type: 'fill', stem: body, options: null, answer: answer || null, explanation, _local: true };
       }
       return null; // 结构不明，交 AI
     }
