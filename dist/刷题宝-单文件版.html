@@ -5,20 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#1652f0">
   <title>刷题宝</title>
-  <script>
-    /* 首屏提前应用主题/配色，避免加载瞬间闪白（值由 app.js 写入 localStorage） */
-    try {
-      var t = JSON.parse(localStorage.getItem('sb_theme') || '{}');
-      var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      if (t.theme === 'dark' || (t.theme !== 'light' && sysDark)) document.documentElement.classList.add('dark');
-      if (t.skin) document.documentElement.setAttribute('data-skin', t.skin);
-    } catch (e) { /* 忽略 */ }
-  </script>
   <style>
 /* ========== 刷题宝 · 移动端样式 ==========
    结构：① 令牌（颜色/形状/阴影） ② 基础布局 ③ 组件
-        ④ 溢出防护 ⑤ 6 套配色方案（html[data-skin]）
-   配色方案通过 <html data-skin="..."> 切换，与日间/夜间（html.dark）正交叠加。
+        ④ 溢出防护
    ========================================== */
 
 /* ---------- ① 令牌：默认 = 极简蓝（日间） ---------- */
@@ -69,7 +59,7 @@
   --tabbar-h: 60px;
 }
 
-/* 夜间（叠加在任意配色方案之上） */
+/* 夜间 */
 html.dark {
   --bg: #12151d; --card: #1c212e; --topbar-bg: #161a25; --tabbar-bg: #161a25;
   --text: #e6eaf2; --muted: #7d879e; --line: #2a3145;
@@ -372,26 +362,6 @@ body {
 }
 .field textarea:focus { outline: none; border-color: var(--primary); }
 
-/* 配色方案选择器 */
-.skin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.skin-item {
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 10px 4px; border-radius: var(--radius-sm);
-  border: 1.5px solid var(--line); background: var(--surface-2);
-  font-size: 12px; color: var(--muted); cursor: pointer; font-family: inherit;
-  transition: transform .08s, border-color .15s, box-shadow .15s;
-}
-.skin-item:active { transform: scale(.96); }
-.skin-item.on {
-  border-color: var(--primary); color: var(--text); font-weight: 600;
-  box-shadow: 0 0 0 2px var(--primary-soft);
-}
-.skin-item i {
-  display: block; width: 34px; height: 34px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--c1), var(--c2));
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06);
-}
-.skin-item span { white-space: nowrap; }
 
 /* ---------- Toast ---------- */
 #toast {
@@ -409,129 +379,11 @@ body {
   .option { font-size: 14px; }
   .btn.big { font-size: 15px; }
   .hero-num { font-size: 30px; }
-  .skin-grid { gap: 6px; }
-  .skin-item { font-size: 11px; padding: 8px 2px; }
 }
 @media (min-width: 560px) {
   .stem { font-size: 17px; }
 }
 
-/* ==========================================
-   ⑤ 配色方案（6 套，可叠加夜间）
-   classic 极简蓝 / aurora 极光 / morandi 莫兰迪
-   sunset 暖阳 / rose 玫瑰 / neon 霓虹
-   classic 即 :root 默认值，无需重复声明
-   ========================================== */
-
-/* ---- aurora 极光：靛蓝→青，大圆角、通透阴影 ---- */
-html[data-skin="aurora"] {
-  --primary: #4f46e5; --primary-dark: #4338ca; --primary-soft: #eef0ff;
-  --primary-glow: rgba(79, 70, 229, .28);
-  --bg: #f4f5fc; --card: #ffffff; --topbar-bg: #f4f5fc; --tabbar-bg: #ffffff;
-  --text: #171a2e; --muted: #7c82a3; --line: #e5e7f5;
-  --surface-2: #f2f3fb; --surface-3: #eceffe; --key-bg: #e4e7f8;
-  --exp-text: #4d5474;
-  --t-single: #4f46e5; --t-multi: #0891b2;
-  --radius: 18px; --radius-sm: 12px;
-  --hero-grad: linear-gradient(135deg, #4f46e5 0%, #6366f1 45%, #06b6d4 100%);
-  --shadow-card: 0 6px 20px rgba(79, 70, 229, .10), 0 1px 2px rgba(79, 70, 229, .06);
-  --shadow-soft: 0 2px 8px rgba(79, 70, 229, .08);
-}
-html.dark[data-skin="aurora"] {
-  --bg: #0e1018; --card: #1a1c2b; --topbar-bg: #141622; --tabbar-bg: #141622;
-  --text: #e9eaf7; --muted: #7f86a8; --line: #2b2f45;
-  --surface-2: #21243a; --surface-3: #262a4a; --key-bg: #2c3150;
-  --exp-text: #a9afcc; --primary-soft: #23264a;
-}
-
-/* ---- morandi 莫兰迪：低饱和鼠尾草绿，柔和无攻击性 ---- */
-html[data-skin="morandi"] {
-  --primary: #6b8f71; --primary-dark: #55755a; --primary-soft: #edf3ee;
-  --primary-glow: rgba(107, 143, 113, .26);
-  --bg: #f4f4f1; --card: #fdfdfb; --topbar-bg: #f4f4f1; --tabbar-bg: #fdfdfb;
-  --text: #33372f; --muted: #8b9089; --line: #e5e6df;
-  --surface-2: #f2f3ef; --surface-3: #e9f0ea; --key-bg: #e2e6e0;
-  --exp-text: #5c635a;
-  --ok: #5f9e78; --ok-bg: #e8f1ea; --bad: #c0705f; --bad-bg: #f6ece9;
-  --t-single: #6b8f71; --t-multi: #9c8fa6; --t-judge: #c9a26b; --t-fill: #7fa08c;
-  --radius: 16px;
-  --hero-grad: linear-gradient(135deg, #6b8f71, #9db894);
-  --shadow-card: 0 3px 12px rgba(60, 70, 55, .08);
-  --shadow-soft: 0 1px 4px rgba(60, 70, 55, .07);
-}
-html.dark[data-skin="morandi"] {
-  --bg: #15171a; --card: #1f2224; --topbar-bg: #191c1e; --tabbar-bg: #191c1e;
-  --text: #e6e8e3; --muted: #838b82; --line: #2d3134;
-  --surface-2: #262a2c; --surface-3: #2a332c; --key-bg: #313638;
-  --exp-text: #a6ada3; --primary-soft: #24302a;
-  --ok-bg: #1e2f26; --bad-bg: #33231f;
-}
-
-/* ---- sunset 暖阳：橙金暖色，活泼 ---- */
-html[data-skin="sunset"] {
-  --primary: #f97316; --primary-dark: #ea580c; --primary-soft: #fff4ec;
-  --primary-glow: rgba(249, 115, 22, .28);
-  --bg: #fdf8f3; --card: #ffffff; --topbar-bg: #fdf8f3; --tabbar-bg: #ffffff;
-  --text: #2b2118; --muted: #9c8b7a; --line: #f2e7db;
-  --surface-2: #fdf6f0; --surface-3: #fff3e8; --key-bg: #f4e7da;
-  --exp-text: #6b5a4a;
-  --t-single: #f97316; --t-multi: #d946ef; --t-fill: #16a34a;
-  --radius: 16px;
-  --hero-grad: linear-gradient(135deg, #f97316, #fbbf24);
-  --shadow-card: 0 4px 14px rgba(180, 110, 40, .12);
-  --shadow-soft: 0 1px 4px rgba(180, 110, 40, .10);
-}
-html.dark[data-skin="sunset"] {
-  --bg: #191410; --card: #241d17; --topbar-bg: #1e1813; --tabbar-bg: #1e1813;
-  --text: #f2e8dd; --muted: #9b8875; --line: #382c22;
-  --surface-2: #2b231b; --surface-3: #33261b; --key-bg: #3a2e23;
-  --exp-text: #c2b0a0; --primary-soft: #33261b;
-}
-
-/* ---- rose 玫瑰：玫红柔粉，柔和女性向 ---- */
-html[data-skin="rose"] {
-  --primary: #e11d75; --primary-dark: #be185d; --primary-soft: #fdeef5;
-  --primary-glow: rgba(225, 29, 117, .26);
-  --bg: #fdf6f9; --card: #ffffff; --topbar-bg: #fdf6f9; --tabbar-bg: #ffffff;
-  --text: #2c1f27; --muted: #a08b96; --line: #f4e4ec;
-  --surface-2: #fdf4f8; --surface-3: #fceaf3; --key-bg: #f6e3ec;
-  --exp-text: #6d5563;
-  --t-single: #e11d75; --t-multi: #8b5cf6;
-  --radius: 16px;
-  --hero-grad: linear-gradient(135deg, #e11d75, #fb7185);
-  --shadow-card: 0 4px 14px rgba(190, 24, 93, .12);
-  --shadow-soft: 0 1px 4px rgba(190, 24, 93, .10);
-}
-html.dark[data-skin="rose"] {
-  --bg: #181216; --card: #241a20; --topbar-bg: #1d1519; --tabbar-bg: #1d1519;
-  --text: #f2e6ec; --muted: #9c8691; --line: #382831;
-  --surface-2: #2b1f26; --surface-3: #33212a; --key-bg: #3a2831;
-  --exp-text: #c6adb9; --primary-soft: #33212a;
-}
-
-/* ---- neon 霓虹：青蓝冷调，夜间为深色高对比（主色转亮青，按钮文字转深色） ---- */
-html[data-skin="neon"] {
-  --primary: #0891b2; --primary-dark: #0e7490; --primary-soft: #e6f7fb;
-  --primary-glow: rgba(8, 145, 178, .30);
-  --bg: #eef4f7; --card: #ffffff; --topbar-bg: #eef4f7; --tabbar-bg: #ffffff;
-  --text: #0f1b22; --muted: #6b8794; --line: #dbe8ee;
-  --surface-2: #f0f6f9; --surface-3: #e4f4f9; --key-bg: #dbe9ef;
-  --exp-text: #47606c;
-  --t-single: #0891b2; --t-multi: #7c3aed; --t-fill: #059669;
-  --radius: 12px; --radius-sm: 9px;
-  --hero-grad: linear-gradient(135deg, #0891b2, #22d3ee);
-  --shadow-card: 0 3px 14px rgba(8, 145, 178, .14);
-  --shadow-soft: 0 1px 4px rgba(8, 145, 178, .10);
-}
-html.dark[data-skin="neon"] {
-  --bg: #080c10; --card: #111820; --topbar-bg: #0c1218; --tabbar-bg: #0c1218;
-  --text: #e6f6fb; --muted: #6f8b99; --line: #1d2b36;
-  --surface-2: #16212b; --surface-3: #12303a; --key-bg: #1e2f3b;
-  --exp-text: #a4c3cf;
-  --primary: #22d3ee; --primary-dark: #06b6d4; --primary-soft: #12303a;
-  --on-primary: #04222a; --primary-glow: rgba(34, 211, 238, .35);
-  --shadow-card: 0 4px 20px rgba(34, 211, 238, .10);
-}
 </style>
 </head>
 <body>
@@ -2354,31 +2206,15 @@ const App = (() => {
 
   const typeLabel = { single: '单选', multi: '多选', judge: '判断', fill: '填空' };
 
-  /* ---- 配色方案（6 套，与日间/夜间正交叠加） ---- */
-  const SKINS = [
-    { id: 'classic', name: '极简蓝', c1: '#1652f0', c2: '#3b82f6', light: '#1652f0', dark: '#12151d' },
-    { id: 'aurora', name: '极光', c1: '#4f46e5', c2: '#06b6d4', light: '#4f46e5', dark: '#0e1018' },
-    { id: 'morandi', name: '莫兰迪', c1: '#6b8f71', c2: '#9db894', light: '#6b8f71', dark: '#15171a' },
-    { id: 'sunset', name: '暖阳', c1: '#f97316', c2: '#fbbf24', light: '#f97316', dark: '#191410' },
-    { id: 'rose', name: '玫瑰', c1: '#e11d75', c2: '#fb7185', light: '#e11d75', dark: '#181216' },
-    { id: 'neon', name: '霓虹', c1: '#0891b2', c2: '#22d3ee', light: '#0891b2', dark: '#080c10' }
-  ];
-  const skinOf = id => SKINS.find(s => s.id === id) || SKINS[0];
-
-  /* ---- 主题：auto 跟随系统 / light / dark；配色：skin。存 meta，class/属性驱动 ----
-     同时镜像到 localStorage，供 index.html 首屏内联脚本提前应用，避免闪白 ---- */
+  /* ---- 主题：auto 跟随系统 / light / dark，存 meta，class 驱动 ---- */
   async function applyTheme() {
     const t = (await DB.metaGet('theme')) || 'auto';
-    const skin = (await DB.metaGet('skin')) || 'classic';
     const sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const dark = t === 'dark' || (t === 'auto' && sysDark);
-    const root = document.documentElement;
-    root.classList.toggle('dark', dark);
-    root.setAttribute('data-skin', skinOf(skin).id);
+    document.documentElement.classList.toggle('dark', dark);
     const mc = document.querySelector('meta[name="theme-color"]');
-    if (mc) mc.setAttribute('content', dark ? skinOf(skin).dark : skinOf(skin).light);
-    try { localStorage.setItem('sb_theme', JSON.stringify({ theme: t, skin: skinOf(skin).id })); } catch (e) { /* 隐私模式忽略 */ }
-    return { theme: t, skin };
+    if (mc) mc.setAttribute('content', dark ? '#12151d' : '#1652f0');
+    return t;
   }
 
   /* ---- 断点续做：进度自动保存 ---- */
@@ -3541,7 +3377,6 @@ const App = (() => {
     topbar('设置');
     const cfg = await LLM.getConfig();
     const theme = (await DB.metaGet('theme')) || 'auto';
-    const skin = (await DB.metaGet('skin')) || 'classic';
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">外观</div>
@@ -3550,14 +3385,6 @@ const App = (() => {
           <button data-v="light" class="${theme === 'light' ? 'on' : ''}">☀ 日间</button>
           <button data-v="dark" class="${theme === 'dark' ? 'on' : ''}">🌙 夜间</button>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-title">界面风格</div>
-        <div class="skin-grid" id="skin-grid">
-          ${SKINS.map(s => `<button class="skin-item ${s.id === skinOf(skin).id ? 'on' : ''}" data-skin="${s.id}">
-            <i style="--c1:${s.c1};--c2:${s.c2}"></i><span>${s.name}</span></button>`).join('')}
-        </div>
-        <div class="muted small" style="margin-top:10px">风格与日间／夜间可自由组合，选择后立即生效</div>
       </div>
       <div class="card">
         <div class="card-title">AI 接口（AI 辅助录入答案 / AI 解答 / AI 校验 使用）</div>
@@ -3690,16 +3517,6 @@ const App = (() => {
       toast(b.dataset.v === 'auto' ? '已跟随系统' : (b.dataset.v === 'dark' ? '已切换夜间' : '已切换日间'));
     };
 
-    // 界面风格切换：立即生效并保存
-    const skinGrid = document.getElementById('skin-grid');
-    if (skinGrid) skinGrid.onclick = async (e) => {
-      const b = e.target.closest('button[data-skin]'); if (!b) return;
-      skinGrid.querySelectorAll('button').forEach(x => x.classList.remove('on'));
-      b.classList.add('on');
-      await DB.metaSet('skin', b.dataset.skin);
-      applyTheme();
-      toast('已切换「' + skinOf(b.dataset.skin).name + '」');
-    };
 
     document.getElementById('save-btn').onclick = async () => {
       await LLM.saveConfig({
