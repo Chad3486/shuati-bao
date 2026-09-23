@@ -38,7 +38,7 @@
 ## 下载安装
 
 ### 方式一：Release（推荐）
-到 [Releases](../../releases) 页面下载最新 `刷题宝.apk`，传到安卓手机安装（需允许"未知来源"）。
+到 [Releases](../../releases) 页面下载最新版 `shuati-bao-v*.apk`，传到安卓手机安装（需允许"未知来源"）。
 
 ### 方式二：Actions 构建
 Actions → 最新绿色 ✓ 运行 → Artifacts 下载（需登录 GitHub，保留 90 天）。
