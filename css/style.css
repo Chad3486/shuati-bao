@@ -135,6 +135,30 @@ body {
 .btn-row { display: flex; gap: 10px; margin-top: 12px; }
 .btn-row .btn { flex: 1; }
 
+/* 胶囊 chip：排序 / 筛选 / 章节选择 —— 选中态必须一眼可见 */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip {
+  border: 1.5px solid var(--line); background: var(--surface-2); color: var(--text);
+  border-radius: 999px; padding: 7px 13px; font-size: 13px; font-family: inherit;
+  cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
+}
+.chip:active { transform: scale(.96); }
+.chip.on {
+  background: var(--primary); border-color: var(--primary-dark); color: var(--on-primary);
+  font-weight: 600; box-shadow: 0 2px 8px var(--primary-glow);
+}
+
+/* 折叠开关（章节 / 小节） */
+.sec-toggle {
+  flex: 0 0 auto; width: 26px; height: 26px; padding: 0; line-height: 1;
+  border: none; border-radius: 7px; background: var(--surface-2); color: var(--muted);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: transform .1s, background .15s;
+}
+.sec-toggle:active { transform: scale(.92); }
+
 /* ---------- 首页 ---------- */
 .hero {
   background: var(--hero-grad);
@@ -178,6 +202,12 @@ body {
 /* ---------- 练习配置 ---------- */
 .bank-pick { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
 .pick-item { display: flex; gap: 8px; font-size: 14px; padding: 4px 0; }
+/* 章节区：按题库分组（可整库折叠） */
+.sec-pick { margin-top: 12px; }
+.sec-pick + .sec-pick { padding-top: 10px; border-top: 1px dashed var(--line); }
+.sec-pick-head { display: flex; align-items: center; gap: 8px; }
+.sec-pick-head b { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sec-pick-head .muted { flex: 0 0 auto; white-space: nowrap; }
 .seg { display: flex; background: var(--surface-2); border-radius: var(--radius-sm); padding: 3px; }
 .seg button {
   flex: 1; min-width: 0; border: none; background: none; padding: 8px;

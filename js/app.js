@@ -1,5 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
+  const VERSION = '1.3.2';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -1020,14 +1021,14 @@ const App = (() => {
       if (b.dataset.act === 'fold') groups.forEach(g => collapsed.add(g.sec));
       renderGrid();
     };
+    // 批量选择必须重渲染，让格子的 .on 选中态跟着变（只改数据不改视觉会「选了却看不出来」）
     document.getElementById('sel-all').onclick = () => {
-      grid.querySelectorAll('input[data-id]').forEach(b => { sel.add(b.dataset.id); b.checked = true; });
-      update();
+      grid.querySelectorAll('input[data-id]').forEach(b => sel.add(b.dataset.id));
+      renderGrid();
     };
     document.getElementById('sel-none').onclick = () => {
       sel.clear();
-      grid.querySelectorAll('input[data-id]').forEach(b => b.checked = false);
-      update();
+      renderGrid();
     };
     document.getElementById('sel-noans').onclick = () => {
       sel.clear();
@@ -1376,6 +1377,7 @@ const App = (() => {
     // ---- 选择状态 ----
     const sel = new Set(banks.map(b => b.id));  // 选中的题库
     const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
+    const secCollapsed = new Set();             // 章节区：被折叠起来的题库 id（整库收起）
     let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
     const LIMIT = 6;
 
@@ -1481,25 +1483,35 @@ const App = (() => {
         if (!list.length && !hasNoSec) continue;
         const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
         const totalSec = list.length + (hasNoSec ? 1 : 0);
+        const folded = secCollapsed.has(b.id);
         parts.push(`
           <div class="sec-pick">
             <div class="sec-pick-head">
+              <button class="sec-toggle" data-fold="${b.id}" title="${folded ? '展开本章节' : '折叠本章节'}">${folded ? '▸' : '▾'}</button>
               <b>${escapeHtml(b.name)}</b>
               <span class="muted small">${picked ? `已选 ${picked}/${totalSec}` : `${totalSec} 章`}</span>
               <button class="chip" data-bank="${b.id}">全选/清空</button>
             </div>
-            <div class="chips">
+            ${folded ? '' : `<div class="chips">
               ${list.map(s => {
                 const key = b.id + ':' + s.secIdx;
                 const n = d.secCount.get(String(s.secIdx)) || 0;
                 return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-sec="${key}" title="${escapeHtml(s.title || '')}">${escapeHtml(shortTitle(s.title))}（${n}）</button>`;
               }).join('')}
               ${hasNoSec ? `<button class="chip ${selSecs.has(b.id + ':') ? 'on' : ''}" data-sec="${b.id}:" title="没有章节信息的题目">未分节（${d.secCount.get('') || 0}）</button>` : ''}
-            </div>
+            </div>`}
           </div>`);
       }
       secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
       secSum.textContent = selSecs.size ? `已选 ${selSecs.size} 个章节（不选 = 全部章节）` : '不选 = 全部章节';
+      // 整库折叠/展开
+      secArea.querySelectorAll('button[data-fold]').forEach(btn => {
+        btn.onclick = () => {
+          const bid = btn.dataset.fold;
+          secCollapsed.has(bid) ? secCollapsed.delete(bid) : secCollapsed.add(bid);
+          renderSecs();
+        };
+      });
       // 章节 chip
       secArea.querySelectorAll('button[data-sec]').forEach(btn => {
         btn.onclick = () => {
@@ -2247,7 +2259,7 @@ const App = (() => {
         <input type="file" id="restore-input" accept=".json" style="display:none">
         <div class="muted small" id="backup-status"></div>
       </div>
-      <div class="muted small center">刷题宝 · 本地题库存储于浏览器 IndexedDB<br>手机浏览器打开即用，可"添加到主屏幕"当 APP 使用</div>`;
+      <div class="muted small center">刷题宝 v${VERSION} · 本地题库存储于浏览器 IndexedDB<br>手机浏览器打开即用，可"添加到主屏幕"当 APP 使用</div>`;
 
     // 备份：导出全部题库 JSON（APK 走原生桥接写 Download，浏览器走 <a download>）
     document.getElementById('backup-btn').onclick = async () => {
