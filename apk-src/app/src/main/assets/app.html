@@ -396,6 +396,19 @@ body {
 .rev-ua-bad { color: var(--bad); font-weight: 600; }
 .rev-ua-none { color: var(--muted); }
 
+/* ---------- 背题模式 ---------- */
+.recite-card .options { margin-top: 12px; }
+.recite-card .wrong-ans { font-size: 15px; }
+
+/* ---------- 练习记录 ---------- */
+.hist-item { display: block; cursor: pointer; }
+.hist-item:active { transform: scale(.99); }
+.hist-top { display: flex; align-items: center; gap: 8px; }
+.hist-mode { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); color: var(--text); }
+.hist-mode.exam { color: var(--primary); background: var(--primary-glow); }
+.hist-acc { margin-left: auto; font-weight: 800; font-size: 16px; }
+.hist-meta { margin-top: 6px; }
+
 /* ---------- 统计 ---------- */
 .stats-row { display: flex; gap: 10px; margin-bottom: 14px; }
 .stat-cell {
@@ -2972,6 +2985,7 @@ class QuizSession {
     this.deadline = opts.deadline || (this.exam && this.minutes ? Date.now() + this.minutes * 60000 : 0);
     this.examAnswers = new Map();          // 考试模式：qid -> 用户答案（尚未判分）
     this.graded = false;
+    this.recite = false;                   // 背题模式：直接看答案、不用作答（仅学习类会话）
   }
 
   _shuffle(arr) {
@@ -3103,6 +3117,7 @@ class QuizSession {
       minutes: this.minutes,
       deadline: this.deadline || 0,
       graded: this.graded,
+      recite: !!this.recite,
       examAnswers: [...this.examAnswers.entries()]
     };
   }
@@ -3116,6 +3131,7 @@ class QuizSession {
     const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
     s.graded = !!data.graded;
+    s.recite = !!data.recite;
     for (const [qid, ua] of (data.examAnswers || [])) s.examAnswers.set(qid, ua);
     for (const [qid, v] of (data.answered || [])) {
       const q = qs.find(x => x.id === qid);
@@ -3162,7 +3178,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.3';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.5';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -3181,6 +3197,9 @@ const App = (() => {
     'quiz': pageQuiz,
     'quiz-result': pageQuizResult,
     'wrong': pageWrong,
+    'star': pageStar,
+    'search': pageSearch,
+    'history': pageHistory,
     'stats': pageStats,
     'settings': pageSettings
   };
@@ -3198,7 +3217,11 @@ const App = (() => {
     clearExamTimer();   // 离开答题页就停掉倒计时，避免计时器写已移除的 DOM
     const page = routes[path] || pageHome;
     const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'settings'];
-    const active = tabs.includes(path) ? path : (path.startsWith('quiz') ? 'quiz-setup' : 'home');
+    const active = tabs.includes(path) ? path
+      : path.startsWith('quiz') ? 'quiz-setup'
+      : path === 'star' ? 'wrong'
+      : path === 'history' ? 'stats'
+      : 'home';
     renderTabbar(active);
     page(params);
     window.scrollTo(0, 0);
@@ -3217,7 +3240,7 @@ const App = (() => {
     const items = [
       ['home', '题库', 'M4 6h16M4 12h16M4 18h10'],
       ['quiz-setup', '练习', 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4'],
-      ['wrong', '错题', 'M12 8v4m0 4h.01M12 3l9 16H3l9-16z'],
+      ['wrong', '复习', 'M12 8v4m0 4h.01M12 3l9 16H3l9-16z'],
       ['stats', '统计', 'M4 20V10m6 10V4m6 16v-7m4 7H2'],
       ['settings', '设置', 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z']
     ];
@@ -3405,6 +3428,7 @@ const App = (() => {
       </div>` : ''}
       <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
       <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（PDF / Word 自动解析）</button>
+      ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       ${banks.length > LIMIT ? `
       <div class="list-tools">
@@ -4828,13 +4852,20 @@ const App = (() => {
     const optKeys = q.options ? Object.keys(q.options) : [];
     const starSet = new Set(await DB.starIds());
     const inExam = session.inExam;
+    const recite = !inExam && !!session.recite;   // 背题模式：直接看答案、不用作答（学习类会话）
     const examPicked = inExam ? (session.examAnswers.get(q.id) || '') : '';
-    const donePct = session.total ? Math.round(session.progress.done / session.total * 100) : 0;
+    const donePct = recite
+      ? (session.total ? Math.round(session.pos / session.total * 100) : 0)
+      : (session.total ? Math.round(session.progress.done / session.total * 100) : 0);
+    const optIsRight = k => !!q.answer && q.answer.toUpperCase().includes(k);
 
     $view().innerHTML = `
       <div class="quiz-head">
         <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-        ${inExam ? `<span class="exam-timer" id="exam-timer">--:--</span>` : `<span class="quiz-prog">${session.progress.done} 已答</span>`}
+        ${inExam ? `<span class="exam-timer" id="exam-timer">--:--</span>`
+          : recite ? `<span class="quiz-prog">${session.pos} / ${session.total}</span>`
+          : `<span class="quiz-prog">${session.progress.done} 已答</span>`}
+        ${!inExam ? `<button class="star-btn${recite ? ' on' : ''}" id="recite-btn" title="背题模式：直接看答案，不用作答">${recite ? '✎' : '📖'}</button>` : ''}
         <button class="star-btn" id="sheet-btn" title="答题卡" style="font-size:19px">▦</button>
         <button class="star-btn" id="star-btn" title="收藏本题">☆</button>
         <button class="star-btn" id="edit-btn" title="修改答案与解析" style="font-size:19px">✎</button>
@@ -4843,9 +4874,28 @@ const App = (() => {
       ${inExam ? `<div class="exam-banner">📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分</div>` : ''}
       <div class="card" id="sheet-card" style="display:none"></div>
       <div class="card" id="edit-card" style="display:none"></div>
-      ${!q.answer ? `<div class="card" style="border-left:4px solid var(--bad)">
+      ${!recite && !q.answer ? `<div class="card" style="border-left:4px solid var(--bad)">
         <div class="small" style="color:var(--bad)">本题暂无标准答案 —— 点右上角 ✎ 填入答案与解析后即可作答判分（不填也能直接翻下一题）</div>
       </div>` : ''}
+      ${recite ? `
+      <div class="card recite-card">
+        <div class="muted small" style="margin-bottom:10px">📖 背题模式：直接看答案与解析，不用作答；左右滑动或点下方按钮翻题</div>
+        <div class="stem">${renderStem(q)}</div>
+        ${q.type === 'fill' ? `
+          <div class="rev-ans">
+            <div class="rev-ans-row"><span class="rev-ans-k">答案</span><span class="${q.answer ? 'rev-ua-ok' : 'rev-ua-none'}">${q.answer ? escapeHtml(String(q.answer).replace(/\|\|\|/g, ' ／ ')) : '（本题缺答案）'}</span></div>
+          </div>` : `
+          <div class="options">
+            ${optKeys.map(k => `
+              <button class="option disabled${optIsRight(k) ? ' right' : ''}">
+                <span class="opt-key">${k}</span>
+                <span class="opt-text">${escapeHtml(q.options[k])}</span>
+                ${optIsRight(k) ? '<span class="opt-mark ok">答案</span>' : ''}
+              </button>`).join('')}
+          </div>
+          <div class="wrong-ans">答案：${q.answer ? escapeHtml(q.answer) : '（本题缺答案）'}</div>`}
+        ${q.explanation ? `<div class="judge-exp">解析：${escapeHtml(q.explanation)}</div>` : '<div class="muted small" style="margin-top:8px">（本题无解析）</div>'}
+      </div>` : `
       <div class="card">
         <div class="stem">${renderStem(q)}</div>
         ${q.type === 'fill' ? `
@@ -4864,13 +4914,15 @@ const App = (() => {
           ${multi ? `<button class="btn primary big" id="multi-submit">${inExam ? '保存答案' : '提交答案'}</button>` : ''}`}
         <div class="judge-area" id="judge-area" style="display:none"></div>
         ${inExam ? `<div class="muted small" style="margin-top:10px">答案会自动保存，可随时回看或修改；点「交卷」后统一判分</div>` : ''}
-      </div>
+      </div>`}
       <div class="quiz-nav">
         <button class="btn ghost" id="skip-btn" ${session.index === 0 ? 'disabled' : ''}>上一题</button>
-        ${inExam
-          ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
-             <button class="btn primary" id="submit-exam-btn">交卷</button>`
-          : '<button class="btn ghost" id="next-btn" style="display:none">下一题</button>'}
+        ${recite
+          ? `<button class="btn ghost" id="next-btn" ${session.index >= session.total - 1 ? 'disabled' : ''}>下一题</button>`
+          : inExam
+            ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
+               <button class="btn primary" id="submit-exam-btn">交卷</button>`
+            : '<button class="btn ghost" id="next-btn" style="display:none">下一题</button>'}
       </div>`;
 
     const judgeArea = document.getElementById('judge-area');
@@ -4964,9 +5016,9 @@ const App = (() => {
       updateBar();
     }
 
-    if (answered) showResult(answered);
+    if (!recite && answered) showResult(answered);
     // 缺标准答案的题：不判分，直接允许翻下一题
-    if (!q.answer && nextBtn) nextBtn.style.display = '';
+    if (!recite && !q.answer && nextBtn) nextBtn.style.display = '';
 
     /* ---- 考试模式：只存答案不判分（自动保存，可随时改） ---- */
     const saveExam = (val) => {
@@ -4979,7 +5031,7 @@ const App = (() => {
       if (sheetOpen) renderSheet();
     };
 
-    if (q.type === 'fill') {
+    if (!recite && q.type === 'fill') {
       const inputs = [...document.querySelectorAll('.fill-input')];
       if (inExam) inputs.forEach(i => i.oninput = () => saveExam(inputs.map(x => x.value.trim()).join('|||')));
       const submit = () => {
@@ -4990,7 +5042,7 @@ const App = (() => {
         if (res) showResult({ ...res, userAnswer: vals });
       };
       document.getElementById('fill-submit').onclick = submit;
-    } else {
+    } else if (!recite) {
       // 考试模式：选项可反复改；picked 初值来自已保存的答案（回看时高亮）
       let picked = new Set(inExam && examPicked ? examPicked.toUpperCase().split('') : []);
       document.querySelectorAll('.option').forEach(el => {
@@ -5023,6 +5075,10 @@ const App = (() => {
 
     document.getElementById('skip-btn').onclick = () => { if (session.index > 0) { session.index--; saveProgress(); render(); } };
     if (nextBtn) nextBtn.onclick = () => {
+      if (recite) {   // 背题：自由翻题，不作答、不出成绩
+        if (session.index < session.total - 1) { session.index++; saveProgress(); render(); }
+        return;
+      }
       session.next();
       saveProgress();
       if (session.finished) navigate('#/quiz-result'); // hash 变化自动触发 render
@@ -5043,6 +5099,15 @@ const App = (() => {
       } else {
         sheetCard.style.display = 'none';
       }
+    };
+
+    // 背题模式开关：直接看答案、不用作答（仅学习类会话）
+    const reciteBtn = document.getElementById('recite-btn');
+    if (reciteBtn) reciteBtn.onclick = () => {
+      session.recite = !session.recite;
+      saveProgress();
+      render();
+      toast(session.recite ? '已进入背题模式：直接看答案' : '已退出背题模式');
     };
 
     // 收藏本题：状态已在渲染时读好，点击切换
@@ -5139,7 +5204,7 @@ const App = (() => {
       // 快速横向滑动 60px+ 且横向位移明显大于纵向
       if (dt < 600 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
         if (dx < 0) { // 左滑 → 下一题（考试模式可自由翻题，无需先作答）
-          if (!inExam && !session.answered.get(session.current.id) && session.current.answer) return toast('请先作答再翻下一题');
+          if (!recite && !inExam && !session.answered.get(session.current.id) && session.current.answer) return toast('请先作答再翻下一题');
           if (nextBtn && nextBtn.style.display !== 'none') nextBtn.click();
         } else if (session.index > 0) { // 右滑 → 上一题
           document.getElementById('skip-btn').click();
@@ -5157,96 +5222,25 @@ const App = (() => {
   }
 
   /* ================= 页面：结果（练习 / 考试成绩单） ================= */
-  function pageQuizResult() {
-    if (!session) return navigate('#/home');
-    if (session.exam && !session.graded) session.grade();   // 兜底：未交卷进来先判分
-    const exam = session.exam;
-    const r = session.result();
-    topbar(exam ? '考试成绩' : '练习结果', '#/home');
 
-    if (!exam) {
-      const p = session.progress;
-      const acc = p.done ? Math.round(p.correct / p.done * 100) : 0;
-      $view().innerHTML = `
-        <div class="result-hero">
-          <div class="result-ring" style="--p:${acc}">
-            <div class="result-acc">${acc}<small>%</small></div>
-          </div>
-          <div class="result-row">
-            <div class="result-cell"><b>${p.done}</b><span>已答</span></div>
-            <div class="result-cell"><b>${p.correct}</b><span>答对</span></div>
-            <div class="result-cell"><b>${p.wrong}</b><span>答错</span></div>
-          </div>
-        </div>
-        <button class="btn primary big" onclick="App.replay()">再来一轮（错题优先）</button>
-        <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
-      return;
-    }
-
-    // ---- 考试：成绩单 + 逐题解析（可筛选 / 逐题翻阅 / 题号跳转） ----
-    const wrongs = session.wrongList();
-    const mm = Math.floor(r.timeUsed / 60), ss = r.timeUsed % 60;
-    // 把整张卷子摊平：每题带上「你选了什么 / 对不对」，供逐题回看
-    const rows = session.list.map((q, i) => {
-      const a = session.answered.get(q.id);
-      const ua = a ? a.userAnswer : (session.examAnswers.get(q.id) || null);
-      const status = !a ? 'none' : (a.correct ? 'ok' : 'bad');
-      return { q, a, ua, status, no: i + 1 };
-    });
+  // 逐题解析面板：筛选（全部/答错/未答/答对）+ 上下一题 + 题号速览跳题。
+  // 考试 / 学习模式共用；opts.showAll 控制「答对」一档是否给「答对」标签 vs 只是绿色
+  function renderReviewPanel(rows, opts = {}) {
+    const { defaultFilter, showAll = false } = opts;
     const nOk = rows.filter(x => x.status === 'ok').length;
     const nBad = rows.filter(x => x.status === 'bad').length;
     const nNone = rows.filter(x => x.status === 'none').length;
-
-    $view().innerHTML = `
-      <div class="result-hero">
-        <div class="result-ring" style="--p:${r.acc}">
-          <div class="result-acc">${r.acc}<small>分</small></div>
-        </div>
-        <div class="result-row">
-          <div class="result-cell"><b>${r.total}</b><span>总题数</span></div>
-          <div class="result-cell"><b style="color:var(--ok)">${r.correct}</b><span>答对</span></div>
-          <div class="result-cell"><b style="color:var(--bad)">${r.wrong}</b><span>答错</span></div>
-          <div class="result-cell"><b>${r.unanswered}</b><span>未答</span></div>
-        </div>
-        <div class="muted small" style="margin-top:10px">用时 ${mm} 分 ${ss} 秒 · 已答 ${r.answered} 题</div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">逐题解析</div>
-        <div class="chips" id="rev-filter">
-          <button class="chip" data-v="all">全部 ${r.total}</button>
-          <button class="chip" data-v="bad">答错 ${nBad}</button>
-          <button class="chip" data-v="none">未答 ${nNone}</button>
-          <button class="chip" data-v="ok">答对 ${nOk}</button>
-        </div>
-        <div class="rev-nav">
-          <button class="btn ghost" id="rev-prev">‹ 上一题</button>
-          <span class="rev-pos" id="rev-pos"></span>
-          <button class="btn ghost" id="rev-next">下一题 ›</button>
-        </div>
-        <div id="rev-body"></div>
-        <button class="btn ghost" id="rev-jump-btn" style="margin-top:10px">▦ 题号速览（点号码跳题）</button>
-        <div id="rev-jump" style="display:none"></div>
-      </div>
-
-      ${wrongs.length
-        ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${wrongs.length}）</button>`
-        : `<div class="card"><div class="card-title">全部答对 🎉</div><div class="muted small">这套题没有错题，继续保持。</div></div>`}
-      <button class="btn ghost big" onclick="App.replay()">再来一轮</button>
-      <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
-
-    /* ---- 逐题解析：筛选 + 逐题翻阅 + 题号跳转 ---- */
-    let revFilter = (nBad + nNone) ? 'bad' : 'all';   // 优先看错题；全对则看全部
+    let revFilter = defaultFilter || ((nBad + nNone) ? 'bad' : 'all');
     let revIdx = 0;
     const revRows = () => revFilter === 'all' ? rows
       : revFilter === 'bad' ? rows.filter(x => x.status === 'bad')
       : revFilter === 'none' ? rows.filter(x => x.status === 'none')
       : rows.filter(x => x.status === 'ok');
 
-    // 单题详情卡：选项高亮「正确答案 / 你的选择」，填空给「你的 / 正确」对照
     function reviewCard(x) {
       const { q, ua, status, no } = x;
-      const badge = status === 'ok' ? '<span class="rev-status ok">答对</span>'
+      const badge = status === 'ok'
+        ? (showAll ? '<span class="rev-status ok">答对</span>' : '<span class="rev-status ok">✓</span>')
         : status === 'bad' ? '<span class="rev-status bad">答错</span>'
         : '<span class="rev-status none">未作答</span>';
       let body;
@@ -5342,6 +5336,96 @@ const App = (() => {
     renderReview();
   }
 
+  /** 由 session 生成「逐题解析」的行数据（每题带 你的答案/对错） */
+  function reviewRows(session) {
+    return session.list.map((q, i) => {
+      const a = session.answered.get(q.id);
+      const ua = a ? a.userAnswer : (session.examAnswers.get(q.id) || null);
+      const status = !a ? 'none' : (a.correct ? 'ok' : 'bad');
+      return { q, a, ua, status, no: i + 1 };
+    });
+  }
+
+  /** 逐题解析卡片外壳（结果页 / 记录详情页共用；renderReviewPanel 负责绑定交互） */
+  function reviewCardShell(r) {
+    return `
+      <div class="card">
+        <div class="card-title">逐题解析</div>
+        <div class="chips" id="rev-filter">
+          <button class="chip" data-v="all">全部 ${r.total}</button>
+          <button class="chip" data-v="bad">答错 ${r.wrong}</button>
+          <button class="chip" data-v="none">未答 ${r.unanswered}</button>
+          <button class="chip" data-v="ok">答对 ${r.correct}</button>
+        </div>
+        <div class="rev-nav">
+          <button class="btn ghost" id="rev-prev">‹ 上一题</button>
+          <span class="rev-pos" id="rev-pos"></span>
+          <button class="btn ghost" id="rev-next">下一题 ›</button>
+        </div>
+        <div id="rev-body"></div>
+        <button class="btn ghost" id="rev-jump-btn" style="margin-top:10px">▦ 题号速览（点号码跳题）</button>
+        <div id="rev-jump" style="display:none"></div>
+      </div>`;
+  }
+
+  function pageQuizResult() {
+    if (!session) return navigate('#/home');
+    if (session.exam && !session.graded) session.grade();   // 兜底：未交卷进来先判分
+    const exam = session.exam;
+    const r = session.result();
+    recordSession(session);   // 记入「练习记录」（内部防重复，只记一次）
+    topbar(exam ? '考试成绩' : '练习结果', '#/home');
+
+    // 两种模式共用的「逐题解析」卡片模板；renderReviewPanel() 负责绑定交互
+    const reviewCardHTML = reviewCardShell(r);
+
+    if (!exam) {
+      const p = session.progress;
+      const acc = p.done ? Math.round(p.correct / p.done * 100) : 0;
+      $view().innerHTML = `
+        <div class="result-hero">
+          <div class="result-ring" style="--p:${acc}">
+            <div class="result-acc">${acc}<small>%</small></div>
+          </div>
+          <div class="result-row">
+            <div class="result-cell"><b>${p.done}</b><span>已答</span></div>
+            <div class="result-cell"><b style="color:var(--ok)">${p.correct}</b><span>答对</span></div>
+            <div class="result-cell"><b style="color:var(--bad)">${p.wrong}</b><span>答错</span></div>
+          </div>
+        </div>
+        ${reviewCardHTML}
+        ${p.wrong ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${p.wrong}）</button>` : ''}
+        <button class="btn primary big" onclick="App.replay()">再来一轮（错题优先）</button>
+        <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
+      renderReviewPanel(reviewRows(session), { showAll: true });
+      return;
+    }
+
+    // ---- 考试：成绩单 + 逐题解析 ----
+    const wrongs = session.wrongList();
+    const mm = Math.floor(r.timeUsed / 60), ss = r.timeUsed % 60;
+    $view().innerHTML = `
+      <div class="result-hero">
+        <div class="result-ring" style="--p:${r.acc}">
+          <div class="result-acc">${r.acc}<small>分</small></div>
+        </div>
+        <div class="result-row">
+          <div class="result-cell"><b>${r.total}</b><span>总题数</span></div>
+          <div class="result-cell"><b style="color:var(--ok)">${r.correct}</b><span>答对</span></div>
+          <div class="result-cell"><b style="color:var(--bad)">${r.wrong}</b><span>答错</span></div>
+          <div class="result-cell"><b>${r.unanswered}</b><span>未答</span></div>
+        </div>
+        <div class="muted small" style="margin-top:10px">用时 ${mm} 分 ${ss} 秒 · 已答 ${r.answered} 题</div>
+      </div>
+      ${reviewCardHTML}
+      ${wrongs.length
+        ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${wrongs.length}）</button>`
+        : `<div class="card"><div class="card-title">全部答对 🎉</div><div class="muted small">这套题没有错题，继续保持。</div></div>`}
+      <button class="btn ghost big" onclick="App.replay()">再来一轮</button>
+      <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
+    renderReviewPanel(reviewRows(session), { showAll: true });
+  }
+
   function finishQuiz() {
     session = null;
     DB.metaSet('lastSession', null);
@@ -5367,15 +5451,23 @@ const App = (() => {
     navigate('#/quiz');
   }
 
-  /* ================= 页面：错题本 ================= */
+  /* ================= 页面：错题本 / 收藏夹（同一入口页的两种视图） ================= */
+  const REVIEW_NAV = `
+    <div class="seg" style="margin-bottom:12px">
+      <button data-nav="#/wrong">错题本</button>
+      <button data-nav="#/star">★ 收藏夹</button>
+    </div>`;
+  function bindNavSeg(activeHash) {
+    document.querySelectorAll('#view [data-nav]').forEach(b => {
+      b.classList.toggle('on', b.dataset.nav === activeHash);
+      b.onclick = () => navigate(b.dataset.nav);
+    });
+  }
+
   async function pageWrong() {
     topbar('错题本');
     const qs = await DB.wrongQuestions();
-    if (!qs.length) {
-      $view().innerHTML = `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`;
-      return;
-    }
-    $view().innerHTML = `
+    $view().innerHTML = REVIEW_NAV + (qs.length ? `
       <button class="btn primary big" onclick="App.wrongRedo()">重做全部错题（${qs.length}）</button>
       <div class="wrong-list">
         ${qs.map(q => `
@@ -5385,7 +5477,235 @@ const App = (() => {
             <div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>
             ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
           </div>`).join('')}
-      </div>`;
+      </div>`
+      : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
+    bindNavSeg('#/wrong');
+  }
+
+  /* ---- 收藏夹：跨题库集中看收藏题、取消收藏、一键收藏练习 ---- */
+  async function pageStar() {
+    topbar('收藏夹');
+    const qs = await DB.starQuestions();
+    const ready = qs.filter(q => q.answer).length;
+    $view().innerHTML = REVIEW_NAV + (qs.length ? `
+      ${ready
+        ? `<button class="btn primary big" onclick="App.starRedo()">收藏练习（${ready}）</button>`
+        : `<div class="muted small" style="margin-bottom:12px">收藏的题都缺答案，先在题库里补答案才能练习</div>`}
+      <div class="wrong-list">
+        ${qs.map(q => `
+          <div class="card wrong-card">
+            <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+              <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+              <button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>
+            </div>
+            <div class="stem sm">${renderStem(q)}</div>
+            ${q.answer
+              ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
+              : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
+            ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+          </div>`).join('')}
+      </div>`
+      : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
+    bindNavSeg('#/star');
+    $view().querySelectorAll('[data-unstar]').forEach(btn => {
+      btn.onclick = async () => {
+        await DB.starToggle(btn.dataset.unstar);
+        toast('已取消收藏');
+        render();   // 重渲染：题目从列表移除
+      };
+    });
+  }
+
+  /* ================= 页面：全局搜题 ================= */
+  let searchPool = [];   // 当前搜索结果里「有答案、可练习」的题
+
+  async function pageSearch() {
+    topbar('搜题', '#/home');
+    const banks = await DB.bankList();
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    const secTitle = new Map();
+    for (const b of banks) for (const s of (b.sections || [])) secTitle.set(b.id + ':' + String(s.secIdx), s.title);
+    const all = [];
+    for (const b of banks) for (const q of await DB.questionsByBank(b.id)) all.push(q);
+    const starIds = new Set(await DB.starIds());
+    if (!all.length) {
+      $view().innerHTML = `<div class="empty" style="padding-top:40px">题库是空的<br><span class="muted small">先导入题库再来搜题</span></div>`;
+      return;
+    }
+    const LIMIT = 60;
+    let kw = '', onlyAns = false;
+
+    $view().innerHTML = `
+      <div class="card">
+        <div class="list-tools">
+          <input id="qs-search" class="search-input" placeholder="搜题干 / 选项 / 答案…" value="">
+          <div class="chips" id="qs-filter">
+            <button class="chip on" data-v="all">全部</button>
+            <button class="chip" data-v="answered">只看有答案</button>
+          </div>
+        </div>
+        <div class="muted small" id="qs-sum"></div>
+      </div>
+      <div id="qs-actions"></div>
+      <div id="qs-results"></div>`;
+
+    const match = () => {
+      const k = kw.trim().toLowerCase();
+      let arr = onlyAns ? all.filter(q => q.answer) : all;
+      if (k) arr = arr.filter(q =>
+        String(q.stem || '').toLowerCase().includes(k)
+        || (q.options && Object.values(q.options).some(v => String(v).toLowerCase().includes(k)))
+        || (q.answer && String(q.answer).toLowerCase().includes(k)));
+      return arr;
+    };
+
+    function renderResults() {
+      const arr = match();
+      searchPool = arr.filter(q => q.answer);
+      document.getElementById('qs-sum').textContent = kw.trim()
+        ? `找到 ${arr.length} 题${arr.length > LIMIT ? `（显示前 ${LIMIT} 题）` : ''}`
+        : `全部题库共 ${all.length} 题 · 输入关键词缩小范围`;
+      document.getElementById('qs-actions').innerHTML = searchPool.length
+        ? `<button class="btn primary big" onclick="App.startSearchPractice()">练习这些题（${searchPool.length}）</button>` : '';
+      const resEl = document.getElementById('qs-results');
+      if (!arr.length) { resEl.innerHTML = kw.trim() ? '<div class="empty" style="padding:24px 0">没有匹配的题目</div>' : ''; return; }
+      resEl.innerHTML = arr.slice(0, LIMIT).map(q => {
+        const sec = secTitle.get(q.bankId + ':' + String(q.secIdx ?? ''));
+        return `<div class="card wrong-card">
+          <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+            <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+            <span class="muted small" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bankName.get(q.bankId) || '')}${sec ? ' · ' + escapeHtml(sec) : ''}</span>
+            <button class="star-btn ${starIds.has(q.id) ? 'on' : ''}" data-star="${q.id}" title="收藏" style="margin-left:auto;font-size:18px">${starIds.has(q.id) ? '★' : '☆'}</button>
+          </div>
+          <div class="stem sm">${renderStem(q)}</div>
+          ${q.answer ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>` : '<div class="muted small" style="margin-top:8px">（本题缺答案）</div>'}
+          ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+        </div>`;
+      }).join('');
+      resEl.querySelectorAll('[data-star]').forEach(btn => {
+        btn.onclick = async () => {
+          const added = await DB.starToggle(btn.dataset.star);
+          if (added) starIds.add(btn.dataset.star); else starIds.delete(btn.dataset.star);
+          btn.textContent = added ? '★' : '☆';
+          btn.classList.toggle('on', added);
+          toast(added ? '已收藏' : '已取消收藏');
+        };
+      });
+    }
+
+    let t = null;
+    document.getElementById('qs-search').oninput = (e) => {
+      kw = e.target.value;
+      clearTimeout(t);
+      t = setTimeout(renderResults, 150);
+    };
+    document.getElementById('qs-filter').onclick = (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('qs-filter').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      onlyAns = b.dataset.v === 'answered';
+      renderResults();
+    };
+    renderResults();
+  }
+
+  async function startSearchPractice() {
+    if (!searchPool.length) return toast('没有可练的题');
+    session = new QuizSession([...searchPool], { shuffle: true, mode: 'search' });
+    navigate('#/quiz');
+  }
+
+  /* ================= 页面：练习记录（每次练习/考试存档 + 回看逐题解析） ================= */
+  async function historyList() { return (await DB.metaGet('quizHistory')) || []; }
+  async function historyPush(rec) {
+    const arr = await historyList();
+    arr.unshift(rec);
+    if (arr.length > 200) arr.length = 200;
+    await DB.metaSet('quizHistory', arr);
+  }
+  async function historyClear() {
+    if (!confirmDialog('清空全部练习记录？（不影响题库、错题本与收藏）')) return;
+    await DB.metaSet('quizHistory', []);
+    toast('已清空练习记录');
+    render();
+  }
+  function fmtTime(at) {
+    const d = new Date(at), p = n => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录） */
+  async function recordSession(s) {
+    if (!s || s._recorded || s.recite) return;
+    const done = s.exam ? s.graded : s.finished;
+    if (!done) return;
+    const r = s.result();
+    if (!r.answered && !s.exam) return;   // 学习模式一题没答就不记
+    const acc = s.exam ? r.acc : (r.answered ? Math.round(r.correct / r.answered * 100) : 0);
+    const rows = reviewRows(s).map(x => ({ qid: x.q.id, ua: x.ua, status: x.status }));
+    s._recorded = true;
+    await historyPush({
+      id: DB.uid(), at: Date.now(), exam: !!s.exam,
+      label: s.exam ? '模拟考试' : (s.opts && s.opts.mode === 'wrong' ? '错题重做'
+        : s.opts && s.opts.mode === 'star' ? '收藏练习'
+        : s.opts && s.opts.mode === 'search' ? '搜索练习' : '练习'),
+      total: r.total, answered: r.answered, correct: r.correct, wrong: r.wrong,
+      unanswered: r.unanswered, acc, timeUsed: r.timeUsed, rows
+    });
+  }
+
+  async function pageHistory(params) {
+    if (params && params[0]) return pageHistoryDetail(params[0]);
+    topbar('练习记录');
+    const list = await historyList();
+    $view().innerHTML = list.length ? `
+      <div class="muted small" style="margin-bottom:10px">共 ${list.length} 次练习 / 考试，点任意一条回看当次的逐题解析</div>
+      <div class="hist-list">
+        ${list.map(rec => {
+          const mm = Math.floor(rec.timeUsed / 60), ss = rec.timeUsed % 60;
+          return `<div class="card hist-item" data-hid="${rec.id}">
+            <div class="hist-top">
+              <span class="hist-mode ${rec.exam ? 'exam' : 'learn'}">${rec.label}</span>
+              <span class="hist-acc" style="color:${rec.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}">${rec.acc}${rec.exam ? '分' : '%'}</span>
+            </div>
+            <div class="muted small hist-meta">${fmtTime(rec.at)} · 答对 ${rec.correct}/${rec.total} 题 · 用时 ${mm}分${ss}秒</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <button class="btn ghost" style="margin-top:12px" onclick="App.historyClear()">清空记录</button>`
+      : `<div class="empty" style="padding-top:40px">还没有练习记录<br><span class="muted small">刷完一轮或交卷后会自动记下来</span></div>`;
+    $view().querySelectorAll('[data-hid]').forEach(el => {
+      el.onclick = () => navigate('#/history/' + el.dataset.hid);
+    });
+  }
+
+  async function pageHistoryDetail(id) {
+    const list = await historyList();
+    const rec = list.find(x => x.id === id);
+    if (!rec) return navigate('#/history');
+    topbar('记录详情', '#/history');
+    const rows = [];
+    for (const row of (rec.rows || [])) {
+      const q = await DB.questionGet(row.qid);
+      if (q) rows.push({ q, ua: row.ua, status: row.status, no: rows.length + 1 });
+    }
+    const missing = rec.total - rows.length;
+    $view().innerHTML = `
+      <div class="result-hero">
+        <div class="result-ring" style="--p:${rec.acc}">
+          <div class="result-acc">${rec.acc}<small>${rec.exam ? '分' : '%'}</small></div>
+        </div>
+        <div class="result-row">
+          <div class="result-cell"><b>${rec.total}</b><span>总题数</span></div>
+          <div class="result-cell"><b style="color:var(--ok)">${rec.correct}</b><span>答对</span></div>
+          <div class="result-cell"><b style="color:var(--bad)">${rec.wrong}</b><span>答错</span></div>
+          <div class="result-cell"><b>${rec.unanswered}</b><span>未答</span></div>
+        </div>
+        <div class="muted small" style="margin-top:10px">${rec.label} · ${fmtTime(rec.at)} · 用时 ${Math.floor(rec.timeUsed / 60)} 分 ${rec.timeUsed % 60} 秒</div>
+        ${missing > 0 ? `<div class="muted small" style="margin-top:4px">有 ${missing} 题的题目已被删除，未列入下方解析</div>` : ''}
+      </div>
+      ${rows.length ? reviewCardShell(rec) : '<div class="card"><div class="muted small">没有可回看的题目</div></div>'}`;
+    if (rows.length) renderReviewPanel(rows, { showAll: true });
   }
 
   /* ================= 页面：统计 ================= */
@@ -5396,6 +5716,7 @@ const App = (() => {
     const max = Math.max(1, ...days.map(([, v]) => v.total));
     const acc = s.total ? Math.round(s.correct / s.total * 100) : 0;
     const wrongCount = (await DB.wrongQuestions()).length;
+    const histCount = (await historyList()).length;
 
     /* ---- 章节正确率：题目 → 章节 → 最近一次作答（薄弱章节置顶） ---- */
     const banks = await DB.bankList();
@@ -5431,6 +5752,7 @@ const App = (() => {
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
       </div>
+      <button class="btn ghost big" onclick="App.navigate('#/history')">📋 练习记录${histCount ? `（${histCount}）` : ''}</button>
       <div class="card">
         <div class="card-title">章节正确率（薄弱在前）</div>
         ${rows.length ? `
@@ -5635,6 +5957,7 @@ const App = (() => {
   async function clearRecords() {
     if (!confirmDialog('清空全部答题记录和错题本？题目不受影响。')) return;
     await DB.clearRecords();
+    await DB.metaSet('quizHistory', []);
     toast('已清空');
     render();
   }
@@ -5673,7 +5996,7 @@ const App = (() => {
     }
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, toast };
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

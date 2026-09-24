@@ -18,6 +18,7 @@ class QuizSession {
     this.deadline = opts.deadline || (this.exam && this.minutes ? Date.now() + this.minutes * 60000 : 0);
     this.examAnswers = new Map();          // 考试模式：qid -> 用户答案（尚未判分）
     this.graded = false;
+    this.recite = false;                   // 背题模式：直接看答案、不用作答（仅学习类会话）
   }
 
   _shuffle(arr) {
@@ -149,6 +150,7 @@ class QuizSession {
       minutes: this.minutes,
       deadline: this.deadline || 0,
       graded: this.graded,
+      recite: !!this.recite,
       examAnswers: [...this.examAnswers.entries()]
     };
   }
@@ -162,6 +164,7 @@ class QuizSession {
     const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
     s.graded = !!data.graded;
+    s.recite = !!data.recite;
     for (const [qid, ua] of (data.examAnswers || [])) s.examAnswers.set(qid, ua);
     for (const [qid, v] of (data.answered || [])) {
       const q = qs.find(x => x.id === qid);

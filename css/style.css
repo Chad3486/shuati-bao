@@ -388,6 +388,19 @@ body {
 .rev-ua-bad { color: var(--bad); font-weight: 600; }
 .rev-ua-none { color: var(--muted); }
 
+/* ---------- 背题模式 ---------- */
+.recite-card .options { margin-top: 12px; }
+.recite-card .wrong-ans { font-size: 15px; }
+
+/* ---------- 练习记录 ---------- */
+.hist-item { display: block; cursor: pointer; }
+.hist-item:active { transform: scale(.99); }
+.hist-top { display: flex; align-items: center; gap: 8px; }
+.hist-mode { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); color: var(--text); }
+.hist-mode.exam { color: var(--primary); background: var(--primary-glow); }
+.hist-acc { margin-left: auto; font-weight: 800; font-size: 16px; }
+.hist-meta { margin-top: 6px; }
+
 /* ---------- 统计 ---------- */
 .stats-row { display: flex; gap: 10px; margin-bottom: 14px; }
 .stat-cell {
