@@ -66,6 +66,8 @@ const LLM = (() => {
         const data = await resp.json();
         const content = data.choices?.[0]?.message?.content;
         if (!content) throw new Error('API 返回为空');
+        // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
+        if (data.usage) _lastUsage = data.usage;
         return content;
       } catch (e) {
         lastErr = e;
@@ -86,6 +88,9 @@ const LLM = (() => {
 
   /* 全局限流冷却截止时间（429 后所有 worker 共同遵守） */
   let _throttleUntil = 0;
+  /* 最近一次 API 返回的 token 用量（用于费用估算回填） */
+  let _lastUsage = null;
+  function getLastUsage() { return _lastUsage; }
 
   /* ---- JSON 容错解析 ---- */
   function parseJSON(text) {
@@ -662,15 +667,22 @@ const LLM = (() => {
   /* ================= 缺答案 AI 解题（只补空答案，绝不覆盖原卷答案） =================
      与「文件 → AI 转范式」配套：范式文本里的题若「答案：」为空，交给 AI 补出来。
      只对 !q.answer 的题调用 API（已答的一律不动，省钱也不覆盖原卷），
-     答案写回 question.answer，再由 Canon.serialize 落成「答案：X」行；
-     断点续传 + 失败批次自动重试（最多 3 轮），与旧的 AI 解题同一套稳网设计。 */
-  async function solveMissing(questions, onProgress, onRetry) {
-    let pool = (questions || []).filter(q => !q.answer);
-    if (!pool.length) return 0;
+     答案写回 question.answer，再由 Canon.serialize 落成「答案：X」行。
+
+     成本控制设计（v1.3.8）：
+     1. 预估费用：调用前先算大概批次/费用，让调用方弹窗确认，避免「一点就烧钱」
+     2. 分批暂停：opts.shouldStop() 返回 true 时，当前批跑完就停，已解的题立即落盘
+     3. 断点续传：opts.isDone(q) 返回 true 的题直接跳过（配合进度存档）
+     4. 答案来源标注：opts.markAI 为 true 时，q.aiAnswer = true，UI 显示「AI 解答·需核对」
+     5. 进度回调：onProgress({done,total,solved,paused,stopReason,usage}) 实时反馈
+     6. 并发可控：opts.concurrency 覆盖 cfg.concurrency（默认仍读配置，上限 4） */
+  async function solveMissing(questions, onProgress, onRetry, opts = {}) {
+    let pool = (questions || []).filter(q => !q.answer && !(opts.isDone && opts.isDone(q)));
+    if (!pool.length) return { solved: 0, usage: { prompt_tokens: 0, completion_tokens: 0 } };
     const BATCH = 10;
     const MAX_ROUNDS = 3;
     const cfg = await getConfig();
-    const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+    const concurrency = Math.max(1, Math.min(4, parseInt(opts.concurrency || cfg.concurrency, 10) || 4));
 
     const PROMPT = `你是答题专家。给下列题目补上正确答案，严格按json输出（不要markdown、不要任何解释文字）：
 {"answers":[{"idx":0,"answer":"C"}]}
@@ -681,10 +693,19 @@ const LLM = (() => {
 只给答案，不要写解析。`;
 
     let solved = 0, round = 0;
+    const usage = { prompt_tokens: 0, completion_tokens: 0 };
+    let paused = false, stopReason = '';
+
+    const emit = (done, total, note) => {
+      if (onProgress) onProgress({ done, total, solved, usage: { ...usage }, paused, stopReason, note });
+    };
+
     while (pool.length && round < MAX_ROUNDS) {
+      // 调用方要求暂停 → 立即停止，不再起新一轮
+      if (opts.shouldStop && opts.shouldStop()) { paused = true; stopReason = 'paused'; break; }
       round++;
       if (round > 1) {
-        if (onProgress) onProgress(0, 1, solved, `网络波动，第 ${round} 轮重试（10s 后）`);
+        emit(0, 1, `网络波动，第 ${round} 轮重试（10s 后）`);
         await new Promise(r => setTimeout(r, 10000));
         pool = pool.filter(q => !q.answer);
         if (!pool.length) break;
@@ -695,6 +716,8 @@ const LLM = (() => {
       let done = 0, idx = 0;
       async function worker() {
         while (idx < batches.length) {
+          // 分批暂停：当前批跑完就停，不抢占新批
+          if (opts.shouldStop && opts.shouldStop()) { paused = true; stopReason = 'paused'; break; }
           const batch = batches[idx++];
           const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: q.stem, options: q.options || undefined }));
           let ok = true, failNote = '', solvedHere = 0;
@@ -723,6 +746,7 @@ const LLM = (() => {
                   if (!ans || /^(略|见解析|无|不知道|无法确定)$/.test(ans)) continue;
                 }
                 q.answer = ans;
+                if (opts.markAI) q.aiAnswer = true;   // 标记来源：AI 解答，UI 需核对
                 solved++; solvedHere++;
               }
             }
@@ -737,13 +761,16 @@ const LLM = (() => {
           }
           if (!ok) failed.push(batch);
           done++;
-          if (onProgress) onProgress(done, batches.length, solved, failNote ? `该批未解出 · 返回: ${failNote}` : (round > 1 ? `第 ${round} 轮` : ''));
+          emit(done, batches.length, failNote ? `该批未解出 · 返回: ${failNote}` : (round > 1 ? `第 ${round} 轮` : ''));
         }
       }
       await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+      // 暂停时不再重排 pool，直接跳出
+      if (paused) break;
       pool = failed.flat().filter(q => !q.answer);
     }
-    return solved;
+
+    return { solved, usage: { ...usage }, paused, stopReason };
   }
 
   /* ---- 测试连接 ---- */
@@ -752,5 +779,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, testConnection, chat };
+  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, getLastUsage, testConnection, chat };
 })();

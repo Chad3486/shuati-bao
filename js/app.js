@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.7';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.8';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -452,13 +452,17 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">③ 缺答案 AI 解题 · 导出 Word（可选）</div>
-        <p class="muted small">文本框里「答案：」为空的题，交给 AI 补出正确答案（<b>只解缺答案的，已有答案的原封不动</b>）；解完自动写回文本框，可直接「导入题库」。也可随时把当前范式<b>导出成 Word（.docx）</b>——在 Word / WPS 里改完，回本页点「载入文件」选这份 .docx 就能一键导回。均需在「设置」配置 API Key。</p>
+        <p class="muted small">文本框里「答案：」为空的题，交给 AI 补出正确答案（<b>只解缺答案的，已有答案的原封不动</b>）；解完自动写回文本框，<b>AI 解出的答案会标「AI 解答·需核对」</b>，核对无误再导入。也可随时把当前范式<b>导出成 Word（.docx）</b>——在 Word / WPS 里改完，回本页点「载入文件」选这份 .docx 就能一键导回。均需在「设置」配置 API Key。</p>
         <div class="btn-row">
           <button class="btn primary" id="canon-solve">AI 补答案（只解缺答案的题）</button>
           <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
         </div>
         <div class="progress" id="canon-solve-prog" style="display:none"><div class="progress-bar" id="canon-solve-bar"></div></div>
+        <div class="btn-row" id="canon-solve-ctrl" style="display:none">
+          <button class="btn ghost" id="canon-solve-pause" style="color:var(--bad)">⏸ 暂停</button>
+        </div>
         <div class="muted small" id="canon-solve-status"></div>
+        <div class="muted small" id="canon-solve-cost"></div>
       </div>
 
       <div class="card" id="canon-report" style="display:none">
@@ -640,6 +644,19 @@ const App = (() => {
     const solveStatus = document.getElementById('canon-solve-status');
     const solveProg = document.getElementById('canon-solve-prog');
     const solveBar = document.getElementById('canon-solve-bar');
+    const solveCtrl = document.getElementById('canon-solve-ctrl');
+    const solvePause = document.getElementById('canon-solve-pause');
+    const solveCost = document.getElementById('canon-solve-cost');
+
+    let _solveStop = false;   // 暂停标志：当前批跑完立即停
+    solvePause.onclick = () => {
+      _solveStop = true;
+      solvePause.disabled = true;
+      solvePause.textContent = '⏸ 停止中…（当前批完成后停）';
+    };
+
+    /* 费用估算：DeepSeek 按输入 ¥2/百万 tok、输出 ¥8/百万 tok 估算（仅参考） */
+    const _fmtCost = tok => (tok / 1e6 * 8).toFixed(3);
 
     solveBtn.onclick = async () => {
       const text = ta.value;
@@ -654,30 +671,67 @@ const App = (() => {
       }
       if (!r0.stats.missing) { solveStatus.textContent = `✓ ${r0.stats.total} 题都有答案，无需解题`; toast('没有缺答案的题'); return; }
       if (!await ensureApiKey()) return;
+
+      /* ---- 费用预估确认（避免一点就烧钱） ---- */
+      const cfg = await LLM.getConfig();
+      const estBatches = Math.ceil(r0.stats.missing / 10);
+      const estPrompt = estBatches * 900;        // 每批约 900 输入 token（题干+选项+PROMPT）
+      const estCompletion = estBatches * 150;    // 每批约 150 输出 token（10 个答案）
+      const estCost = (estPrompt / 1e6 * 2 + estCompletion / 1e6 * 8).toFixed(3);
+      const conc = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+      const okGo = confirm(
+        `将解 ${r0.stats.missing} 道缺答案的题\n` +
+        `约 ${estBatches} 批 · ${conc} 路并发\n` +
+        `预估消耗：输入 ~${estPrompt} tok + 输出 ~${estCompletion} tok\n` +
+        `预估费用：约 ¥${estCost}（实际以账单为准）\n\n` +
+        `解题过程可随时「⏸ 暂停」，已解出的答案立即写回文本框，断网/退出不丢失。\n\n` +
+        `确认开始？`);
+      if (!okGo) { solveStatus.textContent = '已取消（未调用 API）'; return; }
+
+      _solveStop = false;
+      solvePause.disabled = false;
+      solvePause.textContent = '⏸ 暂停';
       solveBtn.disabled = true;
       solveProg.style.display = '';
+      solveCtrl.style.display = '';
       solveBar.style.width = '0%';
       solveStatus.textContent = `AI 正在解 ${r0.stats.missing} 道缺答案的题（已有答案的不动）…`;
+      solveCost.textContent = '';
       try {
-        const got = await LLM.solveMissing(r0.questions,
-          (done, total, solved, note) => {
+        const ret = await LLM.solveMissing(r0.questions,
+          ({ done, total, solved, usage, paused, note }) => {
             solveBar.style.width = Math.round(total ? done / total * 100 : 0) + '%';
-            solveStatus.textContent = `AI 解题中：第 ${done}/${total} 批 · 已补出 ${solved}${note ? ' · ' + note : ''}`;
+            solveStatus.textContent = paused
+              ? `⏸ 已暂停 · 已解出 ${solved} 题（剩余 ${r0.stats.missing - solved} 题未解）`
+              : `AI 解题中：第 ${done}/${total} 批 · 已补出 ${solved}${note ? ' · ' + note : ''}`;
+            if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
+              solveCost.textContent = `已消耗：输入 ${usage.prompt_tokens || 0} tok + 输出 ${usage.completion_tokens || 0} tok ≈ ¥${_fmtCost((usage.prompt_tokens || 0) * 2 + (usage.completion_tokens || 0) * 8)}`;
+            }
           },
-          (att, cool) => { solveStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; });
+          (att, cool) => { solveStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; },
+          { shouldStop: () => _solveStop, markAI: true, concurrency: conc });
+
         // 把解出的答案落回范式文本（Canon.serialize 按题输出「答案：X」）
         ta.value = Canon.fromQuestions(r0.questions, r0.sections);
         invalidate();
         const r = runCheck();
         const left = r ? r.stats.missing : 0;
-        solveStatus.textContent = got
-          ? `✓ 已补出 ${got} 题答案${left ? `，仍有 ${left} 题未解出（可再点一次重试）` : '，全部都有答案了'}；核对后点「⑤ 导入题库」`
-          : '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
-        toast(got ? `AI 补出 ${got} 题答案` : '未解出任何答案');
+        if (ret.paused) {
+          solveStatus.textContent = `⏸ 已暂停 · 本轮解出 ${ret.solved} 题，剩余 ${left} 题可再次点「AI 补答案」继续`;
+          toast(`已暂停，解出 ${ret.solved} 题`);
+        } else if (ret.solved) {
+          solveStatus.textContent = `✓ 已补出 ${ret.solved} 题答案${left ? `，仍有 ${left} 题未解出（可再点一次重试）` : '，全部都有答案了'}${ret.usage && ret.usage.prompt_tokens ? ` · 消耗 ~${ret.usage.prompt_tokens + ret.usage.completion_tokens} tok ≈ ¥${_fmtCost(ret.usage.prompt_tokens * 2 + ret.usage.completion_tokens * 8)}` : ''}；标「AI 解答」的请核对后点「⑤ 导入题库」`;
+          toast(`AI 补出 ${ret.solved} 题答案，请核对`);
+        } else {
+          solveStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
+          toast('未解出任何答案');
+        }
       } catch (e) {
         solveStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+        toast('解题中断（已解出的不丢失，可重试）');
       } finally {
         solveBtn.disabled = false;
+        solveCtrl.style.display = 'none';
         solveProg.style.display = 'none';
       }
     };

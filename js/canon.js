@@ -557,9 +557,10 @@ C. IGBT
         for (const k of Object.keys(q.options).sort()) out.push(`${k}. ${q.options[k]}`);
       }
       if (q.type === 'judge') {
-        out.push('答案：' + (q.answer === 'A' ? '对' : q.answer === 'B' ? '错' : ''));
+        const ansText = q.answer === 'A' ? '对' : q.answer === 'B' ? '错' : '';
+        out.push('答案：' + ansText + (q.aiAnswer ? '（AI 解答·需核对）' : ''));
       } else {
-        out.push('答案：' + (q.answer || ''));
+        out.push('答案：' + (q.answer || '') + (q.answer && q.aiAnswer ? '（AI 解答·需核对）' : ''));
       }
       if (q.explanation) out.push('解析：' + String(q.explanation).replace(/\s+/g, ' ').trim());
       out.push('');
