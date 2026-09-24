@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.9';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.10';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -409,19 +409,6 @@ const App = (() => {
       <div class="card">
         <div class="card-title">范式 · 一题一块，答案跟着题目走</div>
         <p class="muted small">答案直接写在题目里（<b>答案：B</b>），导入时<b>不需要任何「答案对齐」</b>——不再有扫不上的题；1000 题也是一次线性扫描，零 API 调用、秒级完成。</p>
-        <div class="btn-row">
-          <button class="btn ghost" id="canon-spec-btn">格式说明</button>
-          <button class="btn ghost" id="canon-tpl-fill">填入模板</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="canon-tpl-copy">复制模板</button>
-          <button class="btn ghost" id="canon-tpl-dl">下载模板</button>
-        </div>
-      </div>
-
-      <div class="card" id="canon-spec-card" style="display:none">
-        <div class="card-title">格式说明</div>
-        <pre class="canon-spec"></pre>
       </div>
 
       <div class="card">
@@ -437,10 +424,9 @@ const App = (() => {
         <div class="card-title">② 贴入范式文本</div>
         <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
         <div class="btn-row">
-          <button class="btn ghost" id="canon-pick">载入文件</button>
           <button class="btn ghost" id="canon-conv">Word 转换器</button>
+          <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
         </div>
-        <input type="file" id="canon-file" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
         <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
         <div class="muted small" id="canon-file-status"></div>
         <div class="btn-row">
@@ -448,30 +434,16 @@ const App = (() => {
           <button class="btn primary" id="canon-check">解析预览</button>
         </div>
         <div class="muted small" id="canon-count"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">③ 缺答案 AI 解题 · 导出 Word（可选）</div>
-        <p class="muted small">文本框里「答案：」为空的题，交给 AI 补出正确答案（<b>只解缺答案的，已有答案的原封不动</b>）；解完自动写回文本框，<b>AI 解出的答案会标「AI 解答·需核对」</b>，核对无误再导入。也可随时把当前范式<b>导出成 Word（.docx）</b>——在 Word / WPS 里改完，回本页点「载入文件」选这份 .docx 就能一键导回。均需在「设置」配置 API Key。</p>
-        <div class="btn-row">
-          <button class="btn primary" id="canon-solve">AI 补答案（只解缺答案的题）</button>
-          <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
-        </div>
-        <div class="progress" id="canon-solve-prog" style="display:none"><div class="progress-bar" id="canon-solve-bar"></div></div>
-        <div class="btn-row" id="canon-solve-ctrl" style="display:none">
-          <button class="btn ghost" id="canon-solve-pause" style="color:var(--bad)">⏸ 暂停</button>
-        </div>
-        <div class="muted small" id="canon-solve-status"></div>
-        <div class="muted small" id="canon-solve-cost"></div>
+        <div class="muted small" id="canon-docx-status"></div>
       </div>
 
       <div class="card" id="canon-report" style="display:none">
-        <div class="card-title">④ 解析结果</div>
+        <div class="card-title">③ 解析结果</div>
         <div id="canon-report-body"></div>
       </div>
 
       <div class="card">
-        <div class="card-title">⑤ 导入题库</div>
+        <div class="card-title">④ 导入题库</div>
         <label class="field"><span>题库名称（留空自动命名）</span>
           <input id="canon-name" placeholder="例如：电力电子技术 期末题库">
         </label>
@@ -485,7 +457,6 @@ const App = (() => {
     const reportCard = document.getElementById('canon-report');
     const reportBody = document.getElementById('canon-report-body');
     const importStatus = document.getElementById('canon-import-status');
-    document.querySelector('#canon-spec-card .canon-spec').textContent = Canon.SPEC;
 
     // 文本框一改，上次的解析结果就失效（防止导入了旧内容）
     const invalidate = () => {
@@ -496,53 +467,12 @@ const App = (() => {
     };
     ta.addEventListener('input', invalidate);
 
-    document.getElementById('canon-spec-btn').onclick = () => {
-      const c = document.getElementById('canon-spec-card');
-      c.style.display = c.style.display === 'none' ? '' : 'none';
-    };
-    document.getElementById('canon-tpl-fill').onclick = () => {
-      ta.value = Canon.template();
-      invalidate();
-      countEl.textContent = '模板已填入：照着改即可（题型标记可省略）';
-    };
-    document.getElementById('canon-tpl-copy').onclick = async () => {
-      toast(await copyText(Canon.template()) ? '模板已复制到剪贴板' : '复制失败，请用「下载模板」');
-    };
-    document.getElementById('canon-tpl-dl').onclick = async () => {
-      try {
-        const r = await saveTextFile('刷题宝-范式模板.txt', Canon.template());
-        toast('模板已保存：' + r.path);
-      } catch (e) { toast('保存失败：' + e.message.slice(0, 60)); }
-    };
     document.getElementById('canon-clear').onclick = () => {
       ta.value = '';
       invalidate();
       fileStatus.textContent = '';
       importStatus.textContent = '';
-    };
-
-    // 载入文件（.txt/.md/.docx）：统一走转换器——
-    // 已经是范式 → 原样保留；老格式文档 → 自动转成范式（避免把原始 Word 直接当范式解析出乱码）
-    const fileInput = document.getElementById('canon-file');
-    document.getElementById('canon-pick').onclick = () => fileInput.click();
-    fileInput.onchange = async () => {
-      const f = fileInput.files[0];
-      fileInput.value = '';
-      if (!f) return;
-      fileStatus.textContent = `载入 ${f.name}…`;
-      try {
-        const raw = await readAnyText(f);
-        const res = Canon.convert(raw);
-        ta.value = res.text;
-        invalidate();
-        const s = res.stats;
-        fileStatus.textContent = res.passthrough
-          ? `✓ ${f.name} 已是范式格式，原样载入 · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}`
-          : `✓ 已载入并自动转换：${f.name} · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0} · 缺答案 ${s.missing}`;
-        runCheck();
-      } catch (e) {
-        fileStatus.textContent = '⚠ ' + e.message.slice(0, 100);
-      }
+      docxStatus.textContent = '';
     };
 
     // Word 转换器：旧格式文档（题目+答案表 / 内联答案）→ 范式文本
@@ -590,7 +520,7 @@ const App = (() => {
           <div class="canon-stat"><b style="color:${s.errors ? 'var(--bad)' : 'var(--ok)'}">${s.errors}</b><span>格式错误</span></div>
         </div>
         <div class="muted small">${typeStr || '—'}${s.sections ? ` · ${s.sections} 个章节` : ''}</div>
-        ${s.missing ? '<div class="muted small">缺答案的题也能导入；导入后在题库里用「补答案」上传答案文件，或让 AI 从答案原文照抄对位。</div>' : ''}
+        ${s.missing ? '<div class="muted small">缺答案的题也能导入；导入后在题库「补答案」页上传答案文件、AI 照抄对位，或让 AI 直接解答。</div>' : ''}
         ${r.errors.length ? `<div class="canon-issues">
           <div class="canon-issue-title bad">⚠ ${r.errors.length} 处格式错误（这些题不会被导入）</div>
           ${r.errors.slice(0, 30).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
@@ -638,103 +568,9 @@ const App = (() => {
       }
     };
 
-    /* ---- 缺答案 AI 解题 + 导出范式 Word（.docx） ---- */
-    const solveBtn = document.getElementById('canon-solve');
+    /* ---- 导出范式 Word（.docx） ---- */
     const docxBtn = document.getElementById('canon-docx');
-    const solveStatus = document.getElementById('canon-solve-status');
-    const solveProg = document.getElementById('canon-solve-prog');
-    const solveBar = document.getElementById('canon-solve-bar');
-    const solveCtrl = document.getElementById('canon-solve-ctrl');
-    const solvePause = document.getElementById('canon-solve-pause');
-    const solveCost = document.getElementById('canon-solve-cost');
-
-    let _solveStop = false;   // 暂停标志：当前批跑完立即停
-    solvePause.onclick = () => {
-      _solveStop = true;
-      solvePause.disabled = true;
-      solvePause.textContent = '⏸ 停止中…（当前批完成后停）';
-    };
-
-    /* 费用估算：DeepSeek 按输入 ¥2/百万 tok、输出 ¥8/百万 tok 估算（仅参考） */
-    const _fmtCost = tok => (tok / 1e6 * 8).toFixed(3);
-
-    solveBtn.onclick = async () => {
-      const text = ta.value;
-      if (text.replace(/\s/g, '').length < 5) { toast('请先贴入或转出范式文本'); return; }
-      const r0 = Canon.parse(text);
-      if (!r0.stats.total) { toast('没解析到题目，先点「解析预览」看错误'); return; }
-      // 重排会按解析结果重建文本：有格式错误的题会被丢掉，所以先拦住，避免误删题目
-      if (r0.errors.length) {
-        solveStatus.textContent = `⚠ 文本框里有 ${r0.errors.length} 处格式错误，先按「解析预览」修好再解题（重排会丢掉这些题）`;
-        toast('先修格式错误');
-        return;
-      }
-      if (!r0.stats.missing) { solveStatus.textContent = `✓ ${r0.stats.total} 题都有答案，无需解题`; toast('没有缺答案的题'); return; }
-      if (!await ensureApiKey()) return;
-
-      /* ---- 费用预估确认（避免一点就烧钱） ---- */
-      const cfg = await LLM.getConfig();
-      const estBatches = Math.ceil(r0.stats.missing / 10);
-      const estPrompt = estBatches * 900;        // 每批约 900 输入 token（题干+选项+PROMPT）
-      const estCompletion = estBatches * 150;    // 每批约 150 输出 token（10 个答案）
-      const estCost = (estPrompt / 1e6 * 2 + estCompletion / 1e6 * 8).toFixed(3);
-      const conc = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
-      const okGo = confirm(
-        `将解 ${r0.stats.missing} 道缺答案的题\n` +
-        `约 ${estBatches} 批 · ${conc} 路并发\n` +
-        `预估消耗：输入 ~${estPrompt} tok + 输出 ~${estCompletion} tok\n` +
-        `预估费用：约 ¥${estCost}（实际以账单为准）\n\n` +
-        `解题过程可随时「⏸ 暂停」，已解出的答案立即写回文本框，断网/退出不丢失。\n\n` +
-        `确认开始？`);
-      if (!okGo) { solveStatus.textContent = '已取消（未调用 API）'; return; }
-
-      _solveStop = false;
-      solvePause.disabled = false;
-      solvePause.textContent = '⏸ 暂停';
-      solveBtn.disabled = true;
-      solveProg.style.display = '';
-      solveCtrl.style.display = '';
-      solveBar.style.width = '0%';
-      solveStatus.textContent = `AI 正在解 ${r0.stats.missing} 道缺答案的题（已有答案的不动）…`;
-      solveCost.textContent = '';
-      try {
-        const ret = await LLM.solveMissing(r0.questions,
-          ({ done, total, solved, usage, paused, note }) => {
-            solveBar.style.width = Math.round(total ? done / total * 100 : 0) + '%';
-            solveStatus.textContent = paused
-              ? `⏸ 已暂停 · 已解出 ${solved} 题（剩余 ${r0.stats.missing - solved} 题未解）`
-              : `AI 解题中：第 ${done}/${total} 批 · 已补出 ${solved}${note ? ' · ' + note : ''}`;
-            if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
-              solveCost.textContent = `已消耗：输入 ${usage.prompt_tokens || 0} tok + 输出 ${usage.completion_tokens || 0} tok ≈ ¥${_fmtCost((usage.prompt_tokens || 0) * 2 + (usage.completion_tokens || 0) * 8)}`;
-            }
-          },
-          (att, cool) => { solveStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; },
-          { shouldStop: () => _solveStop, markAI: true, concurrency: conc });
-
-        // 把解出的答案落回范式文本（Canon.serialize 按题输出「答案：X」）
-        ta.value = Canon.fromQuestions(r0.questions, r0.sections);
-        invalidate();
-        const r = runCheck();
-        const left = r ? r.stats.missing : 0;
-        if (ret.paused) {
-          solveStatus.textContent = `⏸ 已暂停 · 本轮解出 ${ret.solved} 题，剩余 ${left} 题可再次点「AI 补答案」继续`;
-          toast(`已暂停，解出 ${ret.solved} 题`);
-        } else if (ret.solved) {
-          solveStatus.textContent = `✓ 已补出 ${ret.solved} 题答案${left ? `，仍有 ${left} 题未解出（可再点一次重试）` : '，全部都有答案了'}${ret.usage && ret.usage.prompt_tokens ? ` · 消耗 ~${ret.usage.prompt_tokens + ret.usage.completion_tokens} tok ≈ ¥${_fmtCost(ret.usage.prompt_tokens * 2 + ret.usage.completion_tokens * 8)}` : ''}；标「AI 解答」的请核对后点「⑤ 导入题库」`;
-          toast(`AI 补出 ${ret.solved} 题答案，请核对`);
-        } else {
-          solveStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
-          toast('未解出任何答案');
-        }
-      } catch (e) {
-        solveStatus.textContent = '⚠ ' + e.message.slice(0, 140);
-        toast('解题中断（已解出的不丢失，可重试）');
-      } finally {
-        solveBtn.disabled = false;
-        solveCtrl.style.display = 'none';
-        solveProg.style.display = 'none';
-      }
-    };
+    const docxStatus = document.getElementById('canon-docx-status');
 
     docxBtn.onclick = async () => {
       const text = ta.value;
@@ -742,10 +578,10 @@ const App = (() => {
       try {
         const name = (document.getElementById('canon-name').value.trim() || '刷题宝-范式') + '.docx';
         const r = await saveDocxFile(name, text);
-        solveStatus.textContent = `✓ 已导出 Word：${r.path}（Word / WPS 可编辑；改完回本页点「载入文件」选它即可导回）`;
+        docxStatus.textContent = `✓ 已导出 Word：${r.path}（Word / WPS 可编辑；改完回本页点「Word 转换器」选它即可导回）`;
         toast('已导出范式 Word');
       } catch (e) {
-        solveStatus.textContent = '⚠ 导出失败：' + e.message.slice(0, 100);
+        docxStatus.textContent = '⚠ 导出失败：' + e.message.slice(0, 100);
       }
     };
 
@@ -1097,7 +933,7 @@ const App = (() => {
         <div class="btn-row">
           <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
-        <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「载入文件」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
+        <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「Word 转换器」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
         <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠</div>
         <div id="no-grid"></div>
@@ -1356,14 +1192,24 @@ const App = (() => {
       </div>
 
       <div class="card">
-        <div class="card-title">上传答案文件自动补答案（推荐，免费）</div>
+        <div class="card-title">方式一 · 上传答案文件自动补答案（推荐，免费）</div>
         <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
         <input type="file" id="ans-file-input" multiple accept=".docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
         <div id="ans-ai-match"></div>
       </div>
-      ${noAns.length ? '' : '<div class="card"><div class="muted small">本库所有题目都已有答案，无需补答案。</div></div>'}`;
+      ${noAns.length ? `
+      <div class="card">
+        <div class="card-title">方式二 · AI 解答剩余题目（可选，产生 API 费用）</div>
+        <p class="muted small">答案文件和对位都搞不定的题，让 AI 直接做题补答案：<b>只解缺答案的 ${noAns.length} 题，已有答案的一律不动</b>；解出的会标「AI 解答·需核对」，建议人工核对。需在「设置」配置 API Key，按量计费。</p>
+        <button class="btn ghost big" id="ans-ai-btn">AI 解答 ${noAns.length} 题</button>
+        <div class="btn-row" id="ans-ai-ctrl" style="display:none">
+          <button class="btn ghost" id="ans-ai-pause" style="color:var(--bad)">⏸ 暂停</button>
+        </div>
+        <div class="progress" id="ans-ai-prog" style="display:none"><div class="progress-bar" id="ans-ai-bar"></div></div>
+        <div class="muted small" id="ans-ai-status"></div>
+      </div>` : '<div class="card"><div class="muted small">本库所有题目都已有答案，无需补答案。</div></div>'}`;
 
     const fileStatus = document.getElementById('ans-file-status');
 
@@ -1447,6 +1293,90 @@ const App = (() => {
         if (st) st.textContent = '⚠ ' + e.message.slice(0, 100);
         if (btn) { btn.disabled = false; btn.textContent = '重试 AI 智能对位'; }
       }
+    }
+
+    // 方式二：AI 解答剩余题目（原卷没答案时的兜底；只解缺答案的题，可暂停，逐题落库不丢进度）
+    if (noAns.length) {
+      const aiBtn = document.getElementById('ans-ai-btn');
+      const aiStatus = document.getElementById('ans-ai-status');
+      const aiProg = document.getElementById('ans-ai-prog');
+      const aiBar = document.getElementById('ans-ai-bar');
+      const aiCtrl = document.getElementById('ans-ai-ctrl');
+      const aiPause = document.getElementById('ans-ai-pause');
+      let stop = false;
+      aiPause.onclick = () => {
+        stop = true;
+        aiPause.disabled = true;
+        aiPause.textContent = '⏸ 停止中…（当前批完成后停）';
+      };
+      const saveQ = q => { DB.questionPut(q).catch(() => {}); };
+
+      aiBtn.onclick = async () => {
+        const todo = noAns.filter(q => !q.answer);
+        if (!todo.length) return toast('没有缺答案的题了');
+        const cfg = await LLM.getConfig();
+        if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
+
+        // 费用预估确认（DeepSeek 估算：输入 ¥2/百万 tok、输出 ¥8/百万 tok，仅参考）
+        const estBatches = Math.ceil(todo.length / 10);
+        const estPrompt = estBatches * 900;
+        const estCompletion = estBatches * 150;
+        const estCost = (estPrompt / 1e6 * 2 + estCompletion / 1e6 * 8).toFixed(3);
+        const conc = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+        if (!confirmDialog(
+          `将让 AI 解答 ${todo.length} 道缺答案的题\n` +
+          `约 ${estBatches} 批 · ${conc} 路并发\n` +
+          `预估消耗：输入 ~${estPrompt} tok + 输出 ~${estCompletion} tok\n` +
+          `预估费用：约 ¥${estCost}（实际以账单为准）\n\n` +
+          `解出的答案标「AI 解答·需核对」；可随时「⏸ 暂停」，已解出的立即存库。\n\n` +
+          `确认开始？`)) { aiStatus.textContent = '已取消（未调用 API）'; return; }
+
+        stop = false;
+        aiPause.disabled = false;
+        aiPause.textContent = '⏸ 暂停';
+        aiBtn.disabled = true;
+        aiCtrl.style.display = '';
+        aiProg.style.display = '';
+        aiBar.style.width = '0%';
+        aiStatus.textContent = `AI 正在解答 ${todo.length} 题（已有答案的不动）…`;
+        const savedIds = new Set();
+        try {
+          const ret = await LLM.solveMissing(noAns,
+            ({ done, total, solved, usage, paused, note }) => {
+              aiBar.style.width = Math.round(total ? done / total * 100 : 0) + '%';
+              aiStatus.textContent = paused
+                ? `⏸ 已暂停 · 已解出 ${solved} 题`
+                : `AI 解答中：第 ${done}/${total} 批 · 已解出 ${solved}${note ? ' · ' + note : ''}`;
+              if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
+                aiStatus.textContent += ` · 已耗 ${(usage.prompt_tokens || 0) + (usage.completion_tokens || 0)} tok`;
+              }
+              // 每批解出的立即落库，断网/退出不丢
+              for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
+            },
+            (att, cool) => { aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; },
+            { shouldStop: () => stop, isDone: q => !!q.answer, markAI: true, concurrency: conc });
+
+          for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
+          const left = noAns.filter(q => !q.answer).length;
+          if (ret.paused) {
+            toast(`已暂停，解出 ${ret.solved} 题`);
+            render();
+          } else if (ret.solved) {
+            toast(`AI 解出 ${ret.solved} 题答案（已标「AI 解答·需核对」），请核对${left ? `，剩 ${left} 题未解出` : ''}`);
+            render();
+          } else {
+            aiStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
+            toast('未解出任何答案');
+          }
+        } catch (e) {
+          aiStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+          toast('解答中断（已解出的已存库，可重试）');
+        } finally {
+          aiBtn.disabled = false;
+          aiCtrl.style.display = 'none';
+          aiProg.style.display = 'none';
+        }
+      };
     }
   }
 
