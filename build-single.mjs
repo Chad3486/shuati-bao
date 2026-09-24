@@ -2,7 +2,7 @@
 // 产出两个文件：
 //   dist/刷题宝-单文件版.html       完整版（含 Word 解析）
 //   dist/刷题宝-单文件版-精简.html  精简版（去掉 Word 解析，体积更小，用「范式导入」贴文本）
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, copyFile } from 'fs/promises';
 
 const read = f => readFile(f, 'utf8');
 
@@ -50,3 +50,8 @@ console.log('OK -> dist/刷题宝-单文件版.html (' + (full.length / 1024).to
 const lite = await build(true);
 await writeFile('dist/刷题宝-单文件版-精简.html', lite);
 console.log('OK -> dist/刷题宝-单文件版-精简.html (' + (lite.length / 1024).toFixed(0) + ' KB)');
+
+const ASSETS_DIR = 'apk-src/app/src/main/assets';
+await mkdir(ASSETS_DIR, { recursive: true });
+await copyFile('dist/刷题宝-单文件版.html', ASSETS_DIR + '/app.html');
+console.log('OK -> ' + ASSETS_DIR + '/app.html (' + (full.length / 1024).toFixed(0) + ' KB)');
