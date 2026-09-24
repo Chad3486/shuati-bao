@@ -75,7 +75,6 @@ public class MainActivity extends AppCompatActivity {
                 i.setType("*/*");
                 i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); // 多文件导入
                 i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                        "application/pdf",
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         "application/msword",
                         "text/plain",
@@ -203,7 +202,6 @@ public class MainActivity extends AppCompatActivity {
     private static String guessMimeType(String fileName) {
         String lower = fileName.toLowerCase();
         if (lower.endsWith(".json")) return "application/json";
-        if (lower.endsWith(".pdf")) return "application/pdf";
         if (lower.endsWith(".txt")) return "text/plain";
         if (lower.endsWith(".doc")) return "application/msword";
         if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

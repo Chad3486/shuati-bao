@@ -1,94 +1,5 @@
-/* ========== 文件文本提取层（PDF / DOCX） ========== */
+/* ========== 文件文本提取层（Word / 文本） ========== */
 const Extractor = (() => {
-
-  /* 配置 pdf.js worker（同目录） */
-  if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
-  }
-
-  /* ---- PDF：逐页提取并智能合并断行 ---- */
-  async function fromPDF(file, onProgress) {
-    if (!window.pdfjsLib) throw new Error('当前为精简版（未内置 PDF 解析），请改用「范式导入」，或下载完整版');
-    const buf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    const pages = [];
-    let textChars = 0;
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      // items 按阅读顺序拼接；换行由 hasEOL 判断
-      let text = '';
-      let lastY = null;
-      for (const item of content.items) {
-        if (!item.str) continue;
-        const y = item.transform ? item.transform[5] : null;
-        const sameLine = lastY !== null && y !== null && Math.abs(y - lastY) < 3;
-        text += (sameLine && text && !text.endsWith(' ')) ? '' : '\n';
-        text += item.str;
-        if (item.hasEOL) text += '\n';
-        lastY = y;
-      }
-      textChars += text.replace(/\s/g, '').length;
-      pages.push({ text, pageIdx: i, pdfPage: page });
-      if (onProgress) onProgress(i, pdf.numPages);
-    }
-    // 文字层字数太少 → 可能是扫描版，按页 OCR 兜底
-    if (textChars < Math.max(50, pdf.numPages * 20)) {
-      for (let i = 0; i < pages.length; i++) {
-        const p = pages[i];
-        try {
-          const ocr = await ocrPage(p.pdfPage, (cur, tot) => {
-            if (onProgress) onProgress(i + 1 + cur / tot, pdf.numPages);
-          });
-          if (ocr && ocr.trim().length > (p.text || '').length) {
-            p.text = ocr;
-          }
-        } catch (e) {
-          console.warn('OCR 第' + (i + 1) + '页失败:', e);
-        }
-      }
-    }
-    return pages.map(p => p.text).join('\n');
-  }
-
-  /* ---- 单页 PDF → Canvas → Tesseract.js OCR ---- */
-  let _ocrReady = null;
-  async function ensureOCR() {
-    if (_ocrReady) return _ocrReady;
-    _ocrReady = (async () => {
-      if (!window.Tesseract) {
-        await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js');
-      }
-      return window.Tesseract;
-    })();
-    return _ocrReady;
-  }
-  function loadScript(src) {
-    return new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = src; s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
-    });
-  }
-  async function ocrPage(pdfPage, onProgress) {
-    const Tesseract = await ensureOCR();
-    const viewport = pdfPage.getViewport({ scale: 2.0 });
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await pdfPage.render({ canvasContext: ctx, viewport }).promise;
-    let last = 0;
-    const res = await Tesseract.recognize(canvas, 'chi_sim+eng', {
-      logger: m => {
-        if (m.status === 'recognizing text' && onProgress) {
-          const v = m.progress || 0;
-          if (v - last >= 0.2) { last = v; onProgress(Math.floor(v * 9) + 1, 10); }
-        }
-      }
-    });
-    return res.data.text || '';
-  }
 
   /* ---- DOCX：mammoth 提取纯文本 ---- */
   async function fromDOCX(file) {
@@ -101,9 +12,6 @@ const Extractor = (() => {
   /* ---- 统一入口 ---- */
   async function extract(file, onProgress) {
     const name = file.name.toLowerCase();
-    if (name.endsWith('.pdf')) {
-      return fromPDF(file, onProgress);
-    }
     if (name.endsWith('.docx')) {
       const t = await fromDOCX(file);
       if (onProgress) onProgress(1, 1);
@@ -112,7 +20,10 @@ const Extractor = (() => {
     if (name.endsWith('.doc')) {
       throw new Error('暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后重试');
     }
-    throw new Error('不支持的格式：' + file.name + '（仅支持 PDF / DOCX）');
+    if (name.endsWith('.pdf')) {
+      throw new Error('已移除 PDF 解析：请先把 PDF 另存为 Word(.docx) 或文本，或用「范式导入」直接贴文本');
+    }
+    throw new Error('不支持的格式：' + file.name + '（仅支持 DOCX）');
   }
 
   /* ---- 噪声行检测：统计出现≥3次的短行（页眉页脚）+ 关键词兜底 ----
@@ -374,7 +285,7 @@ const Extractor = (() => {
      hintType：小节题型提示（judge 节 → 判断题，options 固定正确/错误）
      hintKey：小节-题号（透传到结果，供跨节去重）
      选项采用集合校验：去重排序后以 A 开头、最多缺 1 个中间字母即可（标 _degraded），
-     不再要求从 A 起严格连续——解决 PDF 转制选项乱序被整题丢弃 ---- */
+     不再要求从 A 起严格连续——解决转制文档选项乱序被整题丢弃 ---- */
   function parseOneQuestion(no, text, hintType, hintKey) {
     let t = text;
     let answer = null;

@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.8';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.9';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -131,7 +131,7 @@ const App = (() => {
     return saveBlobFile(fileName, blob);
   }
 
-  /* 读任意题库文件为纯文本（.txt/.md 直读；PDF/DOCX 走提取器） */
+  /* 读任意题库文件为纯文本（.txt/.md 直读；DOCX 走提取器） */
   async function readAnyText(file) {
     const n = file.name.toLowerCase();
     if (/\.(txt|md|markdown|text)$/.test(n)) return await file.text();
@@ -160,7 +160,7 @@ const App = (() => {
       texts.push(Extractor.cleanText(raw));
     }
     const raw = texts.join('\n\n').trim();
-    if (raw.replace(/\s/g, '').length < 50) throw new Error('没提取到文字（扫描件请确认已完成 OCR，或换个文件试试）');
+    if (raw.replace(/\s/g, '').length < 50) throw new Error('没提取到文字（可能是图片型 / 扫描件文件，请改用含可复制文字的文档）');
     const local = Canon.convert(raw);
     if (local.passthrough) {
       say('✓ 这份文档已经是范式格式，直接使用（0 次 API 调用）');
@@ -299,7 +299,7 @@ const App = (() => {
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
       <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
-      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（PDF / Word 自动解析）</button>
+      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（Word 自动解析）</button>
       ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       ${banks.length > LIMIT ? `
@@ -426,9 +426,9 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">① 文件 → AI 转范式（可选）</div>
-        <p class="muted small">上传 PDF / Word 原卷（题目文件与配套答案文件可一起选）：先在本地<b>免费</b>提取文字，再让 AI 把原卷<b>重排成范式文本</b>——答案只从原卷<b>照抄</b>，AI 不做题。转完自动填进下面文本框，核对后一键导入。需在「设置」配置 API Key。</p>
-        <button class="btn primary big" id="canon-ai-conv">选择 PDF / Word 文件</button>
-        <input type="file" id="canon-ai-file" multiple accept=".pdf,.docx,.doc,.txt,.md" style="display:none">
+        <p class="muted small">上传 Word 原卷（题目文件与配套答案文件可一起选）：先在本地<b>免费</b>提取文字，再让 AI 把原卷<b>重排成范式文本</b>——答案只从原卷<b>照抄</b>，AI 不做题。转完自动填进下面文本框，核对后一键导入。需在「设置」配置 API Key。</p>
+        <button class="btn primary big" id="canon-ai-conv">选择 Word 文件</button>
+        <input type="file" id="canon-ai-file" multiple accept=".docx,.doc,.txt,.md" style="display:none">
         <div class="progress" id="canon-ai-prog" style="display:none"><div class="progress-bar" id="canon-ai-bar"></div></div>
         <div class="muted small" id="canon-ai-conv-status"></div>
       </div>
@@ -441,7 +441,7 @@ const App = (() => {
           <button class="btn ghost" id="canon-conv">Word 转换器</button>
         </div>
         <input type="file" id="canon-file" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
-        <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc,.pdf" style="display:none">
+        <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
         <div class="muted small" id="canon-file-status"></div>
         <div class="btn-row">
           <button class="btn ghost" id="canon-clear">清空</button>
@@ -521,7 +521,7 @@ const App = (() => {
       importStatus.textContent = '';
     };
 
-    // 载入文件（.txt/.md/.docx/.pdf）：统一走转换器——
+    // 载入文件（.txt/.md/.docx）：统一走转换器——
     // 已经是范式 → 原样保留；老格式文档 → 自动转成范式（避免把原始 Word 直接当范式解析出乱码）
     const fileInput = document.getElementById('canon-file');
     document.getElementById('canon-pick').onclick = () => fileInput.click();
@@ -800,10 +800,10 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">第 1 步 · 选择文件</div>
-        <p class="muted">支持多选 PDF、DOCX。题目文件可与<b>配套答案文件</b>一起选中：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 精确匹配填入答案与解析。</p>
-        <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用（扫描版 PDF 会自动 OCR）。</p>
+        <p class="muted">支持多选 DOCX（Word）。题目文件可与<b>配套答案文件</b>一起选中：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 精确匹配填入答案与解析。</p>
+        <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
-        <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc" style="display:none">
+        <input type="file" id="file-input" multiple accept=".docx,.doc" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
       <div class="card">
@@ -959,7 +959,7 @@ const App = (() => {
 
         const bank = {
           id: DB.uid(),
-          name: f.name.replace(/\.(pdf|docx|doc)$/i, ''),
+          name: f.name.replace(/\.(docx|doc)$/i, ''),
           createdAt: Date.now(),
           count: res.questions.length,
           source: f.name,
@@ -997,7 +997,7 @@ const App = (() => {
     statusEl.textContent = '全部完成';
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
       ${lastPickedFiles.length ? '<button class="btn ghost big" id="to-canon-btn">解析不满意？改用 AI 转范式导入</button>' : ''}
-      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；扫描版 PDF 会自动 OCR（较慢）；.doc 需另存为 .docx</div>`;
+      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；.doc 需另存为 .docx</div>`;
     // 本地解析不理想时：把同一批文件交给 AI 重排成范式文本，转到「范式导入」页核对后导入（答案零对齐）
     const toCanonBtn = document.getElementById('to-canon-btn');
     if (toCanonBtn) toCanonBtn.onclick = async () => {
@@ -1359,7 +1359,7 @@ const App = (() => {
         <div class="card-title">上传答案文件自动补答案（推荐，免费）</div>
         <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
-        <input type="file" id="ans-file-input" multiple accept=".pdf,.docx,.doc,.txt" style="display:none">
+        <input type="file" id="ans-file-input" multiple accept=".docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
         <div id="ans-ai-match"></div>
       </div>
