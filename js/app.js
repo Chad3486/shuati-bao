@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.5';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.6';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -125,6 +125,45 @@ const App = (() => {
     const n = file.name.toLowerCase();
     if (/\.(txt|md|markdown|text)$/.test(n)) return await file.text();
     return await Extractor.extract(file);
+  }
+
+  /* ---- AI 功能通用：确认已配置 API Key（未配置则引导去设置页） ---- */
+  async function ensureApiKey() {
+    const cfg = await LLM.getConfig();
+    if (cfg.apiKey) return true;
+    toast('请先到「设置」配置 API Key');
+    navigate('#/settings');
+    return false;
+  }
+
+  /* ---- 文件 → 范式文本：本地抽文字（免费）→ 已是范式就直接用 → 否则 AI 只做排版 ----
+     AI 只负责「重排格式」，答案一律从原卷照抄，不做题：产物丢给本地 Canon.parse 预览后导入 */
+  async function aiCanonFromFiles(files, ui = {}) {
+    const say = ui.onStatus || (() => {});
+    const prog = ui.onProgress || (() => {});
+    const texts = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      say(`提取文字 ${i + 1}/${files.length}：${f.name}（本地解析，不花 API）…`);
+      const raw = await Extractor.extract(f, (p, t) => say(`提取 ${f.name}：${p}/${t} 页`));
+      texts.push(Extractor.cleanText(raw));
+    }
+    const raw = texts.join('\n\n').trim();
+    if (raw.replace(/\s/g, '').length < 50) throw new Error('没提取到文字（扫描件请确认已完成 OCR，或换个文件试试）');
+    const local = Canon.convert(raw);
+    if (local.passthrough) {
+      say('✓ 这份文档已经是范式格式，直接使用（0 次 API 调用）');
+      prog(1);
+      return local.text;
+    }
+    const text = await LLM.fileToCanon(raw,
+      (done, total, note) => {
+        prog(total ? done / total : 0);
+        say(`AI 转换中：${note || ''} · 只做排版，答案从原卷照抄`);
+      },
+      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'));
+    prog(1);
+    return text;
   }
 
   /* 复制到剪贴板（APK WebView 可能没有 clipboard API，降级用临时 textarea） */
@@ -375,7 +414,16 @@ const App = (() => {
       </div>
 
       <div class="card">
-        <div class="card-title">① 贴入范式文本</div>
+        <div class="card-title">① 文件 → AI 转范式（可选）</div>
+        <p class="muted small">上传 PDF / Word 原卷（题目文件与配套答案文件可一起选）：先在本地<b>免费</b>提取文字，再让 AI 把原卷<b>重排成范式文本</b>——答案只从原卷<b>照抄</b>，AI 不做题。转完自动填进下面文本框，核对后一键导入。需在「设置」配置 API Key。</p>
+        <button class="btn primary big" id="canon-ai-conv">选择 PDF / Word 文件</button>
+        <input type="file" id="canon-ai-file" multiple accept=".pdf,.docx,.doc,.txt,.md" style="display:none">
+        <div class="progress" id="canon-ai-prog" style="display:none"><div class="progress-bar" id="canon-ai-bar"></div></div>
+        <div class="muted small" id="canon-ai-conv-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">② 贴入范式文本</div>
         <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
         <div class="btn-row">
           <button class="btn ghost" id="canon-pick">载入文件</button>
@@ -392,15 +440,8 @@ const App = (() => {
       </div>
 
       <div class="card" id="canon-report" style="display:none">
-        <div class="card-title">② 解析结果</div>
+        <div class="card-title">③ 解析结果</div>
         <div id="canon-report-body"></div>
-      </div>
-
-      <div class="card" id="canon-ai-card" style="display:none">
-        <div class="card-title">③ AI 解题（可选）</div>
-        <p class="muted small">让 AI 直接做缺答案的题，答案写回上面的文本框（可再人工核对后导入）。需在「设置」里配置 API Key。</p>
-        <button class="btn ghost big" id="canon-ai-btn"></button>
-        <div class="muted small" id="canon-ai-status"></div>
       </div>
 
       <div class="card">
@@ -417,16 +458,12 @@ const App = (() => {
     const countEl = document.getElementById('canon-count');
     const reportCard = document.getElementById('canon-report');
     const reportBody = document.getElementById('canon-report-body');
-    const aiCard = document.getElementById('canon-ai-card');
-    const aiBtn = document.getElementById('canon-ai-btn');
-    const aiStatus = document.getElementById('canon-ai-status');
     const importStatus = document.getElementById('canon-import-status');
     document.querySelector('#canon-spec-card .canon-spec').textContent = Canon.SPEC;
 
     // 文本框一改，上次的解析结果就失效（防止导入了旧内容）
     const invalidate = () => {
       canonParsed = null;
-      aiCard.style.display = 'none';
       reportCard.style.display = 'none';
       const n = ta.value.replace(/\s/g, '').length;
       countEl.textContent = n ? `当前文本 ${ta.value.length} 字符` : '';
@@ -527,6 +564,7 @@ const App = (() => {
           <div class="canon-stat"><b style="color:${s.errors ? 'var(--bad)' : 'var(--ok)'}">${s.errors}</b><span>格式错误</span></div>
         </div>
         <div class="muted small">${typeStr || '—'}${s.sections ? ` · ${s.sections} 个章节` : ''}</div>
+        ${s.missing ? '<div class="muted small">缺答案的题也能导入；导入后在题库里用「补答案」上传答案文件，或让 AI 从答案原文照抄对位。</div>' : ''}
         ${r.errors.length ? `<div class="canon-issues">
           <div class="canon-issue-title bad">⚠ ${r.errors.length} 处格式错误（这些题不会被导入）</div>
           ${r.errors.slice(0, 30).map(e => `<div class="canon-issue"><span class="ln">第${e.line}行</span>${escapeHtml(e.msg)}</div>`).join('')}
@@ -538,48 +576,51 @@ const App = (() => {
           ${r.warns.length > 20 ? '<div class="muted small">…仅显示前 20 条</div>' : ''}
         </div>` : ''}`;
 
-      const noAns = r.questions.filter(q => !q.answer);
-      if (noAns.length) {
-        aiCard.style.display = '';
-        aiBtn.disabled = false;
-        aiBtn.textContent = `AI 解答缺答案的 ${noAns.length} 题`;
-        aiStatus.textContent = '也可以直接在文本框里补「答案：」，再点「解析预览」';
-      } else {
-        aiCard.style.display = 'none';
-      }
       return r;
     }
 
-    /* ---- AI 解题：补缺答案，写回文本框 ---- */
-    aiBtn.onclick = async () => {
-      const r = canonParsed || runCheck();
-      if (!r) return;
-      const noAns = r.questions.filter(q => !q.answer);
-      if (!noAns.length) return toast('没有缺答案的题了');
-      const cfg = await LLM.getConfig();
-      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
-      aiBtn.disabled = true;
-      aiStatus.textContent = 'AI 解题中…（自适应批量、进度实时反馈）';
+    /* ---- 文件 → AI 转范式：本地先免费抽文字，再让 AI 只做排版（答案照抄原卷，不做题） ---- */
+    const aiFileInput = document.getElementById('canon-ai-file');
+    const aiConvBtn = document.getElementById('canon-ai-conv');
+    const aiConvStatus = document.getElementById('canon-ai-conv-status');
+    const aiProg = document.getElementById('canon-ai-prog');
+    const aiBar = document.getElementById('canon-ai-bar');
+    aiConvBtn.onclick = () => aiFileInput.click();
+    aiFileInput.onchange = async () => {
+      const files = [...aiFileInput.files];
+      aiFileInput.value = '';
+      if (!files.length) return;
+      if (!await ensureApiKey()) return;
+      aiConvBtn.disabled = true;
+      aiProg.style.display = '';
+      aiBar.style.width = '0%';
       try {
-        const solved = await LLM.solveQuestions(noAns, (done, total, got, note) => {
-          if (total <= 0) { if (note) aiStatus.textContent = note; return; }
-          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解题中：${done}/${total} 批 · 已得 ${got} 个答案`;
-        }, (c, a, cool) => {
-          aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…';
+        const text = await aiCanonFromFiles(files, {
+          onStatus: s => { aiConvStatus.textContent = s; },
+          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; }
         });
-        // 答案写回文本框（AI 答案仅供练习参考，可人工核对后再导入）
-        const left = r.questions.filter(q => !q.answer).length;
-        ta.value = Canon.fromQuestions(r.questions, r.sections);
-        const re = runCheck();
-        aiStatus.textContent = `✓ AI 补了 ${solved} 个答案，已写回文本框（可人工核对）`
-          + (left ? `；剩 ${left} 题未解出` : '')
-          + (re?.stats.errors ? `；⚠ 文本有 ${re.stats.errors} 处格式错误` : '');
-        toast(`AI 补了 ${solved} 个答案`);
+        ta.value = text;
+        invalidate();
+        const r = runCheck();
+        aiConvStatus.textContent = `✓ 已转成范式并填入下方文本框${r ? `：${r.stats.total} 题 · 有答案 ${r.stats.answered}` : ''}，核对无误后点「导入题库」`;
+        toast('AI 转范式完成，请核对后导入');
       } catch (e) {
-        aiStatus.textContent = '⚠ ' + e.message.slice(0, 120);
-        aiBtn.disabled = false;
+        aiConvStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+      } finally {
+        aiConvBtn.disabled = false;
+        aiProg.style.display = 'none';
       }
     };
+
+    // 「导入文件」页转好后带过来的范式文本：直接填进文本框并预览
+    DB.metaGet('canonDraft').then(d => {
+      if (!d) return;
+      DB.metaSet('canonDraft', null);
+      ta.value = d;
+      invalidate();
+      fileStatus.textContent = '✓ 已载入「AI 转范式」结果，核对后点「导入题库」';
+      runCheck();
+    });
 
     /* ---- 导入题库 ---- */
     document.getElementById('canon-import').onclick = async () => {
@@ -615,6 +656,8 @@ const App = (() => {
   }
 
   /* ================= 页面：导入 ================= */
+  let lastPickedFiles = [];   // 「导入文件」页最近一次选中的文件（供「改用 AI 转范式」复用）
+
   function pageImport() {
     topbar('导入文件', '#/home');
     $view().innerHTML = `
@@ -647,7 +690,7 @@ const App = (() => {
 
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
-    input.onchange = () => handleFiles([...input.files]);
+    input.onchange = () => { lastPickedFiles = [...input.files]; handleFiles(lastPickedFiles); };
   }
 
   async function handleFiles(files) {
@@ -816,7 +859,26 @@ const App = (() => {
     bar.style.width = '100%';
     statusEl.textContent = '全部完成';
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
+      ${lastPickedFiles.length ? '<button class="btn ghost big" id="to-canon-btn">解析不满意？改用 AI 转范式导入</button>' : ''}
       <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；扫描版 PDF 会自动 OCR（较慢）；.doc 需另存为 .docx</div>`;
+    // 本地解析不理想时：把同一批文件交给 AI 重排成范式文本，转到「范式导入」页核对后导入（答案零对齐）
+    const toCanonBtn = document.getElementById('to-canon-btn');
+    if (toCanonBtn) toCanonBtn.onclick = async () => {
+      if (!await ensureApiKey()) return;
+      toCanonBtn.disabled = true;
+      try {
+        const text = await aiCanonFromFiles(lastPickedFiles, {
+          onStatus: s => { statusEl.textContent = s; },
+          onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; }
+        });
+        await DB.metaSet('canonDraft', text);
+        toast('已转成范式，去核对后导入');
+        navigate('#/canon');
+      } catch (e) {
+        statusEl.textContent = '⚠ ' + e.message.slice(0, 140);
+        toCanonBtn.disabled = false;
+      }
+    };
   }
 
   /* ================= 页面：题目列表（搜索 / 筛选 / 勾选 / 折叠） ================= */
@@ -1157,34 +1219,16 @@ const App = (() => {
       </div>
 
       <div class="card">
-        <div class="card-title">方式一 · 上传答案文件（推荐，免费）</div>
-        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底。</p>
+        <div class="card-title">上传答案文件自动补答案（推荐，免费）</div>
+        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
         <input type="file" id="ans-file-input" multiple accept=".pdf,.docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
         <div id="ans-ai-match"></div>
       </div>
+      ${noAns.length ? '' : '<div class="card"><div class="muted small">本库所有题目都已有答案，无需补答案。</div></div>'}`;
 
-      <div class="card">
-        <div class="card-title">方式二 · AI 解答剩余题目</div>
-        <p class="muted small">由 AI 做题生成答案（可能出错，仅供练习参考；建议配合教材核对关键题）。</p>
-        <button class="btn ghost big" id="ans-ai-btn" ${noAns.length ? '' : 'disabled'}>${noAns.length ? `AI 解答 ${noAns.length} 题` : '本库无缺答案题'}</button>
-        <div class="muted small" id="ans-ai-status">${noAns.length ? '' : '本库所有题目都已有答案，如需复核可使用下方「AI 校验」'}</div>
-      </div>
-
-      ${qs.length - noAns.length ? `
-      <div class="card">
-        <div class="card-title">方式三 · AI 校验答案并补解析</div>
-        <p class="muted small">AI 独立重做每道题，与现有答案比对：一致的确认可信；不一致的列出来由你裁决（原答案不改动）。同时给缺解析的题补上 AI 解析。</p>
-        <button class="btn ghost big" id="ans-verify-btn">校验 ${qs.length - noAns.length} 道已答题目</button>
-        <div class="muted small" id="ans-verify-status"></div>
-        <div id="verify-result"></div>
-      </div>` : ''}
-      <div class="progress"><div class="progress-bar" id="ans-bar"></div></div>`;
-
-    const bar = document.getElementById('ans-bar');
     const fileStatus = document.getElementById('ans-file-status');
-    const aiStatus = document.getElementById('ans-ai-status');
 
     // 方式一：答案文件匹配（结构化：章/节/题号精确对位，解析一并填入；对不上的转 AI 智能对位兜底）
     const input = document.getElementById('ans-file-input');
@@ -1259,7 +1303,7 @@ const App = (() => {
         const left = noAns.filter(q => !q.answer).length;
         if (st) st.textContent = r.filled
           ? `✓ AI 智能对位填入 ${r.filled} 个答案${r.explained ? `（含 ${r.explained} 条解析）` : ''}` + (left ? `，剩 ${left} 题未在答案原文中找到` : '')
-          : '答案原文中未找到更多答案，可试「方式二 · AI 解答」';
+          : '答案原文中未找到更多答案；若原卷排版太乱，可到「范式导入」页用「文件 → AI 转范式」把整份原卷重排后再导入';
         toast(`AI 对位补了 ${r.filled} 个答案`);
         render();
       } catch (e) {
@@ -1267,92 +1311,6 @@ const App = (() => {
         if (btn) { btn.disabled = false; btn.textContent = '重试 AI 智能对位'; }
       }
     }
-
-    // 方式二：AI 解答（每批自动落库，断网后重进接着来）
-    document.getElementById('ans-ai-btn').onclick = async () => {
-      if (!noAns.length) return toast('没有缺答案的题了');
-      const cfg = await LLM.getConfig();
-      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
-      const btn = document.getElementById('ans-ai-btn');
-      btn.disabled = true;
-      aiStatus.textContent = 'AI 解答中…（自适应批量、流式反馈、进度自动保存，中断可继续）';
-      try {
-        const solved = await LLM.solveQuestions(noAns, (done, total, got, note) => {
-          if (total <= 0) { if (note) aiStatus.textContent = note; return; }
-          bar.style.width = Math.round(done / total * 100) + '%';
-          aiStatus.textContent = `${note ? note + ' · ' : ''}AI 解答中：${done}/${total} 题 · 已得 ${got} 个答案`;
-        }, (chunkIdx, attempt, cool) => {
-          aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试（进度已保存）` : '网络波动，重试中…（进度已保存）';
-        }, async (batch) => {
-          for (const q of batch) if (q.answer) await DB.questionPut(q);
-        });
-        const remaining = noAns.filter(q => !q.answer).length;
-        if (remaining) {
-          aiStatus.textContent = `本轮补了 ${solved} 个答案；剩余 ${remaining} 题因网络波动未完成，点按钮继续（已完成的不会重复）`;
-          btn.disabled = false;
-          btn.textContent = `继续解答剩余 ${remaining} 题`;
-          toast(`已补 ${solved} 个，剩 ${remaining} 个待网络恢复`);
-        } else {
-          aiStatus.textContent = `✓ AI 解答出 ${solved} 个答案`;
-          toast(`AI 补了 ${solved} 个答案`);
-          render();
-        }
-      } catch (e) {
-        aiStatus.textContent = '⚠ ' + e.message.slice(0, 100);
-        btn.disabled = false;
-      }
-    };
-
-    // 方式三：AI 校验答案 + 补解析
-    const verifyBtn = document.getElementById('ans-verify-btn');
-    if (verifyBtn) verifyBtn.onclick = async () => {
-      const targets = qs.filter(q => q.answer);
-      if (!targets.length) return toast('没有可校验的题');
-      const cfg = await LLM.getConfig();
-      if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
-      verifyBtn.disabled = true;
-      const vStatus = document.getElementById('ans-verify-status');
-      const vResult = document.getElementById('verify-result');
-      vStatus.textContent = 'AI 校验中…（独立重做每题，自适应批量、流式反馈，进度自动保存）';
-      try {
-        const res = await LLM.verifyQuestions(targets, (done, total, got, note) => {
-          if (total <= 0) { if (note) vStatus.textContent = note; return; }
-          bar.style.width = Math.round(done / total * 100) + '%';
-          vStatus.textContent = `${note ? note + ' · ' : ''}AI 校验中：${done}/${total} 题 · 已核 ${got} 题`;
-        }, (c, a, cool) => {
-          vStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试（进度已保存）` : '网络波动，重试中…（进度已保存）';
-        }, async (batch) => {
-          for (const q of batch) if (q.aiAnswer || q.explanation) await DB.questionPut(q);
-        });
-        // 兜底持久化（aiAnswer + 新解析）
-        for (const q of targets) await DB.questionPut(q);
-        const rate = res.checked ? Math.round(res.agree / res.checked * 100) : 0;
-        const remain = targets.filter(q => !q.aiAnswer).length;
-        vStatus.textContent = `校验完成：${res.checked} 题中 ${res.agree} 题一致（${rate}%）${res.explained ? ` · 补解析 ${res.explained} 题` : ''}`
-          + (remain ? `；剩余 ${remain} 题因网络未校验，再点一次继续（已校验的不重复）` : '');
-        if (remain) {
-          verifyBtn.disabled = false;
-          verifyBtn.textContent = `继续校验剩余 ${remain} 题`;
-        }
-        if (res.conflicts.length) {
-          vResult.innerHTML = `
-            <div style="margin-top:10px;color:var(--bad);font-weight:600">⚠ ${res.conflicts.length} 题答案不一致（原答案 vs AI 答案）：</div>
-            ${res.conflicts.slice(0, 30).map(c => `
-              <div style="font-size:12.5px;padding:6px 0;border-bottom:1px dashed var(--line)">
-                <b>第${c.no ?? '?'}题</b> ${escapeHtml(c.stem)}…<br>
-                原答案 <b style="color:var(--primary)">${escapeHtml(c.orig)}</b> ｜ AI 认为 <b style="color:var(--bad)">${escapeHtml(c.ai)}</b>
-              </div>`).join('')}
-            ${res.conflicts.length > 30 ? `<div class="muted small">…仅显示前 30 条</div>` : ''}
-            <div class="muted small" style="margin-top:6px">原答案未改动。不一致的题建议查教材确认；确信 AI 对的可手动改答案。</div>`;
-        } else {
-          vResult.innerHTML = `<div style="margin-top:8px;color:var(--ok)">✓ 全部一致，答案可信</div>`;
-        }
-        toast(`校验完成：${res.agree}/${res.checked} 一致`);
-      } catch (e) {
-        vStatus.textContent = '⚠ ' + e.message.slice(0, 100);
-        verifyBtn.disabled = false;
-      }
-    };
   }
 
   async function pageQuizSetup() {
@@ -1814,8 +1772,6 @@ const App = (() => {
         <div class="judge-title">${res.correct ? '✓ 回答正确' : '✗ 回答错误'}</div>
         <div class="judge-answer">正确答案：${escapeHtml(stdAns)}${q.type !== 'fill' ? '' : `（你的：${escapeHtml(String(yourAns).replace(/\|\|\|/g, ' ／ '))}）`}</div>
         ${res.explanation ? `<div class="judge-exp">解析：${escapeHtml(res.explanation)}</div>` : ''}
-        ${q.aiAnswer && q.aiAnswer !== q.answer ? `<div class="judge-exp" style="color:var(--bad)">⚠ AI 校验认为此题答案可能是 ${escapeHtml(q.aiAnswer)}
-          <button class="btn ghost" style="padding:4px 12px;font-size:12.5px;margin-left:8px" onclick="window.__acceptAI()">采纳 AI 答案</button></div>` : ''}
         ${!res.correct && q.type === 'fill' ? '' : ''}`;
       if (nextBtn) nextBtn.style.display = '';
       // 标记选项对错
@@ -2001,15 +1957,6 @@ const App = (() => {
       if (editOpen) { renderEditPanel(); editCard.style.display = ''; editCard.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
       else editCard.style.display = 'none';
     };
-
-    /* ---- 冲突时一键采纳 AI 答案 ---- */
-    function acceptAI() {
-      q.answer = q.aiAnswer;
-      delete q.aiAnswer;
-      session.answered.delete(q.id);
-      DB.questionPut(q).then(() => { toast('已采纳 AI 答案'); render(); });
-    }
-    window.__acceptAI = acceptAI;
 
     // 左右滑翻题：左滑=下一题（需已答），右滑=上一题
     let touchX = null, touchY = null, touchT = 0;
@@ -2656,7 +2603,7 @@ const App = (() => {
         </div>
       </div>
       <div class="card">
-        <div class="card-title">AI 接口（AI 辅助录入答案 / AI 解答 / AI 校验 使用）</div>
+        <div class="card-title">AI 接口（「文件 → AI 转范式」/「AI 智能对位」使用）</div>
         <label class="field"><span>Base URL</span>
           <input id="set-url" value="${escapeHtml(cfg.baseUrl)}" placeholder="https://api.deepseek.com/v1">
         </label>

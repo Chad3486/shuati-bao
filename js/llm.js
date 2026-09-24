@@ -589,181 +589,74 @@ const LLM = (() => {
     return filled;
   }
 
-  /* ---- AI 批量解答（第二步 · 明确告知用户答案来自 AI）
-     断点续传设计：每批答完立即回调 onBatchSave 落库；失败批次自动重试（最多 3 轮）；
-     中途退出再进来，已答的题自动跳过，从剩余继续 ---- */
-  async function solveQuestions(questions, onProgress, onRetry, onBatchSave) {
-    const BATCH = 10;
-    const MAX_ROUNDS = 3;
-    const cfg = await getConfig();
-    const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+/* ================= 文件 → 范式（AI 只排版，不做题） =================
+     与「AI 解题」相反：答案必须从原卷（题目下方标注 / 文末答案表）照抄，AI 严禁自己推理作答。
+     用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
+     产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
+     长文档按 空行/题号行/章节标题 就近切片，避免把一道题切成两半。 */
+  async function fileToCanon(text, onProgress, onRetry) {
+    const src = String(text || '').replace(/\r\n?/g, '\n').trim();
+    if (!src) throw new Error('文档里没有可转换的文字');
 
-    const SOLVE_PROMPT = `你是答题专家。解答下列题目，严格按json输出（不要markdown、不要解释文字）：
-{"answers":[{"idx":0,"answer":"C","explanation":"简短解析"}]}
-- idx 是输入里每题的序号（从0开始）
-- 选择题 answer 为字母串如 "C" / "ACD"（必须是给定选项中的字母）
-- 填空题 answer 为答案文本，多空用 ||| 分隔
-- explanation 一句话即可`;
+    // 全文答案表（题目文件、独立答案文件都可能有）：作为每片的共享上下文，供跨片按题号对位
+    let answerTable = findAnswerTable(src).trim();
+    if (answerTable.length > 40000) answerTable = answerTable.slice(0, 40000);
 
-    let solved = 0;
-    let pool = questions.filter(q => !q.answer); // 已答的（上次中断续跑）直接跳过
-    let round = 0;
-    while (pool.length && round < MAX_ROUNDS) {
-      round++;
-      if (round > 1) {
-        if (onProgress) onProgress(0, 1, solved, `网络波动，第 ${round} 轮重试（10s 后）`);
-        await new Promise(r => setTimeout(r, 10000));
-        pool = pool.filter(q => !q.answer);
-        if (!pool.length) break;
-      }
-      const batches = [];
-      for (let i = 0; i < pool.length; i += BATCH) batches.push(pool.slice(i, i + BATCH));
-      const failed = [];
-      let done = 0;
-      let idx = 0;
-      async function worker() {
-        while (idx < batches.length) {
-          const my = idx++;
-          const batch = batches[my];
-          const body = batch.map((q, i) => ({
-            idx: i, type: q.type, stem: q.stem,
-            options: q.options || undefined
-          }));
-          let ok = true;
-          let parseFailPreview = '';
-          try {
-            const raw = await chat([
-              { role: 'system', content: SOLVE_PROMPT },
-              { role: 'user', content: JSON.stringify(body) }
-            ], { onRetry });
-            const obj = parseJSON(raw);
-            const arr = obj?.answers || obj;
-            let solvedHere = 0;
-            if (Array.isArray(arr)) {
-              for (const a of arr) {
-                const q = batch[a.idx];
-                if (!q || q.answer) continue;
-                let ans = String(a.answer ?? '').trim();
-                if (!ans) continue;
-                if (q.options) {
-                  ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
-                  if (!ans || [...ans].some(c => !q.options[c])) continue;
-                }
-                q.answer = ans;
-                if (a.explanation) q.explanation = String(a.explanation).trim();
-                solved++;
-                solvedHere++;
-              }
-            }
-            // LLM 静默失败修复：返回非 JSON 或一题都没解出，标失败进入重试队列
-            // （原 v1.0.0 只在 catch 才 ok=false，导致 parseJSON 返回 null 时
-            //   静默成功，failed 永远不进队列 → 表现为"什么都不出")
-            if (!Array.isArray(arr) || solvedHere === 0) {
-              ok = false;
-              parseFailPreview = (raw || '(空)').replace(/\s+/g, ' ').slice(0, 80);
-            }
-          } catch (e) {
-            ok = false;
-            parseFailPreview = '请求错误：' + (e.message || '').slice(0, 60);
-          }
-          // 增量落盘：本批有结果的立即保存，断网/退出不丢
-          if (onBatchSave && batch.some(q => q.answer)) {
-            try { await onBatchSave(batch); } catch (e) { /* 保存失败不中断 */ }
-          }
-          if (!ok) failed.push(batch);
-          done++;
-          // 失败时把 GLM 实际返回的前 80 字反馈到 UI，方便诊断
-          const note = parseFailPreview
-            ? `解析失败 · GLM 返回: ${parseFailPreview}`
-            : (round > 1 ? `第 ${round} 轮` : '');
-          if (onProgress) onProgress(done, batches.length, solved, note);
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
-      pool = failed.flat().filter(q => !q.answer);
+    const PROMPT = `你是题库排版助手。用户会给你【原卷文档片段】，请把它整理成「范式」格式的纯文本。你只做排版，绝对不做题。
+
+范式格式（严格遵守）：
+1. 章标题单独一行，以 # 开头：# 第1章 电力电子器件
+2. 节标题单独一行，以 ## 开头：## 1.1 电力二极管；题型小节写成 ## 判断题 也可以
+3. 每道题一块，题与题之间空一行
+4. 题干行最前面写题型标记：【单选】【多选】【判断】【填空】（简答/问答/名词解释/计算统一按【填空】）
+5. 选择题每个选项一行：A. 选项内容，必须从 A 开始连续、不缺字母
+6. 答案单独一行：答案：B；多选 答案：ABD；判断 答案：对 或 答案：错；多空填空用 ||| 分隔：答案：阳极|||阴极
+7. 解析单独一行：解析：……
+8. 题号可写在题干最前面：1. 电力二极管属于（ ）器件。
+
+红线（违反即报废）：
+- 答案和解析只能「照抄」原卷：题目下方的答案标注，或【全文答案表】里对应的题号条目
+- 严禁自己推理、判断、解答；原卷里没有答案的题，不要写「答案：」行，宁缺毋错
+- 题干、选项、答案、解析的文字一律原文照抄，不改写、不缩写、不补充、不翻译
+- 丢弃页码、页眉页脚、水印、学校名、装订线等噪声
+- 只输出范式文本本身：不要任何解释、前后缀说明、markdown 代码块或 JSON`;
+
+    /* 切片：累积到目标长度后，尽量在「空行 / 题号行 / 章节标题 / 题型标记行」处断开 */
+    const TARGET = 5000;
+    const chunks = [];
+    let buf = [], size = 0;
+    const flush = () => { const t = buf.join('\n').trim(); if (t) chunks.push(t); buf = []; size = 0; };
+    for (const line of src.split('\n')) {
+      buf.push(line);
+      size += line.length + 1;
+      if (size < TARGET) continue;
+      const t = line.trim();
+      const boundary = !t || /^\d{1,3}\s*[.、．]/.test(t) || /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
+        /^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^【/.test(t) || /^#{1,2}\s/.test(t);
+      if (boundary || size >= TARGET * 1.6) flush();
     }
-    return solved;
-  }
+    flush();
 
-  /* ---- AI 校验：重做一遍已答题目，比对答案 + 给解析 ----
-     返回 { checked, agree, conflicts:[{no, stem, orig, ai}], explained }
-     不修改 q.answer（原答案保留），只写 q.aiAnswer / 补 q.explanation ---- */
-  async function verifyQuestions(questions, onProgress, onRetry, onBatchSave) {
-    const BATCH = 10;
-    const cfg = await getConfig();
-    const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
-    // 断点续跑：跳过已校验过的题（上次中断的部分不再重做）
-    const batches = [];
-    const todo = questions.filter(q => !q.aiAnswer);
-    for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
-
-    const VERIFY_PROMPT = `你是答题专家。独立解答下列题目（不要猜原答案，凭知识自己做），严格按json输出：
-{"answers":[{"idx":0,"answer":"C","explanation":"解题过程，2-3句"}]}
-- idx 是输入每题的序号（从0开始）
-- 选择题 answer 为字母串如 "C"/"ACD"（必须是给定选项字母）
-- 填空题 answer 为答案文本，多空用 ||| 分隔
-- explanation 写清推理依据，2-3 句`;
-
-    let done = 0, checked = 0, agree = 0, explained = 0;
-    const conflicts = [];
-    let idx = 0;
-    async function worker() {
-      while (idx < batches.length) {
-        const my = idx++;
-        const batch = batches[my];
-        const body = batch.map((q, i) => ({
-          idx: i, type: q.type, stem: q.stem,
-          options: q.options || undefined
-        }));
-        try {
-          const raw = await chat([
-            { role: 'system', content: VERIFY_PROMPT },
-            { role: 'user', content: JSON.stringify(body) }
-          ], { onRetry });
-          const obj = parseJSON(raw);
-          const arr = obj?.answers || obj;
-          if (Array.isArray(arr)) {
-            for (const a of arr) {
-              const q = batch[a.idx];
-              if (!q) continue;
-              let ai = String(a.answer ?? '').trim();
-              if (!ai) continue;
-              if (q.options) {
-                ai = ai.toUpperCase().replace(/[^A-Z]/g, '');
-                if (!ai || [...ai].some(c => !q.options[c])) continue;
-              } else {
-                // 填空：宽松归一后再比对
-              }
-              q.aiAnswer = ai;
-              // 比对
-              let same;
-              if (q.type === 'fill') {
-                same = QuizSession.normalizeFill(ai) === QuizSession.normalizeFill(q.answer);
-              } else {
-                const nrm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-                same = nrm(ai) === nrm(q.answer);
-              }
-              checked++;
-              if (same) agree++;
-              else conflicts.push({ no: q.no, stem: q.stem.slice(0, 40), orig: q.answer, ai });
-              // 补解析（原本没有的）
-              if (!q.explanation && a.explanation) {
-                q.explanation = String(a.explanation).trim();
-                explained++;
-              }
-            }
-          }
-        } catch (e) { /* 单批失败跳过，已答的已即时落盘 */ }
-        // 增量落盘：本批有结果的立即保存，断网/退出不丢
-        if (onBatchSave && batch.some(q => q.aiAnswer)) {
-          try { await onBatchSave(batch); } catch (e) { /* 保存失败不中断 */ }
-        }
-        done++;
-        if (onProgress) onProgress(done, batches.length, checked);
-      }
+    const pieces = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const head = `【原卷文档片段 ${i + 1}/${chunks.length}】\n` + chunks[i];
+      const user = answerTable
+        ? `【全文答案表（只能从这里或正文标注处照抄答案）】\n${answerTable}\n\n${head}`
+        : head;
+      const raw = await chat([
+        { role: 'system', content: PROMPT },
+        { role: 'user', content: user }
+      ], { onRetry, raw: true });
+      const piece = String(raw || '').trim()
+        .replace(/^```(?:text|markdown|md)?\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+      if (piece) pieces.push(piece);
+      if (onProgress) onProgress(i + 1, chunks.length, `片段 ${i + 1}/${chunks.length}`);
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
-    return { checked, agree, conflicts, explained };
+    const out = pieces.join('\n\n').trim();
+    if (!out) throw new Error('AI 没有返回可用的范式文本');
+    return out;
   }
 
   /* ---- 测试连接 ---- */
@@ -772,5 +665,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, solveQuestions, verifyQuestions, testConnection, chat };
+  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, testConnection, chat };
 })();
