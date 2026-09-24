@@ -1,21 +1,74 @@
 /* ========== 文件文本提取层（Word / 文本） ========== */
 const Extractor = (() => {
 
-  /* ---- DOCX：mammoth 提取纯文本 ---- */
-  async function fromDOCX(file) {
+  /* ---- DOCX：mammoth 提取文本 + 嵌入图片逐张 OCR（按文档顺序回填） ---- */
+  function b64ToBlob(b64, type) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: type || 'image/png' });
+  }
+
+  /* ---- OCR 乱码规范化：空括号归一为（　）、选项间误识别的句号清理 ---- */
+  function polishOCR(t) {
+    return String(t || '')
+      .replace(/[（(〈〈《\[【\[]+[\s　，,。]*[)）〉〉》\]\]]+/g, '（　）')
+      .replace(/[（(][\s　]*[)）]/g, '（　）')
+      .replace(/[〈〈]+/g, '（')
+      .replace(/[〉〉]+/g, '）')
+      .replace(/[ \t　]+。/g, '。')
+      .replace(/。[ \t　]*(?=[A-Ha-h][.、．:：)）])/g, ' ')
+      .replace(/(?:[\-—–_][\s　]*)+(?=[A-Ha-h][.、．:：)）])/g, '')
+      .replace(/[”’]+[\s　]*(?=[A-Ha-h][.、．:：)）])/g, '')
+      .split('\n').map(l => l.replace(/[ \t]{2,}/g, ' ').trim()).join('\n')
+      .trim();
+  }
+
+  function htmlToPlainText(html) {
+    const ta = document.createElement('textarea');
+    ta.innerHTML = html
+      .replace(/<img[^>]*src=["']ocrimg:\/\/(\d+)["'][^>]*>/gi, '\n[[OCRIMG:$1]]\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|li|tr|table|blockquote|section)>/gi, '\n')
+      .replace(/<[^>]+>/g, '');
+    return ta.value.replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  async function fromDOCX(file, onProgress) {
     if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
-    const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
-    return result.value;
+    const imgs = [];
+    const result = await window.mammoth.convertToHtml({ arrayBuffer: buf }, {
+      convertImage: window.mammoth.images.imgElement(async (image) => {
+        const b64 = await image.readAsBase64String();
+        imgs.push({ b64, type: image.contentType || 'image/png' });
+        return { src: 'ocrimg://' + (imgs.length - 1) };
+      })
+    });
+    let text = htmlToPlainText(result.value);
+    if (!imgs.length) {
+      if (onProgress) onProgress(1, 1);
+      return text;
+    }
+    for (let i = 0; i < imgs.length; i++) {
+      if (onProgress) onProgress(i, imgs.length);
+      let t = '';
+      try {
+        t = polishOCR(await OCR.recognize(b64ToBlob(imgs[i].b64, imgs[i].type)));
+      } catch (e) {
+        if (/OCR 未离线打包|未内置 OCR/.test(e.message || '')) throw e;
+      }
+      text = text.split('[[OCRIMG:' + i + ']]').join(t || '[第 ' + (i + 1) + ' 张图：未识别到文字（示意图或纯装饰图）]');
+    }
+    if (onProgress) onProgress(imgs.length, imgs.length);
+    return text;
   }
 
   /* ---- 统一入口 ---- */
   async function extract(file, onProgress) {
     const name = file.name.toLowerCase();
     if (name.endsWith('.docx')) {
-      const t = await fromDOCX(file);
-      if (onProgress) onProgress(1, 1);
-      return t;
+      return fromDOCX(file, onProgress);
     }
     if (name.endsWith('.doc')) {
       throw new Error('暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后重试');
@@ -476,5 +529,5 @@ const Extractor = (() => {
     return null;
   }
 
-  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
+  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines, polishOCR };
 })();

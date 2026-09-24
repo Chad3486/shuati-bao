@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.11';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.12';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -697,7 +697,7 @@ const App = (() => {
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
       setState('提取文本…');
       try {
-        const raw = await Extractor.extract(f, (p, t) => setState(`提取 ${p}/${t} 页`));
+        const raw = await Extractor.extract(f, (p, t) => setState(`提取 ${p}/${t}`));
         const text = Extractor.cleanText(raw);
         if (text.replace(/\s/g, '').length < 50) {
           setState('失败');
@@ -903,7 +903,8 @@ const App = (() => {
       ['done', '答对', q => stateOf(q) === 'done'],
       ['star', '收藏', q => starSet.has(q.id)],
       ['missing', '缺答案', q => !q.answer],
-      ['exp', '有解析', q => !!q.explanation]
+      ['exp', '有解析', q => !!q.explanation],
+      ['ai', 'AI 答案', q => !!q.aiAnswer]
     ];
 
     topbar(bank.name.slice(0, 10) || '题目列表', '#/home');
@@ -927,6 +928,9 @@ const App = (() => {
           <button class="btn ghost" id="sel-unans">只选缺答案</button>
         </div>
         <div class="btn-row">
+          <button class="btn ghost" id="ai-review-btn">🤖 逐题核对 AI 答案</button>
+        </div>
+        <div class="btn-row">
           <button class="btn ghost" id="exp-canon">导出范式 Word</button>
           <button class="btn ghost" id="copy-canon">复制范式</button>
         </div>
@@ -935,8 +939,9 @@ const App = (() => {
         </div>
         <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「Word 转换器」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
-        <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠</div>
+        <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠。AI 补的答案带「AI 解答·需核对」标，点上方「逐题核对 AI 答案」可逐题 采纳 / 修改 / 重跑</div>
         <div id="no-grid"></div>
+        <div id="ai-review"></div>
         <button class="btn primary big" id="go-quiz" style="margin-top:12px"></button>
       </div>
       <style>
@@ -963,6 +968,13 @@ const App = (() => {
         .no-cell.st-wrong { border-left-color:var(--bad); }
         .no-cell.st-done { border-left-color:var(--ok); }
         .no-cell.on.st-wrong, .no-cell.on.st-done { border-left-color:var(--primary-dark); }
+        .ai-card { margin-top:10px; padding:12px; border:1px solid var(--line, #e3e8f0); border-left:3px solid var(--warn, #e0a344); border-radius:12px; background:var(--surface-2, #f7f9fc); }
+        .ai-card .ai-badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; background:var(--warn-bg, #fff3e0); color:var(--warn, #b26a00); }
+        .ai-card .ai-stem { margin:6px 0; font-size:14px; line-height:1.6; }
+        .ai-card .ai-opt { font-size:13px; color:var(--text-2, #5f6b7a); margin:2px 0 2px 12px; }
+        .ai-card .ai-ans { margin-top:6px; font-size:14px; }
+        .ai-card .ai-exp { margin-top:4px; font-size:13px; color:var(--text-2, #5f6b7a); }
+        .ai-card input.edit-ans { width:100%; box-sizing:border-box; margin-top:6px; padding:8px 10px; border:1.5px solid var(--line, #e3e8f0); border-radius:8px; background:var(--surface, #fff); color:var(--text); font-size:14px; }
       </style>`;
 
     const grid = document.getElementById('no-grid');
@@ -1049,6 +1061,102 @@ const App = (() => {
       });
       update(shown);
     }
+
+    // ===== AI 答案逐题核对（采纳 / 修改 / 重跑）=====
+    const aiBtnEl = document.getElementById('ai-review-btn');
+    const aiBox = document.getElementById('ai-review');
+    function reviewCard(q) {
+      const idx = qs.indexOf(q) + 1;
+      const opts = q.options ? Object.entries(q.options).map(([k, v]) => `<div class="ai-opt">${escapeHtml(k)}. ${escapeHtml(v)}</div>`).join('') : '';
+      return `
+        <div class="ai-card" data-id="${q.id}">
+          <div><span class="muted small">第 ${q.no ?? idx} 题 · ${TYPE_NAME[q.type] || ''}</span> <span class="ai-badge">AI 解答·需核对</span></div>
+          <div class="ai-stem">${escapeHtml(q.stem)}</div>
+          ${opts}
+          <div class="ai-ans">AI 答案：<b>${escapeHtml(q.answer || '（空）')}</b></div>
+          ${q.explanation ? `<div class="ai-exp">解析：${escapeHtml(q.explanation)}</div>` : ''}
+          <div class="btn-row" style="margin-top:8px">
+            <button class="btn primary" data-act="adopt">✓ 采纳</button>
+            <button class="btn ghost" data-act="edit">✎ 修改</button>
+            <button class="btn ghost" data-act="rerun">↻ 重跑</button>
+          </div>
+        </div>`;
+    }
+    function renderReview() {
+      const list = qs.filter(q => q.aiAnswer);
+      aiBtnEl.textContent = `🤖 逐题核对 AI 答案（${list.length}）`;
+      aiBtnEl.style.display = list.length ? '' : 'none';
+      if (!aiBox.dataset.open) return;
+      aiBox.innerHTML = list.length
+        ? '<div class="muted small" style="margin-top:10px">逐题核对：「采纳」转为正式答案 ·「修改」手动改正 ·「重跑」让 AI 重新解这道题</div>' + list.map(reviewCard).join('')
+        : '<div class="muted small" style="margin-top:10px">✓ 没有待核对的 AI 答案了</div>';
+      aiBox.querySelectorAll('.ai-card').forEach(card => {
+        const q = qs.find(x => x.id === card.dataset.id);
+        if (!q) return;
+        card.querySelector('.btn-row').onclick = async (e) => {
+          const b = e.target.closest('button[data-act]');
+          if (!b) return;
+          const act = b.dataset.act;
+          if (act === 'adopt') {
+            q.aiAnswer = false;
+            await DB.questionPut(q);
+            toast('已采纳为正式答案');
+            renderReview(); renderGrid();
+          } else if (act === 'edit') {
+            if (card.querySelector('.edit-ans')) return;
+            const inp = document.createElement('input');
+            inp.className = 'edit-ans';
+            inp.value = q.answer || '';
+            inp.placeholder = '输入正确答案（选择题填字母，如 C / ACD）';
+            const save = document.createElement('button');
+            save.className = 'btn primary'; save.textContent = '保存';
+            const cancel = document.createElement('button');
+            cancel.className = 'btn ghost'; cancel.textContent = '取消';
+            const er = document.createElement('div');
+            er.className = 'btn-row';
+            er.style.marginTop = '6px';
+            er.append(save, cancel);
+            card.append(inp, er);
+            inp.focus();
+            cancel.onclick = () => { inp.remove(); er.remove(); };
+            save.onclick = async () => {
+              const v = inp.value.trim();
+              if (!v) return toast('答案不能为空');
+              q.answer = v;
+              q.aiAnswer = false;
+              await DB.questionPut(q);
+              toast('已保存修改');
+              renderReview(); renderGrid();
+            };
+          } else if (act === 'rerun') {
+            b.disabled = true; b.textContent = '重跑中…';
+            const oldAns = q.answer, oldAI = q.aiAnswer;
+            q.answer = '';
+            try {
+              await LLM.solveMissing([q], null, null, { markAI: true, concurrency: 1 });
+              if (!q.answer) {
+                q.answer = oldAns; q.aiAnswer = oldAI;
+                toast('这次没解出来，已保留原 AI 答案');
+              } else {
+                q.aiAnswer = true;
+                await DB.questionPut(q);
+                toast('已重新解答，请核对');
+              }
+            } catch (err) {
+              q.answer = oldAns; q.aiAnswer = oldAI;
+              toast('重跑失败：' + String(err.message || '').slice(0, 60));
+            }
+            renderReview(); renderGrid();
+          }
+        };
+      });
+    }
+    aiBtnEl.onclick = () => {
+      aiBox.dataset.open = '1';
+      renderReview();
+      aiBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    renderReview();
 
     document.getElementById('q-search').oninput = (e) => { kw = e.target.value.trim().toLowerCase(); renderGrid(); };
     filterEl.onclick = (e) => {
@@ -1303,11 +1411,12 @@ const App = (() => {
       const aiBar = document.getElementById('ans-ai-bar');
       const aiCtrl = document.getElementById('ans-ai-ctrl');
       const aiPause = document.getElementById('ans-ai-pause');
-      let stop = false;
+      let stop = false, aborter = null;
       aiPause.onclick = () => {
         stop = true;
+        if (aborter) aborter.abort('paused');
         aiPause.disabled = true;
-        aiPause.textContent = '⏸ 停止中…（当前批完成后停）';
+        aiPause.textContent = '⏸ 停止中…（正在中断当前请求）';
       };
       const saveQ = q => { DB.questionPut(q).catch(() => {}); };
 
@@ -1317,21 +1426,23 @@ const App = (() => {
         const cfg = await LLM.getConfig();
         if (!cfg.apiKey) { toast('请先到「设置」配置 API Key'); return navigate('#/settings'); }
 
-        // 费用预估确认（DeepSeek 估算：输入 ¥2/百万 tok、输出 ¥8/百万 tok，仅参考）
+        // 费用预估确认（单价读「设置」页的输入/输出价，与实耗同一口径）
         const estBatches = Math.ceil(todo.length / 10);
         const estPrompt = estBatches * 900;
         const estCompletion = estBatches * 150;
-        const estCost = (estPrompt / 1e6 * 2 + estCompletion / 1e6 * 8).toFixed(3);
+        const estCost = LLM.costOf({ prompt_tokens: estPrompt, completion_tokens: estCompletion }, cfg).toFixed(3);
         const conc = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+        const capTxt = cfg.capYuan > 0 ? `\n单次费用上限 ¥${cfg.capYuan}（实耗达到即自动暂停）` : '';
         if (!confirmDialog(
           `将让 AI 解答 ${todo.length} 道缺答案的题\n` +
           `约 ${estBatches} 批 · ${conc} 路并发\n` +
           `预估消耗：输入 ~${estPrompt} tok + 输出 ~${estCompletion} tok\n` +
-          `预估费用：约 ¥${estCost}（实际以账单为准）\n\n` +
-          `解出的答案标「AI 解答·需核对」；可随时「⏸ 暂停」，已解出的立即存库。\n\n` +
+          `预估费用：约 ¥${estCost}（按 ¥${cfg.priceIn}/¥${cfg.priceOut} 每百万 tok 估算，实际以账单为准）${capTxt}\n\n` +
+          `解出的答案标「AI 解答·需核对」；「⏸ 暂停」立即中断当前请求，已解出的立即存库，之后再点按钮可续跑。\n\n` +
           `确认开始？`)) { aiStatus.textContent = '已取消（未调用 API）'; return; }
 
         stop = false;
+        aborter = new AbortController();
         aiPause.disabled = false;
         aiPause.textContent = '⏸ 暂停';
         aiBtn.disabled = true;
@@ -1342,27 +1453,31 @@ const App = (() => {
         const savedIds = new Set();
         try {
           const ret = await LLM.solveMissing(noAns,
-            ({ done, total, solved, usage, paused, note }) => {
+            ({ done, total, solved, usage, cost, paused, stopReason, note }) => {
               aiBar.style.width = Math.round(total ? done / total * 100 : 0) + '%';
               aiStatus.textContent = paused
-                ? `⏸ 已暂停 · 已解出 ${solved} 题`
+                ? (stopReason === 'cap'
+                    ? `⏸ 已达单次费用上限 ¥${cfg.capYuan} · 已解出 ${solved} 题`
+                    : `⏸ 已暂停 · 已解出 ${solved} 题`)
                 : `AI 解答中：第 ${done}/${total} 批 · 已解出 ${solved}${note ? ' · ' + note : ''}`;
               if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
-                aiStatus.textContent += ` · 已耗 ${(usage.prompt_tokens || 0) + (usage.completion_tokens || 0)} tok`;
+                aiStatus.textContent += ` · 实耗 ${(usage.prompt_tokens || 0) + (usage.completion_tokens || 0)} tok ≈ ¥${(cost != null ? cost : LLM.costOf(usage, cfg)).toFixed(3)}`;
               }
               // 每批解出的立即落库，断网/退出不丢
               for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
             },
             (att, cool) => { aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; },
-            { shouldStop: () => stop, isDone: q => !!q.answer, markAI: true, concurrency: conc });
+            { shouldStop: () => stop, signal: aborter.signal, isDone: q => !!q.answer, markAI: true, concurrency: conc, capYuan: cfg.capYuan });
 
           for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
           const left = noAns.filter(q => !q.answer).length;
           if (ret.paused) {
-            toast(`已暂停，解出 ${ret.solved} 题`);
+            toast(ret.stopReason === 'cap'
+              ? `已达单次费用上限 ¥${cfg.capYuan}，解出 ${ret.solved} 题，实耗 ¥${(ret.cost || 0).toFixed(3)}（调高上限后可再点按钮续跑）`
+              : `已暂停，解出 ${ret.solved} 题，实耗 ¥${(ret.cost || 0).toFixed(3)}（再点按钮可续跑）`);
             render();
           } else if (ret.solved) {
-            toast(`AI 解出 ${ret.solved} 题答案（已标「AI 解答·需核对」），请核对${left ? `，剩 ${left} 题未解出` : ''}`);
+            toast(`AI 解出 ${ret.solved} 题答案（已标「AI 解答·需核对」），实耗 ¥${(ret.cost || 0).toFixed(3)}，请核对${left ? `，剩 ${left} 题未解出` : ''}`);
             render();
           } else {
             aiStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
@@ -1372,6 +1487,7 @@ const App = (() => {
           aiStatus.textContent = '⚠ ' + e.message.slice(0, 140);
           toast('解答中断（已解出的已存库，可重试）');
         } finally {
+          aborter = null;
           aiBtn.disabled = false;
           aiCtrl.style.display = 'none';
           aiProg.style.display = 'none';
@@ -2683,7 +2799,16 @@ const App = (() => {
         <label class="field"><span>解析并发数（1-8，越大越快，过高可能被限流）</span>
           <input id="set-conc" type="number" min="1" max="8" value="${cfg.concurrency || 4}">
         </label>
-        <div class="muted small">常用：DeepSeek（api.deepseek.com/v1，model: deepseek-chat）· 智谱（open.bigmodel.cn/api/paas/v4，model: glm-4-flash）· 其他 OpenAI 兼容接口均可</div>
+        <label class="field"><span>输入价（¥/百万 tok，用于费用预估与实耗）</span>
+          <input id="set-pin" type="number" min="0" step="0.1" value="${cfg.priceIn != null ? cfg.priceIn : 2}">
+        </label>
+        <label class="field"><span>输出价（¥/百万 tok）</span>
+          <input id="set-pout" type="number" min="0" step="0.1" value="${cfg.priceOut != null ? cfg.priceOut : 8}">
+        </label>
+        <label class="field"><span>单次费用上限（¥，0 = 不限，实耗达到即自动暂停）</span>
+          <input id="set-cap" type="number" min="0" step="0.1" value="${cfg.capYuan != null ? cfg.capYuan : 0}">
+        </label>
+        <div class="muted small">常用：DeepSeek（api.deepseek.com/v1，model: deepseek-chat，参考价 输入 ¥2 / 输出 ¥8 每百万 tok）· 智谱（open.bigmodel.cn/api/paas/v4，model: glm-4-flash）· 其他 OpenAI 兼容接口均可；换模型或改价时同步调上面的单价</div>
         <div class="btn-row">
           <button class="btn ghost" id="test-btn">测试连接</button>
           <button class="btn primary" id="save-btn">保存</button>
@@ -2762,25 +2887,24 @@ const App = (() => {
     };
 
 
+    const readCfgForm = () => ({
+      baseUrl: document.getElementById('set-url').value.trim(),
+      apiKey: document.getElementById('set-key').value.trim(),
+      model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
+      concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
+      priceIn: Math.max(0, parseFloat(document.getElementById('set-pin').value) || 0),
+      priceOut: Math.max(0, parseFloat(document.getElementById('set-pout').value) || 0),
+      capYuan: Math.max(0, parseFloat(document.getElementById('set-cap').value) || 0)
+    });
     document.getElementById('save-btn').onclick = async () => {
-      await LLM.saveConfig({
-        baseUrl: document.getElementById('set-url').value.trim(),
-        apiKey: document.getElementById('set-key').value.trim(),
-        model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
-        concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4))
-      });
+      await LLM.saveConfig(readCfgForm());
       toast('已保存');
     };
     document.getElementById('test-btn').onclick = async () => {
       const r = document.getElementById('test-result');
       r.textContent = '测试中…';
       // 先临时保存再测试
-      await LLM.saveConfig({
-        baseUrl: document.getElementById('set-url').value.trim(),
-        apiKey: document.getElementById('set-key').value.trim(),
-        model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
-        concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4))
-      });
+      await LLM.saveConfig(readCfgForm());
       try {
         const ok = await LLM.testConnection();
         r.textContent = '✓ 连接成功：' + ok.slice(0, 50);

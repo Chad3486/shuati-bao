@@ -2,12 +2,12 @@
 // 产出两个文件：
 //   dist/刷题宝-单文件版.html       完整版（含 Word 解析）
 //   dist/刷题宝-单文件版-精简.html  精简版（去掉 Word 解析，体积更小，用「范式导入」贴文本）
-import { readFile, writeFile, mkdir, copyFile } from 'fs/promises';
+import { readFile, writeFile, mkdir, copyFile, cp } from 'fs/promises';
 
 const read = f => readFile(f, 'utf8');
 
 // 精简版跳过的大体积库（Word 解析），去掉后体积更小（用「范式导入」贴文本即可）
-const HEAVY = ['libs/mammoth.browser.min.js'];
+const HEAVY = ['libs/mammoth.browser.min.js', 'libs/tesseract.min.js'];
 
 async function build(lite) {
   let html = await read('index.html');
@@ -55,3 +55,5 @@ const ASSETS_DIR = 'apk-src/app/src/main/assets';
 await mkdir(ASSETS_DIR, { recursive: true });
 await copyFile('dist/刷题宝-单文件版.html', ASSETS_DIR + '/app.html');
 console.log('OK -> ' + ASSETS_DIR + '/app.html (' + (full.length / 1024).toFixed(0) + ' KB)');
+await cp('libs/tesseract', ASSETS_DIR + '/tesseract', { recursive: true, force: true });
+console.log('OK -> ' + ASSETS_DIR + '/tesseract/（OCR 离线资源）');

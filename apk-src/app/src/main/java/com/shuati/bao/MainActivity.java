@@ -125,6 +125,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         // assets 内联单文件版拷到 filesDir，获得 file:// 完整 API 权限
+        copyAssetDir("tesseract", "tesseract");
         String htmlPath = copyAsset("app.html", "index.html");
         wv.loadUrl("file://" + htmlPath);
     }
@@ -206,6 +207,25 @@ public class MainActivity extends AppCompatActivity {
         if (lower.endsWith(".doc")) return "application/msword";
         if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
         return "application/octet-stream";
+    }
+
+    private void copyAssetDir(String assetPath, String outPath) {
+        // 递归拷贝 assets 目录（OCR 离线资源），每次启动覆盖，保证升级后不读旧文件
+        try {
+            String[] list = getAssets().list(assetPath);
+            if (list == null || list.length == 0) return;
+            File outDir = new File(getFilesDir(), outPath);
+            if (!outDir.exists()) outDir.mkdirs();
+            for (String name : list) {
+                String[] children = getAssets().list(assetPath + "/" + name);
+                if (children != null && children.length > 0) {
+                    copyAssetDir(assetPath + "/" + name, outPath + "/" + name);
+                } else {
+                    copyAsset(assetPath + "/" + name, outPath + "/" + name);
+                }
+            }
+        } catch (IOException ignored) {
+        }
     }
 
     private String copyAsset(String assetName, String outName) {

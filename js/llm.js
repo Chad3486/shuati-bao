@@ -6,7 +6,10 @@ const LLM = (() => {
     apiKey: '',
     model: 'deepseek-chat',
     temperature: 0.1,
-    concurrency: 4
+    concurrency: 4,
+    priceIn: 2,     // 输入价：¥/百万 tok（仅用于预估与实耗显示，可随模型改价调整）
+    priceOut: 8,    // 输出价：¥/百万 tok
+    capYuan: 0      // 单次费用上限（¥）：>0 时解题实耗达到上限自动暂停，0=不限
   };
 
   async function getConfig() {
@@ -17,8 +20,15 @@ const LLM = (() => {
     await DB.metaSet('llmConfig', cfg);
   }
 
+  /* ---- 费用换算：按配置单价把 usage 换成 ¥（预估/实耗同一口径） ---- */
+  function costOf(u, cfg) {
+    const pIn = parseFloat(cfg && cfg.priceIn) || 0;
+    const pOut = parseFloat(cfg && cfg.priceOut) || 0;
+    return ((u && u.prompt_tokens) || 0) / 1e6 * pIn + ((u && u.completion_tokens) || 0) / 1e6 * pOut;
+  }
+
   /* ---- 单次 chat 调用 ---- */
-  async function chat(messages, { onRetry, raw = false } = {}) {
+  async function chat(messages, { onRetry, raw = false, signal = null } = {}) {
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
@@ -34,22 +44,32 @@ const LLM = (() => {
     let lastErr = null;
     for (let attempt = 0; attempt <= maxRetry; attempt++) {
       try {
+        // 外部中止（如「暂停」）→ 立即停手，不发请求不烧 token
+        if (signal && signal.aborted) throw Object.assign(new Error('已暂停（当前请求已中断）'), { aborted: true });
         // 全局限流阀：上一请求撞 429 时，先等冷却结束再发
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
-        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟，90s 强制断开重试
+        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟，90s 强制断开重试；
+        // 外部 signal 触发时立即 abort 进行中的请求（暂停即断，不等当前批跑完）
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort('timeout'), 90000);
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + cfg.apiKey
-          },
-          body,
-          signal: ctl.signal
-        });
-        clearTimeout(timer);
+        const onAbort = () => ctl.abort('aborted');
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+        let resp;
+        try {
+          resp = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + cfg.apiKey
+            },
+            body,
+            signal: ctl.signal
+          });
+        } finally {
+          clearTimeout(timer);
+          if (signal) signal.removeEventListener('abort', onAbort);
+        }
         if (!resp.ok) {
           if (resp.status === 429) {
             // 撞限流：读 Retry-After（秒），无头默认 15s；整段冷却时间翻倍逐次递增
@@ -71,6 +91,10 @@ const LLM = (() => {
         return content;
       } catch (e) {
         lastErr = e;
+        // 调用方暂停（外部 abort）→ 直接抛「已中断」，不重试烧 token
+        if (e.aborted || (signal && signal.aborted)) {
+          throw Object.assign(new Error('已暂停（当前请求已中断）'), { aborted: true });
+        }
         // 网络错误 / 超时 / 5xx → 重试；400/401/403/404 配置错误直接抛
         if (/API (400|401|403|404)/.test(e.message)) throw e;
         if (attempt < maxRetry) {
@@ -671,11 +695,13 @@ const LLM = (() => {
 
      成本控制设计（v1.3.8）：
      1. 预估费用：调用前先算大概批次/费用，让调用方弹窗确认，避免「一点就烧钱」
-     2. 分批暂停：opts.shouldStop() 返回 true 时，当前批跑完就停，已解的题立即落盘
+     2. 立即中断：opts.shouldStop() 返回 true 时停；再传 opts.signal（AbortController.signal）会立即 abort
+        进行中的请求，当前批标成可续跑（不进失败队列），已解的题立即落盘
      3. 断点续传：opts.isDone(q) 返回 true 的题直接跳过（配合进度存档）
      4. 答案来源标注：opts.markAI 为 true 时，q.aiAnswer = true，UI 显示「AI 解答·需核对」
      5. 进度回调：onProgress({done,total,solved,paused,stopReason,usage}) 实时反馈
-     6. 并发可控：opts.concurrency 覆盖 cfg.concurrency（默认仍读配置，上限 4） */
+     6. 并发可控：opts.concurrency 覆盖 cfg.concurrency（默认仍读配置，上限 4）
+     7. 实耗与上限：每笔请求的 usage 累计入 usage 字段；opts.capYuan>0 时实耗达到上限自动暂停（stopReason='cap'） */
   async function solveMissing(questions, onProgress, onRetry, opts = {}) {
     let pool = (questions || []).filter(q => !q.answer && !(opts.isDone && opts.isDone(q)));
     if (!pool.length) return { solved: 0, usage: { prompt_tokens: 0, completion_tokens: 0 } };
@@ -694,15 +720,18 @@ const LLM = (() => {
 
     let solved = 0, round = 0;
     const usage = { prompt_tokens: 0, completion_tokens: 0 };
-    let paused = false, stopReason = '';
+    let paused = false, stopReason = '', capHit = false;
+    const capYuan = parseFloat(opts.capYuan) || 0;
 
     const emit = (done, total, note) => {
-      if (onProgress) onProgress({ done, total, solved, usage: { ...usage }, paused, stopReason, note });
+      if (onProgress) onProgress({ done, total, solved, usage: { ...usage }, cost: +costOf(usage, cfg).toFixed(4), paused, stopReason, note });
     };
 
     while (pool.length && round < MAX_ROUNDS) {
-      // 调用方要求暂停 → 立即停止，不再起新一轮
-      if (opts.shouldStop && opts.shouldStop()) { paused = true; stopReason = 'paused'; break; }
+      // 调用方要求暂停 / 费用触顶 → 立即停止，不再起新一轮
+      if (capHit || (opts.shouldStop && opts.shouldStop())) {
+        paused = true; stopReason = capHit ? 'cap' : 'paused'; break;
+      }
       round++;
       if (round > 1) {
         emit(0, 1, `网络波动，第 ${round} 轮重试（10s 后）`);
@@ -716,8 +745,10 @@ const LLM = (() => {
       let done = 0, idx = 0;
       async function worker() {
         while (idx < batches.length) {
-          // 分批暂停：当前批跑完就停，不抢占新批
-          if (opts.shouldStop && opts.shouldStop()) { paused = true; stopReason = 'paused'; break; }
+          // 分批暂停：当前批跑完就停，不抢占新批（capHit 时同样让路）
+          if (capHit || (opts.shouldStop && opts.shouldStop())) {
+            paused = true; stopReason = capHit ? 'cap' : 'paused'; break;
+          }
           const batch = batches[idx++];
           const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: q.stem, options: q.options || undefined }));
           let ok = true, failNote = '', solvedHere = 0;
@@ -725,7 +756,13 @@ const LLM = (() => {
             const raw = await chat([
               { role: 'system', content: PROMPT },
               { role: 'user', content: JSON.stringify(body) }
-            ], { onRetry });
+            ], { onRetry, signal: opts.signal });
+            const u = getLastUsage();
+            if (u) {
+              usage.prompt_tokens += u.prompt_tokens || 0;
+              usage.completion_tokens += u.completion_tokens || 0;
+              if (capYuan > 0 && costOf(usage, cfg) >= capYuan) capHit = true;
+            }
             const obj = parseJSON(raw);
             const arr = obj && Array.isArray(obj.answers) ? obj.answers : (Array.isArray(obj) ? obj : null);
             if (arr) {
@@ -756,6 +793,11 @@ const LLM = (() => {
               failNote = (raw || '(空)').replace(/\s+/g, ' ').slice(0, 80);
             }
           } catch (e) {
+            // 暂停/外部中断：当前批标成可续跑（不进失败队列），立即收摊
+            if (e.aborted || (opts.signal && opts.signal.aborted)) {
+              paused = true; stopReason = 'paused';
+              break;
+            }
             ok = false;
             failNote = '请求错误：' + String(e.message || '').slice(0, 60);
           }
@@ -770,7 +812,7 @@ const LLM = (() => {
       pool = failed.flat().filter(q => !q.answer);
     }
 
-    return { solved, usage: { ...usage }, paused, stopReason };
+    return { solved, usage: { ...usage }, cost: +costOf(usage, cfg).toFixed(4), paused, stopReason };
   }
 
   /* ---- 测试连接 ---- */
@@ -779,5 +821,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, getLastUsage, testConnection, chat };
+  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, getLastUsage, testConnection, chat };
 })();
