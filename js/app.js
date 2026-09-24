@@ -32,6 +32,7 @@ const App = (() => {
 
   function render() {
     const { path, params } = parseHash();
+    clearExamTimer();   // 离开答题页就停掉倒计时，避免计时器写已移除的 DOM
     const page = routes[path] || pageHome;
     const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'settings'];
     const active = tabs.includes(path) ? path : (path.startsWith('quiz') ? 'quiz-setup' : 'home');
@@ -170,21 +171,60 @@ const App = (() => {
     return true;
   }
 
+  /* ---- 考试倒计时 / 交卷 ---- */
+  let examTimer = null;
+  function clearExamTimer() { if (examTimer) { clearInterval(examTimer); examTimer = null; } }
+  function fmtClock(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  }
+  function tickExamTimer() {
+    const el = document.getElementById('exam-timer');
+    if (!el || !session || !session.inExam || !session.deadline) return;
+    const left = session.deadline - Date.now();
+    el.textContent = '⏱ ' + fmtClock(left);
+    el.classList.toggle('warn', left <= 60000);
+    if (left <= 0) submitExam(true);
+  }
+  function startExamTimer() {
+    clearExamTimer();
+    tickExamTimer();
+    examTimer = setInterval(tickExamTimer, 1000);
+  }
+  /** 交卷：统一判分 → 出成绩单（auto=true 为时间到自动交卷） */
+  function submitExam(auto) {
+    if (!session) return navigate('#/quiz-setup');
+    if (!session.inExam) return navigate('#/quiz-result');
+    if (!auto) {
+      const left = session.total - session.progress.done;
+      const msg = left ? `确定交卷？还有 ${left} 题未作答（未答按错计）。` : '确定交卷？已全部作答。';
+      if (!confirmDialog(msg)) return;
+    }
+    clearExamTimer();
+    const r = session.grade();
+    DB.metaSet('lastSession', null);
+    toast(auto ? '时间到，已自动交卷' : `已交卷 · ${r.acc} 分`);
+    navigate('#/quiz-result');
+  }
+
   /* ================= 页面：题库首页 ================= */
   async function pageHome() {
     topbar('我的题库');
     const banks = await DB.bankList();
-    banks.sort((a, b) => b.createdAt - a.createdAt);
     const total = banks.reduce((s, b) => s + (b.count || 0), 0);
     const last = await DB.metaGet('lastSession');
     const recycle = await DB.recycleList();
 
-    // 统计各库缺答案数
-    const noAnsMap = {};
+    // 每库缺答案数 + 章节数（各一次遍历）
+    const info = {};
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
-      noAnsMap[b.id] = qs.filter(q => !q.answer).length;
+      info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
     }));
+
+    // 列表工具状态：题库多时不用一直往下翻（搜索 + 排序 + 折叠）
+    let sortBy = 'recent', keyword = '', expanded = false;
+    const LIMIT = 6;
 
     $view().innerHTML = `
       <div class="hero">
@@ -203,23 +243,72 @@ const App = (() => {
       <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
       <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（PDF / Word 自动解析）</button>
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
-      <div class="bank-list">
-        ${banks.length === 0 ? `<div class="empty">还没有题库<br>点击上方按钮开始导入</div>` :
-        banks.map(b => {
-          const na = noAnsMap[b.id] || 0;
-          return `
-          <div class="bank-card">
-            <div class="bank-main" onclick="App.startBank('${b.id}')">
-              <div class="bank-name">${escapeHtml(b.name)}</div>
-              <div class="bank-meta">${b.count || 0} 题 · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
-            </div>
-            ${b.count ? `<button class="bank-del" style="color:var(--primary)" onclick="App.navigate('#/bank/${b.id}')">选题</button>` : ''}
-            ${b.count ? `<button class="bank-del" style="color:${na ? 'var(--bad)' : 'var(--primary)'}" onclick="App.navigate('#/answers/${b.id}')">${na ? '补答案' : '答案校验'}</button>` : ''}
-            <button class="bank-del" onclick="App.renameBank('${b.id}')">改名</button>
-            <button class="bank-del" onclick="App.delBank('${b.id}')">删除</button>
-          </div>`;
-        }).join('')}
-      </div>`;
+      ${banks.length > LIMIT ? `
+      <div class="list-tools">
+        <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
+        <div class="chips" id="bank-sort">
+          <button class="chip on" data-v="recent">最近导入</button>
+          <button class="chip" data-v="name">按名称</button>
+          <button class="chip" data-v="count">按题量</button>
+        </div>
+      </div>` : ''}
+      <div class="bank-list" id="bank-list"></div>
+      <button class="btn ghost big" id="bank-more" style="display:none"></button>`;
+
+    const listEl = document.getElementById('bank-list');
+    const moreBtn = document.getElementById('bank-more');
+    const searchEl = document.getElementById('bank-search');
+    const sortEl = document.getElementById('bank-sort');
+
+    function matched() {
+      const kw = keyword.trim().toLowerCase();
+      let arr = banks.filter(b => !kw || String(b.name).toLowerCase().includes(kw));
+      if (sortBy === 'name') arr = arr.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
+      else if (sortBy === 'count') arr = arr.slice().sort((a, b) => (b.count || 0) - (a.count || 0));
+      else arr = arr.slice().sort((a, b) => b.createdAt - a.createdAt);
+      return arr;
+    }
+
+    function cardHtml(b) {
+      const na = info[b.id]?.noAns || 0;
+      const secs = info[b.id]?.secs || 0;
+      return `
+        <div class="bank-card">
+          <div class="bank-main" onclick="App.startBank('${b.id}')">
+            <div class="bank-name">${escapeHtml(b.name)}</div>
+            <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
+          </div>
+          ${b.count ? `<button class="bank-del" style="color:var(--primary)" onclick="App.navigate('#/bank/${b.id}')">选题</button>` : ''}
+          ${b.count ? `<button class="bank-del" style="color:${na ? 'var(--bad)' : 'var(--primary)'}" onclick="App.navigate('#/answers/${b.id}')">${na ? '补答案' : '答案校验'}</button>` : ''}
+          <button class="bank-del" onclick="App.renameBank('${b.id}')">改名</button>
+          <button class="bank-del" onclick="App.delBank('${b.id}')">删除</button>
+        </div>`;
+    }
+
+    function renderList() {
+      const arr = matched();
+      const show = expanded ? arr : arr.slice(0, LIMIT);
+      listEl.innerHTML = arr.length
+        ? show.map(cardHtml).join('') + (arr.length > LIMIT && !expanded
+          ? `<div class="muted small center">已显示 ${show.length} / ${arr.length} 个题库</div>` : '')
+        : `<div class="empty" style="padding:30px 0">没有匹配的题库<br><span class="muted small">清空搜索框可看全部</span></div>`;
+      if (!moreBtn) return;
+      if (arr.length > LIMIT) {
+        moreBtn.style.display = '';
+        moreBtn.textContent = expanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+      } else moreBtn.style.display = 'none';
+    }
+
+    if (searchEl) searchEl.oninput = () => { keyword = searchEl.value; expanded = false; renderList(); };
+    if (sortEl) sortEl.onclick = (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      sortEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      sortBy = b.dataset.v;
+      renderList();
+    };
+    if (moreBtn) moreBtn.onclick = () => { expanded = !expanded; renderList(); };
+    renderList();
   }
 
   async function startBank(id) {
@@ -721,7 +810,7 @@ const App = (() => {
       <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；扫描版 PDF 会自动 OCR（较慢）；.doc 需另存为 .docx</div>`;
   }
 
-  /* ================= 页面：题目列表（多选题号练习） ================= */
+  /* ================= 页面：题目列表（搜索 / 筛选 / 勾选 / 折叠） ================= */
   async function pageBankQuestions(params) {
     const bankId = params[0];
     const bank = await DB.bankGet(bankId);
@@ -753,94 +842,186 @@ const App = (() => {
       groups[groupOf[sec]].idxs.push(qs.indexOf(q));
     }
 
+    // ---- 作答状态（错题 / 未答 / 答对）与收藏，供筛选 ----
+    const latest = await DB.latestByQuestion();
+    const starSet = new Set(await DB.starIds());
+    const stateOf = q => { const r = latest[q.id]; return r ? (r.correct ? 'done' : 'wrong') : 'todo'; };
+
+    // ---- 选择状态：存题目 id（切换筛选/折叠后勾选不丢）----
+    const sel = new Set(qs.filter(q => q.answer).map(q => q.id));
+    let kw = '', filter = 'all';
+    const collapsed = new Set();
+
+    const FILTERS = [
+      ['all', '全部', () => true],
+      ['wrong', '错题', q => stateOf(q) === 'wrong'],
+      ['todo', '未答', q => stateOf(q) === 'todo'],
+      ['done', '答对', q => stateOf(q) === 'done'],
+      ['star', '收藏', q => starSet.has(q.id)],
+      ['missing', '缺答案', q => !q.answer],
+      ['exp', '有解析', q => !!q.explanation]
+    ];
+
     topbar(bank.name.slice(0, 10) || '题目列表', '#/home');
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">选择要练的题（勾选题号）</div>
-        <div class="btn-row">
-          <button class="btn ghost" id="sel-all">全选</button>
-          <button class="btn ghost" id="sel-none">全不选</button>
-          <button class="btn ghost" id="sel-noans">只选有答案</button>
+        <div class="card-title">选择要练的题</div>
+        <div class="list-tools">
+          <input id="q-search" class="search-input" placeholder="搜索题干 / 选项 / 答案…">
+          <div class="chips" id="q-filter"></div>
+        </div>
+        <div class="chips" id="sec-fold">
+          <button class="chip" data-act="fold">全部折叠</button>
+          <button class="chip" data-act="unfold">全部展开</button>
         </div>
         <div class="btn-row">
+          <button class="btn ghost" id="sel-all">全选可见</button>
+          <button class="btn ghost" id="sel-none">清空选择</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="sel-noans">只选有答案</button>
           <button class="btn ghost" id="sel-unans">只选缺答案</button>
-          <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
         <div class="btn-row">
           <button class="btn ghost" id="exp-canon">导出范式</button>
           <button class="btn ghost" id="copy-canon">复制范式</button>
         </div>
-        <div class="muted small" style="margin-top:6px">导出范式后可在 Word 里补答案 / 加题 / 改题干，再回「范式导入」贴回来覆盖建库（答案随题，无需再对齐）</div>
-        <div class="muted small" id="pick-info" style="margin-top:8px">共 ${qs.length} 题</div>
-        <div class="muted small" style="margin-top:4px">灰色 = 缺答案，也能勾选练习：练习时点右上角 ✎ 自己填答案</div>
-        <div id="no-grid">
-          ${groups.map((g, gi) => `
-          <div class="sec-group">
-            <div class="sec-head">
-              <b>${escapeHtml(g.title)}${g.type && !String(g.title).includes(TYPE_NAME[g.type] || '\u0000') ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
-              <span class="muted small">${g.idxs.length} 题</span>
-              <button class="btn ghost" style="padding:2px 10px;font-size:12px" data-sec="${gi}">本节全选</button>
-            </div>
-            <div class="no-grid">
-              ${g.idxs.map(i => `
-              <label class="no-cell ${qs[i].answer ? '' : 'no-ans'}" title="${qs[i].answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}">
-                <input type="checkbox" value="${i}" ${qs[i].answer ? 'checked' : ''}>
-                <span>${qs[i].no ?? i + 1}</span>
-              </label>`).join('')}
-            </div>
-          </div>`).join('')}
+        <div class="btn-row">
+          <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
-        <button class="btn primary big" id="go-quiz" style="margin-top:12px">练习选中题（0）</button>
+        <div class="muted small" style="margin-top:6px">导出范式后可在 Word 里补答案 / 加题 / 改题干，再回「范式导入」贴回来覆盖建库（答案随题，无需再对齐）</div>
+        <div class="muted small" id="pick-info" style="margin-top:8px"></div>
+        <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠</div>
+        <div id="no-grid"></div>
+        <button class="btn primary big" id="go-quiz" style="margin-top:12px"></button>
       </div>
       <style>
         .sec-group { margin-top:12px; }
         .sec-head { display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px dashed var(--line, #e3e8f0); }
-        .sec-head b { flex:1; font-size:14px; }
+        .sec-head b { flex:1; font-size:14px; min-width:0; }
         .no-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .no-cell { display:flex; align-items:center; gap:4px; background:#f7f9fc; border-radius:8px; padding:4px 8px; font-size:13px; cursor:pointer; }
+        .no-cell { display:flex; align-items:center; gap:4px; background:var(--surface-2, #f7f9fc); border-radius:8px; padding:4px 8px; font-size:13px; cursor:pointer; border-left:3px solid transparent; }
         .no-cell.no-ans { opacity:.55; border:1px dashed var(--line, #e3e8f0); }
+        .no-cell.st-wrong { border-left-color:var(--bad); }
+        .no-cell.st-done { border-left-color:var(--ok); }
         .no-cell input { margin:0; }
       </style>`;
 
     const grid = document.getElementById('no-grid');
     const info = document.getElementById('pick-info');
     const goBtn = document.getElementById('go-quiz');
-    const boxes = () => [...grid.querySelectorAll('input')];
-    const checkedIdx = () => boxes().filter(b => b.checked).map(b => +b.value);
+    const filterEl = document.getElementById('q-filter');
 
-    const update = () => {
-      const sel = checkedIdx();
-      goBtn.textContent = `练习选中题（${sel.length}）`;
-      info.textContent = `共 ${qs.length} 题 · 已选 ${sel.length} 题`;
+    filterEl.innerHTML = FILTERS.map(([k, label, fn]) => {
+      const n = qs.filter(fn).length;
+      return `<button class="chip ${k === 'all' ? 'on' : ''}" data-v="${k}">${label} ${n}</button>`;
+    }).join('');
+
+    function matchQ(q) {
+      if (kw) {
+        const hay = [q.stem, q.answer, q.explanation, ...Object.values(q.options || {})].join(' ').toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
+      const f = FILTERS.find(x => x[0] === filter);
+      return f ? f[2](q) : true;
+    }
+
+    function update(shown) {
+      const n = shown != null ? shown : grid.querySelectorAll('input[data-id]').length;
+      info.textContent = `共 ${qs.length} 题 · 当前显示 ${n} 题 · 已选 ${sel.size} 题`;
+      goBtn.textContent = `练习选中题（${sel.size}）`;
+    }
+
+    function renderGrid() {
+      let shown = 0;
+      const html = groups.map(g => {
+        const idxs = g.idxs.filter(i => matchQ(qs[i]));
+        if (!idxs.length) return '';
+        shown += idxs.length;
+        const isCollapsed = collapsed.has(g.sec);
+        return `
+          <div class="sec-group">
+            <div class="sec-head">
+              <button class="sec-toggle" data-fold="${escapeHtml(g.sec)}">${isCollapsed ? '▸' : '▾'}</button>
+              <b>${escapeHtml(g.title)}${g.type && !String(g.title).includes(TYPE_NAME[g.type] || '\u0000') ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
+              <span class="muted small">${idxs.length}${idxs.length !== g.idxs.length ? '/' + g.idxs.length : ''} 题</span>
+              <button class="chip" data-sec="${escapeHtml(g.sec)}">本节全选</button>
+            </div>
+            ${isCollapsed ? '' : `<div class="no-grid">
+              ${idxs.map(i => {
+                const q = qs[i];
+                return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
+                  <input type="checkbox" data-id="${q.id}" ${sel.has(q.id) ? 'checked' : ''}>
+                  <span>${q.no ?? i + 1}</span>
+                </label>`;
+              }).join('')}
+            </div>`}
+          </div>`;
+      }).join('');
+      grid.innerHTML = html || '<div class="muted small" style="padding:12px 0">没有匹配的题（换个关键词或筛选试试）</div>';
+
+      // 每次重渲染后重新绑定（事件委托会因 innerHTML 变化而失效）
+      grid.querySelectorAll('input[data-id]').forEach(box => {
+        box.onchange = () => { box.checked ? sel.add(box.dataset.id) : sel.delete(box.dataset.id); update(); };
+      });
+      grid.querySelectorAll('[data-fold]').forEach(b => {
+        b.onclick = () => {
+          const s = b.dataset.fold;
+          collapsed.has(s) ? collapsed.delete(s) : collapsed.add(s);
+          renderGrid();
+        };
+      });
+      grid.querySelectorAll('button[data-sec]').forEach(b => {
+        b.onclick = () => {
+          const g = groups.find(x => String(x.sec) === b.dataset.sec);
+          if (!g) return;
+          const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+          const allOn = ids.length && ids.every(id => sel.has(id));
+          ids.forEach(id => allOn ? sel.delete(id) : sel.add(id));
+          renderGrid();
+        };
+      });
+      update(shown);
+    }
+
+    document.getElementById('q-search').oninput = (e) => { kw = e.target.value.trim().toLowerCase(); renderGrid(); };
+    filterEl.onclick = (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      filterEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      filter = b.dataset.v;
+      renderGrid();
     };
-    grid.addEventListener('change', update);
-    document.getElementById('sel-all').onclick = () => { boxes().forEach(b => b.checked = true); update(); };
-    document.getElementById('sel-none').onclick = () => { boxes().forEach(b => b.checked = false); update(); };
-    document.getElementById('sel-noans').onclick = () => {
-      boxes().forEach((b, i) => b.checked = !!qs[i].answer);
+    document.getElementById('sec-fold').onclick = (e) => {
+      const b = e.target.closest('button[data-act]'); if (!b) return;
+      collapsed.clear();
+      if (b.dataset.act === 'fold') groups.forEach(g => collapsed.add(g.sec));
+      renderGrid();
+    };
+    document.getElementById('sel-all').onclick = () => {
+      grid.querySelectorAll('input[data-id]').forEach(b => { sel.add(b.dataset.id); b.checked = true; });
       update();
+    };
+    document.getElementById('sel-none').onclick = () => {
+      sel.clear();
+      grid.querySelectorAll('input[data-id]').forEach(b => b.checked = false);
+      update();
+    };
+    document.getElementById('sel-noans').onclick = () => {
+      sel.clear();
+      qs.filter(q => q.answer).forEach(q => sel.add(q.id));
+      renderGrid();
     };
     document.getElementById('sel-unans').onclick = () => {
-      boxes().forEach((b, i) => b.checked = !qs[i].answer);
-      update();
+      sel.clear();
+      qs.filter(q => !q.answer).forEach(q => sel.add(q.id));
+      renderGrid();
     };
-    // 本节全选
-    grid.querySelectorAll('button[data-sec]').forEach(btn => {
-      btn.onclick = () => {
-        const g = groups[+btn.dataset.sec];
-        const gBoxes = g.idxs.map(i => grid.querySelector(`input[value="${i}"]`));
-        const allOn = gBoxes.every(b => b.checked);
-        gBoxes.forEach(b => b.checked = !allOn);
-        update();
-      };
-    });
-    update();
 
     goBtn.onclick = async () => {
-      const sel = checkedIdx();
-      if (!sel.length) return toast('请先勾选题号');
+      if (!sel.size) return toast('请先勾选题号');
       // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
-      const list = sel.map(i => qs[i]);
+      const list = qs.filter(q => sel.has(q.id));
       const noAnsCount = list.filter(q => !q.answer).length;
       session = new QuizSession(list, { shuffle: false });
       if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
@@ -861,16 +1042,17 @@ const App = (() => {
 
     // 删除选中 → 移入回收站（可恢复；彻底删除需在回收站二次确认）
     document.getElementById('del-sel').onclick = async () => {
-      const sel = checkedIdx();
-      if (!sel.length) return toast('请先勾选要删除的题');
-      if (!confirmDialog(`删除选中 ${sel.length} 题？\n删除后进入回收站，可在回收站恢复或彻底删除。`)) return;
-      const del = sel.map(i => qs[i]);
+      if (!sel.size) return toast('请先勾选要删除的题');
+      const del = qs.filter(q => sel.has(q.id));
+      if (!confirmDialog(`删除选中 ${del.length} 题？\n删除后进入回收站，可在回收站恢复或彻底删除。`)) return;
       await DB.recycleAdd(bank, del);
       for (const q of del) await DB.questionDelete(q.id);
       await DB.bankUpdateCount(bankId);
       toast(`已删除 ${del.length} 题，可在回收站恢复`);
       render();
     };
+
+    renderGrid();
   }
 
   /* ================= 页面：回收站 ================= */
@@ -1144,27 +1326,61 @@ const App = (() => {
 
   async function pageQuizSetup() {
     topbar('开始练习');
-    const banks = await DB.bankList();
-    banks.sort((a, b) => b.createdAt - a.createdAt);
-    // 统计各库有答案题数（练习只用有答案的题）
-    const ansMap = {};
+    const banks = (await DB.bankList()).sort((a, b) => b.createdAt - a.createdAt);
+    if (!banks.length) {
+      $view().innerHTML = `<div class="empty" style="padding-top:40px">暂无题库<br>请先导入文件</div>`;
+      return;
+    }
+    // 读全每库题目：有答案数 + 各章节可练题数（供章节勾选与实时题量）
+    const bankData = {};
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
-      ansMap[b.id] = qs.filter(q => q.answer).length;
+      const secCount = new Map();  // secIdx(字符串) -> 有答案题数
+      let ans = 0;
+      for (const q of qs) {
+        const k = String(q.secIdx ?? '');
+        if (q.answer) { ans++; secCount.set(k, (secCount.get(k) || 0) + 1); }
+        else if (!secCount.has(k)) secCount.set(k, 0);
+      }
+      bankData[b.id] = { qs, ans, secCount };
     }));
-    const total = banks.reduce((s, b) => s + (ansMap[b.id] || 0), 0);
+    const total = banks.reduce((s, b) => s + bankData[b.id].ans, 0);
     const starCount = (await DB.starQuestions()).filter(q => q.answer).length;
     if (!total) {
       $view().innerHTML = `<div class="empty" style="padding-top:40px">暂无带答案的题目<br>请先导入文件并在题库列表「补答案」</div>`;
       return;
     }
+
+    // ---- 选择状态 ----
+    const sel = new Set(banks.map(b => b.id));  // 选中的题库
+    const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
+    let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
+    const LIMIT = 6;
+
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">范围（不选 = 全部题库）</div>
-        <div class="bank-pick">
-          ${banks.map(b => `<label class="pick-item"><input type="checkbox" value="${b.id}" checked> ${escapeHtml(b.name)}（${ansMap[b.id] || 0}）</label>`).join('')}
+        <div class="card-title">范围（题库）</div>
+        <div class="list-tools">
+          <input id="setup-search" class="search-input" placeholder="搜索题库名称…">
+          <div class="chips" id="pick-tools">
+            <button class="chip" data-act="all">全选</button>
+            <button class="chip" data-act="none">清空</button>
+            <button class="chip" data-act="ans">只选有答案的库</button>
+          </div>
         </div>
+        <div class="bank-pick" id="bank-pick"></div>
+        <button class="btn ghost" id="pick-more" style="display:none;margin-top:8px"></button>
       </div>
+
+      <div class="card">
+        <div class="card-title">范围（章节）</div>
+        <div class="muted small" id="sec-sum">不选 = 全部章节</div>
+        <div class="chips" id="sec-tools" style="margin-top:8px">
+          <button class="chip" data-act="none">清空（=全部章节）</button>
+        </div>
+        <div id="sec-area"></div>
+      </div>
+
       <div class="card">
         <div class="card-title">题型</div>
         <div class="seg" id="seg-type">
@@ -1172,7 +1388,30 @@ const App = (() => {
           <button data-v="choice">选择/判断</button>
           <button data-v="fill">填空</button>
         </div>
+        <div class="muted small" id="type-hint" style="margin-top:8px"></div>
       </div>
+
+      <div class="card">
+        <div class="card-title">模式</div>
+        <div class="seg" id="seg-mode">
+          <button data-v="learn" class="on">📖 学习模式</button>
+          <button data-v="exam">📝 考试模式</button>
+        </div>
+        <div id="exam-opts" style="display:none;margin-top:10px">
+          <div class="field"><span>考试时长</span>
+            <div class="seg" id="seg-time">
+              <button data-v="auto" class="on">按 1 分钟/题</button>
+              <button data-v="none">不限时</button>
+              <button data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="field" id="exam-min-wrap" style="display:none"><span>时长（分钟）</span>
+            <input type="number" id="exam-min" min="1" max="600" value="60" inputmode="numeric">
+          </div>
+          <div class="muted small">考试模式：作答时<b>不显示对错与解析</b>，可自由跳题改动；交卷后统一判分，给出成绩单与错题解析。</div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-title">顺序</div>
         <div class="seg" id="seg-order">
@@ -1180,29 +1419,190 @@ const App = (() => {
           <button data-v="shuffle">随机</button>
         </div>
       </div>
-      <button class="btn primary big" id="start-quiz">开始（共 ${total} 题可选）</button>
+      <button class="btn primary big" id="start-quiz"></button>
       <button class="btn ghost big" onclick="App.wrongRedo()">错题重做</button>
       ${starCount ? `<button class="btn ghost big" onclick="App.starRedo()">★ 收藏重练（${starCount}）</button>` : ''}`;
 
+    const bankPickEl = document.getElementById('bank-pick');
+    const pickMoreBtn = document.getElementById('pick-more');
+    const secArea = document.getElementById('sec-area');
+    const secSum = document.getElementById('sec-sum');
+    const startBtn = document.getElementById('start-quiz');
+
+    /* ---- 题库勾选（搜索 + 折叠，题库多也不用翻到底） ---- */
+    function renderBanks() {
+      const kw = bankKw.trim().toLowerCase();
+      const arr = banks.filter(b => !kw || String(b.name).toLowerCase().includes(kw));
+      const show = (bankExpanded || kw) ? arr : arr.slice(0, LIMIT);
+      bankPickEl.innerHTML = arr.length ? show.map(b => {
+        const d = bankData[b.id];
+        return `<label class="pick-item"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
+          <span class="pick-name">${escapeHtml(b.name)}</span>
+          <span class="muted small pick-num">${d.ans}${d.ans !== b.count ? '/' + b.count : ''}</span>
+        </label>`;
+      }).join('') : '<div class="muted small" style="padding:8px 0">没有匹配的题库</div>';
+      bankPickEl.querySelectorAll('input').forEach(i => {
+        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
+      });
+      pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
+      pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+    }
+
+    /* ---- 章节勾选（按库分组，chip 点选；不选 = 全部章节） ---- */
+    function renderSecs() {
+      const parts = [];
+      for (const b of banks) {
+        if (!sel.has(b.id)) continue;
+        const d = bankData[b.id];
+        const list = (b.sections || []).filter(s => d.secCount.has(String(s.secIdx)));
+        const hasNoSec = d.secCount.has('');
+        if (!list.length && !hasNoSec) continue;
+        const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
+        const totalSec = list.length + (hasNoSec ? 1 : 0);
+        parts.push(`
+          <div class="sec-pick">
+            <div class="sec-pick-head">
+              <b>${escapeHtml(b.name)}</b>
+              <span class="muted small">${picked ? `已选 ${picked}/${totalSec}` : `${totalSec} 章`}</span>
+              <button class="chip" data-bank="${b.id}">全选/清空</button>
+            </div>
+            <div class="chips">
+              ${list.map(s => {
+                const key = b.id + ':' + s.secIdx;
+                const n = d.secCount.get(String(s.secIdx)) || 0;
+                return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-sec="${key}" title="${escapeHtml(s.title || '')}">${escapeHtml(shortTitle(s.title))}（${n}）</button>`;
+              }).join('')}
+              ${hasNoSec ? `<button class="chip ${selSecs.has(b.id + ':') ? 'on' : ''}" data-sec="${b.id}:" title="没有章节信息的题目">未分节（${d.secCount.get('') || 0}）</button>` : ''}
+            </div>
+          </div>`);
+      }
+      secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
+      secSum.textContent = selSecs.size ? `已选 ${selSecs.size} 个章节（不选 = 全部章节）` : '不选 = 全部章节';
+      // 章节 chip
+      secArea.querySelectorAll('button[data-sec]').forEach(btn => {
+        btn.onclick = () => {
+          const key = btn.dataset.sec;
+          selSecs.has(key) ? selSecs.delete(key) : selSecs.add(key);
+          renderSecs(); refresh();
+        };
+      });
+      // 整库全选/清空
+      secArea.querySelectorAll('button[data-bank]').forEach(btn => {
+        btn.onclick = () => {
+          const bid = btn.dataset.bank;
+          const d = bankData[bid];
+          const keys = [];
+          (banks.find(x => x.id === bid)?.sections || []).forEach(s => { if (d.secCount.has(String(s.secIdx))) keys.push(bid + ':' + s.secIdx); });
+          if (d.secCount.has('')) keys.push(bid + ':');
+          const allOn = keys.every(k => selSecs.has(k));
+          keys.forEach(k => allOn ? selSecs.delete(k) : selSecs.add(k));
+          renderSecs(); refresh();
+        };
+      });
+    }
+
+    function shortTitle(t) {
+      const s = String(t || '未命名章节');
+      return s.length > 18 ? s.slice(0, 17) + '…' : s;
+    }
+
+    /* ---- 实时可练题量 ---- */
+    function curFilter() {
+      const raw = document.querySelector('#seg-type .on').dataset.v;
+      return raw === 'all' ? 'answered' : raw + '|answered';
+    }
+    function countAvail() {
+      const raw = document.querySelector('#seg-type .on').dataset.v;
+      let n = 0;
+      for (const b of banks) {
+        if (!sel.has(b.id)) continue;
+        for (const q of bankData[b.id].qs) {
+          if (!q.answer) continue;                                        // 练习只用有答案的题
+          if (selSecs.size && !selSecs.has(q.bankId + ':' + String(q.secIdx ?? ''))) continue;
+          if (raw === 'choice' && !['single', 'multi', 'judge'].includes(q.type)) continue;
+          if (raw === 'fill' && q.type !== 'fill') continue;
+          n++;
+        }
+      }
+      return n;
+    }
+    function curMinutes(n) {
+      if (!exam) return 0;
+      if (timeMode === 'none') return 0;
+      if (timeMode === 'custom') return Math.max(1, Math.min(600, parseInt(document.getElementById('exam-min').value, 10) || 60));
+      return Math.max(1, n);   // 1 分钟/题
+    }
+    function refresh() {
+      const n = countAvail();
+      const mins = curMinutes(n);
+      startBtn.textContent = n
+        ? `开始${exam ? '考试' : '练习'}（${n} 题${exam && mins ? ` · ${mins} 分钟` : exam ? ' · 不限时' : ''}）`
+        : '该筛选下没有可练的题（或都缺答案）';
+      startBtn.disabled = !n;
+      renderTypeHint(n);
+    }
+    function renderTypeHint(n) {
+      document.getElementById('type-hint').textContent = `当前范围可练 ${n} 题`;
+    }
+
+    /* ---- 交互绑定 ---- */
+    const searchEl = document.getElementById('setup-search');
+    searchEl.oninput = () => { bankKw = searchEl.value; renderBanks(); };
+    pickMoreBtn.onclick = () => { bankExpanded = !bankExpanded; renderBanks(); };
+    document.getElementById('pick-tools').onclick = (e) => {
+      const b = e.target.closest('button[data-act]'); if (!b) return;
+      if (b.dataset.act === 'all') banks.forEach(x => sel.add(x.id));
+      else if (b.dataset.act === 'none') sel.clear();
+      else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
+      renderBanks(); renderSecs(); refresh();
+    };
+    document.getElementById('sec-tools').onclick = (e) => {
+      const b = e.target.closest('button[data-act]'); if (!b) return;
+      selSecs.clear(); renderSecs(); refresh();
+    };
     const segType = document.getElementById('seg-type');
     const segOrder = document.getElementById('seg-order');
-    [[segType], [segOrder]].forEach(([seg]) => {
+    const segMode = document.getElementById('seg-mode');
+    const segTime = document.getElementById('seg-time');
+    [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
       seg.onclick = (e) => {
         const b = e.target.closest('button'); if (!b) return;
         seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
+        if (seg === segMode) {
+          exam = b.dataset.v === 'exam';
+          document.getElementById('exam-opts').style.display = exam ? '' : 'none';
+        }
+        if (seg === segTime) {
+          timeMode = b.dataset.v;
+          document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
+        }
+        refresh();
       };
     });
-    document.getElementById('start-quiz').onclick = async () => {
-      const ids = [...document.querySelectorAll('.pick-item input:checked')].map(i => i.value);
-      const all = [...document.querySelectorAll('.pick-item input')].map(i => i.value);
-      const raw = segType.querySelector('.on').dataset.v; // all | choice | fill
-      const filterType = raw === 'all' ? 'answered' : raw + '|answered';
+    document.getElementById('exam-min').oninput = refresh;
+
+    startBtn.onclick = async () => {
+      const ids = [...sel];
+      if (!ids.length) return toast('请至少选择一个题库');
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
-      session = await QuizBuilder.fromBanks(ids.length ? ids : all, { shuffle, filterType });
+      const n = countAvail();
+      const mins = curMinutes(n);
+      session = await QuizBuilder.fromBanks(ids, {
+        shuffle,
+        filterType: curFilter(),
+        secKeys: selSecs,
+        exam,
+        minutes: mins
+      });
       if (!session.total) return toast('该筛选下没有可练的题（可能都缺答案）');
+      if (exam) toast(mins ? `考试开始 · ${mins} 分钟` : '考试开始 · 不限时');
       navigate('#/quiz');
     };
+
+    renderBanks();
+    renderSecs();
+    refresh();
   }
 
   async function wrongRedo() {
@@ -1220,21 +1620,29 @@ const App = (() => {
 
   /* ================= 页面：答题 ================= */
   async function pageQuiz() {
-    if (!session || session.finished) return navigate('#/quiz-result');
+    if (!session) return navigate('#/quiz-setup');
+    // 考试中：超时自动交卷；已交卷：直接看成绩单
+    if (session.inExam && session.deadline && Date.now() >= session.deadline) return submitExam(true);
+    if (session.inExam && session.graded) return navigate('#/quiz-result');
+    if (!session.inExam && session.finished) return navigate('#/quiz-result');
+
     const q = session.current;
-    topbar(`${session.pos} / ${session.total}`, '#/quiz-setup');
+    topbar(`${session.pos} / ${session.total}`, session.inExam ? null : '#/quiz-setup');
     const multi = q.type === 'multi';
     const optKeys = q.options ? Object.keys(q.options) : [];
     const starSet = new Set(await DB.starIds());
+    const inExam = session.inExam;
+    const examPicked = inExam ? (session.examAnswers.get(q.id) || '') : '';
 
     $view().innerHTML = `
       <div class="quiz-head">
         <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-        <span class="quiz-prog">${session.progress.done} 已答</span>
+        ${inExam ? `<span class="exam-timer" id="exam-timer">--:--</span>` : `<span class="quiz-prog">${session.progress.done} 已答</span>`}
         <button class="star-btn" id="sheet-btn" title="答题卡" style="font-size:19px">▦</button>
         <button class="star-btn" id="star-btn" title="收藏本题">☆</button>
         <button class="star-btn" id="edit-btn" title="修改答案与解析" style="font-size:19px">✎</button>
       </div>
+      ${inExam ? `<div class="exam-banner">📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分</div>` : ''}
       <div class="card" id="sheet-card" style="display:none"></div>
       <div class="card" id="edit-card" style="display:none"></div>
       ${!q.answer ? `<div class="card" style="border-left:4px solid var(--bad)">
@@ -1244,22 +1652,27 @@ const App = (() => {
         <div class="stem">${renderStem(q)}</div>
         ${q.type === 'fill' ? `
           <div class="fill-area">
-            ${(q.answer || '').split('|||').map((_, i) => `<input type="text" class="fill-input" placeholder="第 ${i + 1} 空" inputmode="text">`).join('')}
-            <button class="btn primary" id="fill-submit">提交答案</button>
+            ${(q.answer || '').split('|||').map((_, i) => `<input type="text" class="fill-input" placeholder="第 ${i + 1} 空" inputmode="text"
+              value="${escapeHtml(String(examPicked || '').split('|||')[i] || '')}">`).join('')}
+            <button class="btn primary" id="fill-submit">${inExam ? '保存答案' : '提交答案'}</button>
           </div>` : `
           <div class="options">
             ${optKeys.map(k => `
-              <button class="option" data-k="${k}" ${multi ? '' : 'data-single'}>
+              <button class="option ${inExam && examPicked.toUpperCase().includes(k) ? 'picked' : ''}" data-k="${k}" ${multi ? '' : 'data-single'}>
                 <span class="opt-key">${k}</span>
                 <span class="opt-text">${escapeHtml(q.options[k])}</span>
               </button>`).join('')}
           </div>
-          ${multi ? `<button class="btn primary big" id="multi-submit">提交答案</button>` : ''}`}
+          ${multi ? `<button class="btn primary big" id="multi-submit">${inExam ? '保存答案' : '提交答案'}</button>` : ''}`}
         <div class="judge-area" id="judge-area" style="display:none"></div>
+        ${inExam ? `<div class="muted small" style="margin-top:10px">答案会自动保存，可随时回看或修改；点「交卷」后统一判分</div>` : ''}
       </div>
       <div class="quiz-nav">
         <button class="btn ghost" id="skip-btn" ${session.index === 0 ? 'disabled' : ''}>上一题</button>
-        <button class="btn ghost" id="next-btn" style="display:none">下一题</button>
+        ${inExam
+          ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
+             <button class="btn primary" id="submit-exam-btn">交卷</button>`
+          : '<button class="btn ghost" id="next-btn" style="display:none">下一题</button>'}
       </div>`;
 
     const judgeArea = document.getElementById('judge-area');
@@ -1275,22 +1688,25 @@ const App = (() => {
       const cells = session.list.map((item, i) => {
         const a = session.answered.get(item.id);
         const cls = ['sheet-cell'];
-        if (a) cls.push(a.correct ? 'done' : 'wrong');
+        if (inExam) {
+          if (session.examAnswers.has(item.id)) cls.push('filled');   // 考试中只标「已答」，不泄露对错
+        } else if (a) {
+          cls.push(a.correct ? 'done' : 'wrong');
+        }
         if (i === session.index) cls.push('cur');
         if (starSet.has(item.id)) cls.push('star');
         return `<button class="${cls.join(' ')}" data-i="${i}">${i + 1}</button>`;
       }).join('');
       sheetCard.innerHTML = `
-        <div class="card-title">答题卡 · 已答 ${p.done}/${p.total}${p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : ''}</div>
+        <div class="card-title">答题卡 · 已答 ${p.done}/${p.total}${!inExam && p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : ''}</div>
         <div class="sheet-grid">${cells}</div>
         <div class="sheet-legend">
           <span><i></i>未答</span>
-          <span><i class="done"></i>答对</span>
-          <span><i class="wrong"></i>答错</span>
+          ${inExam ? '<span><i class="filled"></i>已答</span>' : '<span><i class="done"></i>答对</span><span><i class="wrong"></i>答错</span>'}
           <span><i class="cur"></i>当前题</span>
           <span>★ 收藏</span>
         </div>
-        <div class="muted small" style="margin-top:8px">点题号直接跳到该题；已答过的题可随时回看答案与解析</div>`;
+        <div class="muted small" style="margin-top:8px">${inExam ? '点题号直接跳到该题，答案可随时修改' : '点题号直接跳到该题；已答过的题可随时回看答案与解析'}</div>`;
       sheetCard.querySelectorAll('.sheet-cell').forEach(b => {
         b.onclick = () => {
           session.jump(+b.dataset.i);
@@ -1314,7 +1730,7 @@ const App = (() => {
         ${q.aiAnswer && q.aiAnswer !== q.answer ? `<div class="judge-exp" style="color:var(--bad)">⚠ AI 校验认为此题答案可能是 ${escapeHtml(q.aiAnswer)}
           <button class="btn ghost" style="padding:4px 12px;font-size:12.5px;margin-left:8px" onclick="window.__acceptAI()">采纳 AI 答案</button></div>` : ''}
         ${!res.correct && q.type === 'fill' ? '' : ''}`;
-      nextBtn.style.display = '';
+      if (nextBtn) nextBtn.style.display = '';
       // 标记选项对错
       if (q.type !== 'fill') {
         document.querySelectorAll('.option').forEach(el => {
@@ -1336,29 +1752,45 @@ const App = (() => {
 
     if (answered) showResult(answered);
     // 缺标准答案的题：不判分，直接允许翻下一题
-    if (!q.answer) nextBtn.style.display = '';
+    if (!q.answer && nextBtn) nextBtn.style.display = '';
+
+    /* ---- 考试模式：只存答案不判分（自动保存，可随时改） ---- */
+    const saveExam = (val) => {
+      if (!String(val).replace(/\|\|\|/g, '').trim()) session.examAnswers.delete(q.id);
+      else session.answer(val);
+      saveProgress();
+      const banner = document.querySelector('.exam-banner');
+      if (banner) banner.textContent = `📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分`;
+      if (sheetOpen) renderSheet();
+    };
 
     if (q.type === 'fill') {
+      const inputs = [...document.querySelectorAll('.fill-input')];
+      if (inExam) inputs.forEach(i => i.oninput = () => saveExam(inputs.map(x => x.value.trim()).join('|||')));
       const submit = () => {
-        const vals = [...document.querySelectorAll('.fill-input')].map(i => i.value.trim()).join('|||');
+        const vals = inputs.map(i => i.value.trim()).join('|||');
         if (!vals.replace(/\|\|\|/g, '')) return toast('请先填写答案');
+        if (inExam) { saveExam(vals); return toast('已保存，交卷后统一判分'); }
         const res = session.submit(vals);
         if (res) showResult({ ...res, userAnswer: vals });
       };
       document.getElementById('fill-submit').onclick = submit;
     } else {
-      let picked = new Set();
+      // 考试模式：选项可反复改；picked 初值来自已保存的答案（回看时高亮）
+      let picked = new Set(inExam && examPicked ? examPicked.toUpperCase().split('') : []);
       document.querySelectorAll('.option').forEach(el => {
         el.onclick = () => {
-          if (answered || el.classList.contains('disabled')) return;
+          if (!inExam && (answered || el.classList.contains('disabled'))) return;
           const k = el.dataset.k;
           if (multi) {
             picked.has(k) ? picked.delete(k) : picked.add(k);
             el.classList.toggle('picked');
+            if (inExam) saveExam([...picked].sort().join(''));
           } else {
             picked = new Set([k]);
             document.querySelectorAll('.option').forEach(x => x.classList.remove('picked'));
             el.classList.add('picked');
+            if (inExam) { saveExam(k); return; }
             const res = session.submit(k);
             if (res) showResult({ ...res, userAnswer: k });
           }
@@ -1368,18 +1800,23 @@ const App = (() => {
       if (ms) ms.onclick = () => {
         if (!picked.size) return toast('请先选择答案');
         const ans = [...picked].sort().join('');
+        if (inExam) { saveExam(ans); return toast('已保存，交卷后统一判分'); }
         const res = session.submit(ans);
         if (res) showResult({ ...res, userAnswer: ans });
       };
     }
 
     document.getElementById('skip-btn').onclick = () => { if (session.index > 0) { session.index--; saveProgress(); render(); } };
-    nextBtn.onclick = () => {
+    if (nextBtn) nextBtn.onclick = () => {
       session.next();
       saveProgress();
       if (session.finished) navigate('#/quiz-result'); // hash 变化自动触发 render
       else render(); // hash 未变，手动渲染
     };
+    // 考试：手动交卷
+    const examSubmitBtn = document.getElementById('submit-exam-btn');
+    if (examSubmitBtn) examSubmitBtn.onclick = () => submitExam(false);
+    if (inExam && session.deadline) startExamTimer();
 
     // 答题卡开关
     if (sheetBtn) sheetBtn.onclick = () => {
@@ -1486,11 +1923,9 @@ const App = (() => {
       touchX = null;
       // 快速横向滑动 60px+ 且横向位移明显大于纵向
       if (dt < 600 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        const q = session.current;
-        const answered = session.answered.has(q.id);
-        if (dx < 0) { // 左滑 → 下一题
-          if (!answered && q.answer) return toast('请先作答再翻下一题');
-          if (nextBtn.style.display !== 'none') nextBtn.click();
+        if (dx < 0) { // 左滑 → 下一题（考试模式可自由翻题，无需先作答）
+          if (!inExam && !session.answered.get(session.current.id) && session.current.answer) return toast('请先作答再翻下一题');
+          if (nextBtn && nextBtn.style.display !== 'none') nextBtn.click();
         } else if (session.index > 0) { // 右滑 → 上一题
           document.getElementById('skip-btn').click();
         }
@@ -1506,24 +1941,66 @@ const App = (() => {
     return s;
   }
 
-  /* ================= 页面：结果 ================= */
+  /* ================= 页面：结果（练习 / 考试成绩单） ================= */
   function pageQuizResult() {
     if (!session) return navigate('#/home');
-    const p = session.progress;
-    const acc = p.done ? Math.round(p.correct / p.done * 100) : 0;
-    topbar('练习结果', '#/home');
+    if (session.exam && !session.graded) session.grade();   // 兜底：未交卷进来先判分
+    const exam = session.exam;
+    const r = session.result();
+    topbar(exam ? '考试成绩' : '练习结果', '#/home');
+
+    if (!exam) {
+      const p = session.progress;
+      const acc = p.done ? Math.round(p.correct / p.done * 100) : 0;
+      $view().innerHTML = `
+        <div class="result-hero">
+          <div class="result-ring" style="--p:${acc}">
+            <div class="result-acc">${acc}<small>%</small></div>
+          </div>
+          <div class="result-row">
+            <div class="result-cell"><b>${p.done}</b><span>已答</span></div>
+            <div class="result-cell"><b>${p.correct}</b><span>答对</span></div>
+            <div class="result-cell"><b>${p.wrong}</b><span>答错</span></div>
+          </div>
+        </div>
+        <button class="btn primary big" onclick="App.replay()">再来一轮（错题优先）</button>
+        <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
+      return;
+    }
+
+    // ---- 考试：成绩单 + 错题速览 ----
+    const wrongs = session.wrongList();
+    const mm = Math.floor(r.timeUsed / 60), ss = r.timeUsed % 60;
+    const wrongShown = wrongs.slice(0, 20);
     $view().innerHTML = `
       <div class="result-hero">
-        <div class="result-ring" style="--p:${acc}">
-          <div class="result-acc">${acc}<small>%</small></div>
+        <div class="result-ring" style="--p:${r.acc}">
+          <div class="result-acc">${r.acc}<small>分</small></div>
         </div>
         <div class="result-row">
-          <div class="result-cell"><b>${p.done}</b><span>已答</span></div>
-          <div class="result-cell"><b>${p.correct}</b><span>答对</span></div>
-          <div class="result-cell"><b>${p.wrong}</b><span>答错</span></div>
+          <div class="result-cell"><b>${r.total}</b><span>总题数</span></div>
+          <div class="result-cell"><b style="color:var(--ok)">${r.correct}</b><span>答对</span></div>
+          <div class="result-cell"><b style="color:var(--bad)">${r.wrong}</b><span>答错</span></div>
+          <div class="result-cell"><b>${r.unanswered}</b><span>未答</span></div>
         </div>
+        <div class="muted small" style="margin-top:10px">用时 ${mm} 分 ${ss} 秒 · 已答 ${r.answered} 题</div>
       </div>
-      <button class="btn primary big" onclick="App.replay()">再来一轮（错题优先）</button>
+      ${wrongs.length ? `
+      <div class="card">
+        <div class="card-title">错题与未答（${wrongs.length}）</div>
+        ${wrongShown.map(x => `
+          <div class="exam-wrong">
+            <div class="stem sm">${renderStem(x.q)}</div>
+            <div class="exam-wrong-row">
+              <span class="tag-bad">你的：${x.userAnswer ? escapeHtml(x.q.type === 'fill' ? String(x.userAnswer).replace(/\|\|\|/g, ' ／ ') : String(x.userAnswer)) : '未作答'}</span>
+              <span class="tag-ok">正确：${escapeHtml((x.q.answer || '—').replace(/\|\|\|/g, ' ／ '))}</span>
+            </div>
+            ${x.q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(x.q.explanation)}</div>` : ''}
+          </div>`).join('')}
+        ${wrongs.length > wrongShown.length ? `<div class="muted small">仅列出前 ${wrongShown.length} 题</div>` : ''}
+      </div>` : `<div class="card"><div class="card-title">全部答对 🎉</div><div class="muted small">这套题没有错题，继续保持。</div></div>`}
+      ${wrongs.length ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${wrongs.length}）</button>` : ''}
+      <button class="btn ghost big" onclick="App.replay()">再来一轮</button>
       <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
   }
 
@@ -1541,6 +2018,15 @@ const App = (() => {
   async function replay() {
     session = null;
     navigate('#/quiz-setup');
+  }
+
+  /** 考试交卷后：只重做错题与未答（切回学习模式，逐题给解析） */
+  async function examWrongRedo() {
+    if (!session) return navigate('#/quiz-setup');
+    const list = session.wrongList().map(x => x.q);
+    if (!list.length) return toast('没有错题');
+    session = new QuizSession(list, { shuffle: true });
+    navigate('#/quiz');
   }
 
   /* ================= 页面：错题本 ================= */
@@ -1573,11 +2059,51 @@ const App = (() => {
     const acc = s.total ? Math.round(s.correct / s.total * 100) : 0;
     const wrongCount = (await DB.wrongQuestions()).length;
 
+    /* ---- 章节正确率：题目 → 章节 → 最近一次作答（薄弱章节置顶） ---- */
+    const banks = await DB.bankList();
+    const qById = new Map();
+    for (const b of banks) (await DB.questionsByBank(b.id)).forEach(q => qById.set(q.id, q));
+    const latest = await DB.latestByQuestion();
+    const secTitle = new Map();
+    for (const b of banks) for (const sec of (b.sections || [])) secTitle.set(b.id + ':' + String(sec.secIdx), sec.title);
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    const agg = new Map();
+    for (const [qid, rec] of Object.entries(latest)) {
+      const q = qById.get(qid);
+      if (!q) continue;
+      const secIdx = String(q.secIdx ?? '');
+      const key = q.bankId + ':' + secIdx;
+      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
+      cur.total++;
+      if (rec.correct) cur.correct++;
+      agg.set(key, cur);
+    }
+    const rows = [...agg.values()].map(x => ({
+      ...x,
+      acc: Math.round(x.correct / x.total * 100),
+      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
+      bank: bankName.get(x.bankId) || ''
+    })).sort((a, b) => a.acc - b.acc || b.total - a.total);
+    let onlyWeak = false;
+    const LIMIT = 12;
+
     $view().innerHTML = `
       <div class="stats-row">
         <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">章节正确率（薄弱在前）</div>
+        ${rows.length ? `
+        <div class="chips" id="sec-filter" style="margin-bottom:10px">
+          <button class="chip on" data-v="all">全部章节（${rows.length}）</button>
+          <button class="chip" data-v="weak">只看薄弱 &lt;60%（${rows.filter(r => r.acc < 60).length}）</button>
+        </div>
+        <div id="sec-acc-list"></div>
+        <button class="btn ghost" id="sec-more" style="display:none;margin-top:8px"></button>
+        <div class="muted small" style="margin-top:8px">按「最近一次作答」统计；点某一行可直接开始练这一章</div>`
+        : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况</div>'}
       </div>
       <div class="card">
         <div class="card-title">近 ${days.length} 日答题量</div>
@@ -1587,6 +2113,50 @@ const App = (() => {
             <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
         </div>` : '<div class="muted">暂无答题记录</div>'}
       </div>`;
+
+    if (!rows.length) return;
+    let expanded = false;
+    const listEl = document.getElementById('sec-acc-list');
+    const moreBtn = document.getElementById('sec-more');
+
+    function renderRows() {
+      let arr = onlyWeak ? rows.filter(r => r.acc < 60) : rows;
+      const show = expanded ? arr : arr.slice(0, LIMIT);
+      listEl.innerHTML = arr.length ? show.map(r => `
+        <div class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
+          <div class="sec-acc-top">
+            <span class="sec-acc-name" title="${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}">${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}</span>
+            <span class="sec-acc-num" style="color:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}">${r.acc}%</span>
+          </div>
+          <div class="acc-track"><div class="acc-fill" style="width:${r.acc}%;background:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}"></div></div>
+          <div class="muted small">${r.correct}/${r.total} 题 · 点此行练这一章</div>
+        </div>`).join('') : '<div class="muted small">这一档暂时没有章节</div>';
+      listEl.querySelectorAll('.sec-acc-row').forEach(el => {
+        el.onclick = () => practiceSection(el.dataset.bank, el.dataset.sec);
+      });
+      if (arr.length > LIMIT) {
+        moreBtn.style.display = '';
+        moreBtn.textContent = expanded ? '收起' : `展开全部 ${arr.length} 个章节`;
+      } else moreBtn.style.display = 'none';
+    }
+    document.getElementById('sec-filter').onclick = (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('sec-filter').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      onlyWeak = b.dataset.v === 'weak';
+      expanded = false;
+      renderRows();
+    };
+    moreBtn.onclick = () => { expanded = !expanded; renderRows(); };
+    renderRows();
+  }
+
+  /** 统计页点章节 → 直接开练这一章（学习模式，只练有答案的题） */
+  async function practiceSection(bankId, secIdx) {
+    const key = bankId + ':' + (secIdx || '');
+    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]) });
+    if (!session.total) return toast('该章节没有带答案的题可练');
+    navigate('#/quiz');
   }
 
   /* ================= 页面：设置 ================= */
@@ -1738,20 +2308,34 @@ const App = (() => {
 
   /* ================= 启动 ================= */
   async function init() {
-    await DB.open();
-    await applyTheme();
-    // 系统主题变化时（仅"跟随系统"模式）实时跟随
-    if (window.matchMedia) {
-      const mq = window.matchMedia('(prefers-color-scheme: dark)');
-      const onChange = () => applyTheme();
-      if (mq.addEventListener) mq.addEventListener('change', onChange);
-      else if (mq.addListener) mq.addListener(onChange);
+    try {
+      await DB.open();
+      await applyTheme();
+      // 系统主题变化时（仅"跟随系统"模式）实时跟随
+      if (window.matchMedia) {
+        const mq = window.matchMedia('(prefers-color-scheme: dark)');
+        const onChange = () => applyTheme();
+        if (mq.addEventListener) mq.addEventListener('change', onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      }
+      window.addEventListener('hashchange', render);
+      render();
+      if (DB.isFallback && DB.isFallback()) {
+        const keep = DB.fallbackPersistent && DB.fallbackPersistent();
+        toast(keep
+          ? '当前环境禁用了 IndexedDB，已改用浏览器本地存储，可正常使用'
+          : '当前环境禁用了本地数据库，已改用临时存储：关闭页面后数据不保留，建议用手机浏览器打开本文件', 5000);
+      }
+    } catch (e) {
+      // 兜底：任何启动异常也要给出提示，绝不白屏
+      console.error('[App] 启动失败', e);
+      const v = document.getElementById('view');
+      if (v) v.innerHTML = '<div class="card"><div class="card-title">启动失败</div><div class="muted">' +
+        ((e && e.message) || e) + '</div></div>';
     }
-    window.addEventListener('hashchange', render);
-    render();
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, toast };
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

@@ -8,6 +8,7 @@ const Extractor = (() => {
 
   /* ---- PDF：逐页提取并智能合并断行 ---- */
   async function fromPDF(file, onProgress) {
+    if (!window.pdfjsLib) throw new Error('当前为精简版（未内置 PDF 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     const pages = [];
@@ -91,6 +92,7 @@ const Extractor = (() => {
 
   /* ---- DOCX：mammoth 提取纯文本 ---- */
   async function fromDOCX(file) {
+    if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
     const result = await window.mammoth.extractRawText({ arrayBuffer: buf });
     return result.value;
