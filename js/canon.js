@@ -656,5 +656,102 @@ C. IGBT
     };
   }
 
-  return { SPEC, template, parse, fromQuestions, convert, TYPE_ALIAS, TYPE_LABEL };
+  /* ================= 范式文本 → .docx（零依赖：自建最小 ZIP，Word / WPS 可直接打开） =================
+     只写三个必需部件：[Content_Types].xml / _rels/.rels / word/document.xml。
+     ZIP 用「存储（不压缩）」+ 自算 CRC32——Word 完全接受，代价只是体积略大。
+     每行一个段落、整行照抄（连 `# 章`、`答案：X` 都原样保留），
+     保证「导出 Word → 用『载入文件』导回」内容一字不差（mammoth 抽文字后仍是范式）。 */
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  /* 最小 ZIP：全部用 store（method 0），无压缩、无时间戳依赖 */
+  function zipStore(files) {
+    const enc = new TextEncoder();
+    const u16 = v => [v & 255, (v >>> 8) & 255];
+    const u32 = v => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+    const parts = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const name = enc.encode(f.name);
+      const data = f.data;
+      const crc = crc32(data);
+      const local = new Uint8Array([
+        ...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x0021),
+        ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)
+      ]);
+      parts.push(local, name, data);
+      central.push(new Uint8Array([
+        ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x0021),
+        ...u32(crc), ...u32(data.length), ...u32(data.length),
+        ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)
+      ]), name);
+      offset += local.length + name.length + data.length;
+    }
+    const cdSize = central.reduce((s, c) => s + c.length, 0);
+    parts.push(...central, new Uint8Array([
+      ...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
+      ...u32(cdSize), ...u32(offset), ...u16(0)
+    ]));
+    const total = parts.reduce((s, c) => s + c.length, 0);
+    const out = new Uint8Array(total);
+    let p = 0;
+    for (const c of parts) { out.set(c, p); p += c.length; }
+    return out;
+  }
+
+  const xmlEsc = s => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+    // 去掉 XML 1.0 不允许的控制字符（Word 会判定文档损坏）
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+
+  /* 范式文本 → .docx 字节（Uint8Array） */
+  function buildDocx(text, opts = {}) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const ps = lines.map(line => {
+      const t = line.replace(/\t/g, '    ');
+      if (!t.trim()) return '<w:p/>';
+      // 章/节标题与「答案/解析」整行加粗，纯为阅读观感；文本内容一字不改，导回时仍是范式
+      const bold = /^#{1,6}\s/.test(t) || /^\s*(?:参考答案|正确答案|答案|解析)\s*[:：]/.test(t);
+      const rPr = bold ? '<w:rPr><w:b/></w:rPr>' : '';
+      return `<w:p><w:r>${rPr}<w:t xml:space="preserve">${xmlEsc(t)}</w:t></w:r></w:p>`;
+    }).join('');
+    const doc = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+      + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+      + ps
+      + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+      + '<w:pgMar w:top="1440" w:right="1080" w:bottom="1440" w:left="1080"/></w:sectPr>'
+      + '</w:body></w:document>';
+    const ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+      + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      + '<Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+      + '</Types>';
+    const rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+      + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+      + '</Relationships>';
+    const enc = new TextEncoder();
+    return zipStore([
+      { name: '[Content_Types].xml', data: enc.encode(ct) },
+      { name: '_rels/.rels', data: enc.encode(rels) },
+      { name: 'word/document.xml', data: enc.encode(doc) }
+    ]);
+  }
+
+  return { SPEC, template, parse, fromQuestions, convert, buildDocx, TYPE_ALIAS, TYPE_LABEL };
 })();

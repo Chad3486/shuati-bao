@@ -659,11 +659,98 @@ const LLM = (() => {
     return out;
   }
 
+  /* ================= 缺答案 AI 解题（只补空答案，绝不覆盖原卷答案） =================
+     与「文件 → AI 转范式」配套：范式文本里的题若「答案：」为空，交给 AI 补出来。
+     只对 !q.answer 的题调用 API（已答的一律不动，省钱也不覆盖原卷），
+     答案写回 question.answer，再由 Canon.serialize 落成「答案：X」行；
+     断点续传 + 失败批次自动重试（最多 3 轮），与旧的 AI 解题同一套稳网设计。 */
+  async function solveMissing(questions, onProgress, onRetry) {
+    let pool = (questions || []).filter(q => !q.answer);
+    if (!pool.length) return 0;
+    const BATCH = 10;
+    const MAX_ROUNDS = 3;
+    const cfg = await getConfig();
+    const concurrency = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+
+    const PROMPT = `你是答题专家。给下列题目补上正确答案，严格按json输出（不要markdown、不要任何解释文字）：
+{"answers":[{"idx":0,"answer":"C"}]}
+- idx 是输入里每题的序号（从0开始）
+- 选择题 answer 为字母串，如 "C" / "ACD"，必须是题目给定选项里的字母
+- 判断题 answer 为 "对" 或 "错"
+- 填空题 answer 为答案文本，多个空用 ||| 分隔
+只给答案，不要写解析。`;
+
+    let solved = 0, round = 0;
+    while (pool.length && round < MAX_ROUNDS) {
+      round++;
+      if (round > 1) {
+        if (onProgress) onProgress(0, 1, solved, `网络波动，第 ${round} 轮重试（10s 后）`);
+        await new Promise(r => setTimeout(r, 10000));
+        pool = pool.filter(q => !q.answer);
+        if (!pool.length) break;
+      }
+      const batches = [];
+      for (let i = 0; i < pool.length; i += BATCH) batches.push(pool.slice(i, i + BATCH));
+      const failed = [];
+      let done = 0, idx = 0;
+      async function worker() {
+        while (idx < batches.length) {
+          const batch = batches[idx++];
+          const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: q.stem, options: q.options || undefined }));
+          let ok = true, failNote = '', solvedHere = 0;
+          try {
+            const raw = await chat([
+              { role: 'system', content: PROMPT },
+              { role: 'user', content: JSON.stringify(body) }
+            ], { onRetry });
+            const obj = parseJSON(raw);
+            const arr = obj && Array.isArray(obj.answers) ? obj.answers : (Array.isArray(obj) ? obj : null);
+            if (arr) {
+              for (const a of arr) {
+                const q = batch[+a.idx];
+                if (!q || q.answer) continue;
+                let ans = String(a.answer == null ? '' : a.answer).trim();
+                if (!ans) continue;
+                if (q.type === 'judge') {
+                  if (/^(对|正确|√|✓|是|T|TRUE|A|1)$/i.test(ans)) ans = 'A';
+                  else if (/^(错|错误|×|✗|否|F|FALSE|B|0)$/i.test(ans)) ans = 'B';
+                  else continue;
+                } else if (q.options) {
+                  ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
+                  if (!ans || [...ans].some(c => !q.options[c])) continue;
+                } else {
+                  ans = ans.replace(/[。；;]\s*$/, '').trim();
+                  if (!ans || /^(略|见解析|无|不知道|无法确定)$/.test(ans)) continue;
+                }
+                q.answer = ans;
+                solved++; solvedHere++;
+              }
+            }
+            // 返回非 JSON 或一题都没解出 → 标失败进重试队列（避免静默"什么都不出"）
+            if (!arr || solvedHere === 0) {
+              ok = false;
+              failNote = (raw || '(空)').replace(/\s+/g, ' ').slice(0, 80);
+            }
+          } catch (e) {
+            ok = false;
+            failNote = '请求错误：' + String(e.message || '').slice(0, 60);
+          }
+          if (!ok) failed.push(batch);
+          done++;
+          if (onProgress) onProgress(done, batches.length, solved, failNote ? `该批未解出 · 返回: ${failNote}` : (round > 1 ? `第 ${round} 轮` : ''));
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+      pool = failed.flat().filter(q => !q.answer);
+    }
+    return solved;
+  }
+
   /* ---- 测试连接 ---- */
   async function testConnection() {
     const raw = await chat([{ role: 'user', content: '请直接回复：OK' }], { raw: true });
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, testConnection, chat };
+  return { getConfig, saveConfig, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, testConnection, chat };
 })();

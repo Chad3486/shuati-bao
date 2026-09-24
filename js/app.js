@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.6';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.7';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -99,9 +99,8 @@ const App = (() => {
     });
   }
 
-  /* 保存文本文件：APK 走 JS 桥接写系统 Download 目录，浏览器走 <a download> */
-  async function saveTextFile(fileName, text, mime = 'text/plain') {
-    const blob = new Blob([text], { type: mime + ';charset=utf-8' });
+  /* 保存二进制文件（Blob）：APK 走 JS 桥接写系统 Download 目录，浏览器走 <a download> */
+  async function saveBlobFile(fileName, blob) {
     const bridge = typeof window !== 'undefined' && window.AndroidBridge;
     const isApk = bridge && typeof bridge.isAvailable === 'function' && bridge.isAvailable();
     if (isApk) {
@@ -118,6 +117,18 @@ const App = (() => {
     a.click();
     URL.revokeObjectURL(a.href);
     return { path: fileName };
+  }
+
+  /* 保存文本文件 */
+  async function saveTextFile(fileName, text, mime = 'text/plain') {
+    return saveBlobFile(fileName, new Blob([text], { type: mime + ';charset=utf-8' }));
+  }
+
+  /* 保存范式 .docx（Canon.buildDocx → Uint8Array） */
+  async function saveDocxFile(fileName, text) {
+    const bytes = Canon.buildDocx(text);
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    return saveBlobFile(fileName, blob);
   }
 
   /* 读任意题库文件为纯文本（.txt/.md 直读；PDF/DOCX 走提取器） */
@@ -439,13 +450,24 @@ const App = (() => {
         <div class="muted small" id="canon-count"></div>
       </div>
 
+      <div class="card">
+        <div class="card-title">③ 缺答案 AI 解题 · 导出 Word（可选）</div>
+        <p class="muted small">文本框里「答案：」为空的题，交给 AI 补出正确答案（<b>只解缺答案的，已有答案的原封不动</b>）；解完自动写回文本框，可直接「导入题库」。也可随时把当前范式<b>导出成 Word（.docx）</b>——在 Word / WPS 里改完，回本页点「载入文件」选这份 .docx 就能一键导回。均需在「设置」配置 API Key。</p>
+        <div class="btn-row">
+          <button class="btn primary" id="canon-solve">AI 补答案（只解缺答案的题）</button>
+          <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
+        </div>
+        <div class="progress" id="canon-solve-prog" style="display:none"><div class="progress-bar" id="canon-solve-bar"></div></div>
+        <div class="muted small" id="canon-solve-status"></div>
+      </div>
+
       <div class="card" id="canon-report" style="display:none">
-        <div class="card-title">③ 解析结果</div>
+        <div class="card-title">④ 解析结果</div>
         <div id="canon-report-body"></div>
       </div>
 
       <div class="card">
-        <div class="card-title">④ 导入题库</div>
+        <div class="card-title">⑤ 导入题库</div>
         <label class="field"><span>题库名称（留空自动命名）</span>
           <input id="canon-name" placeholder="例如：电力电子技术 期末题库">
         </label>
@@ -609,6 +631,67 @@ const App = (() => {
       } finally {
         aiConvBtn.disabled = false;
         aiProg.style.display = 'none';
+      }
+    };
+
+    /* ---- 缺答案 AI 解题 + 导出范式 Word（.docx） ---- */
+    const solveBtn = document.getElementById('canon-solve');
+    const docxBtn = document.getElementById('canon-docx');
+    const solveStatus = document.getElementById('canon-solve-status');
+    const solveProg = document.getElementById('canon-solve-prog');
+    const solveBar = document.getElementById('canon-solve-bar');
+
+    solveBtn.onclick = async () => {
+      const text = ta.value;
+      if (text.replace(/\s/g, '').length < 5) { toast('请先贴入或转出范式文本'); return; }
+      const r0 = Canon.parse(text);
+      if (!r0.stats.total) { toast('没解析到题目，先点「解析预览」看错误'); return; }
+      // 重排会按解析结果重建文本：有格式错误的题会被丢掉，所以先拦住，避免误删题目
+      if (r0.errors.length) {
+        solveStatus.textContent = `⚠ 文本框里有 ${r0.errors.length} 处格式错误，先按「解析预览」修好再解题（重排会丢掉这些题）`;
+        toast('先修格式错误');
+        return;
+      }
+      if (!r0.stats.missing) { solveStatus.textContent = `✓ ${r0.stats.total} 题都有答案，无需解题`; toast('没有缺答案的题'); return; }
+      if (!await ensureApiKey()) return;
+      solveBtn.disabled = true;
+      solveProg.style.display = '';
+      solveBar.style.width = '0%';
+      solveStatus.textContent = `AI 正在解 ${r0.stats.missing} 道缺答案的题（已有答案的不动）…`;
+      try {
+        const got = await LLM.solveMissing(r0.questions,
+          (done, total, solved, note) => {
+            solveBar.style.width = Math.round(total ? done / total * 100 : 0) + '%';
+            solveStatus.textContent = `AI 解题中：第 ${done}/${total} 批 · 已补出 ${solved}${note ? ' · ' + note : ''}`;
+          },
+          (att, cool) => { solveStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; });
+        // 把解出的答案落回范式文本（Canon.serialize 按题输出「答案：X」）
+        ta.value = Canon.fromQuestions(r0.questions, r0.sections);
+        invalidate();
+        const r = runCheck();
+        const left = r ? r.stats.missing : 0;
+        solveStatus.textContent = got
+          ? `✓ 已补出 ${got} 题答案${left ? `，仍有 ${left} 题未解出（可再点一次重试）` : '，全部都有答案了'}；核对后点「⑤ 导入题库」`
+          : '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
+        toast(got ? `AI 补出 ${got} 题答案` : '未解出任何答案');
+      } catch (e) {
+        solveStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+      } finally {
+        solveBtn.disabled = false;
+        solveProg.style.display = 'none';
+      }
+    };
+
+    docxBtn.onclick = async () => {
+      const text = ta.value;
+      if (text.replace(/\s/g, '').length < 5) { toast('文本框是空的，先贴入或转出范式文本'); return; }
+      try {
+        const name = (document.getElementById('canon-name').value.trim() || '刷题宝-范式') + '.docx';
+        const r = await saveDocxFile(name, text);
+        solveStatus.textContent = `✓ 已导出 Word：${r.path}（Word / WPS 可编辑；改完回本页点「载入文件」选它即可导回）`;
+        toast('已导出范式 Word');
+      } catch (e) {
+        solveStatus.textContent = '⚠ 导出失败：' + e.message.slice(0, 100);
       }
     };
 
@@ -954,13 +1037,13 @@ const App = (() => {
           <button class="btn ghost" id="sel-unans">只选缺答案</button>
         </div>
         <div class="btn-row">
-          <button class="btn ghost" id="exp-canon">导出范式</button>
+          <button class="btn ghost" id="exp-canon">导出范式 Word</button>
           <button class="btn ghost" id="copy-canon">复制范式</button>
         </div>
         <div class="btn-row">
           <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
         </div>
-        <div class="muted small" style="margin-top:6px">导出范式后可在 Word 里补答案 / 加题 / 改题干，再回「范式导入」贴回来覆盖建库（答案随题，无需再对齐）</div>
+        <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「载入文件」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
         <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠</div>
         <div id="no-grid"></div>
@@ -1121,16 +1204,16 @@ const App = (() => {
       navigate('#/quiz');
     };
 
-    // 导出 / 复制范式：题库 → 范式文本（Word 里改完再「范式导入」贴回来）
+    // 导出 / 复制范式：题库 → 范式文本（导出 .docx 在 Word 里改完，回「范式导入」载入即可导回）
     const canonText = () => Canon.fromQuestions(qs, bank.sections, { title: bank.name });
     document.getElementById('exp-canon').onclick = async () => {
       try {
-        const r = await saveTextFile(`${bank.name}-范式.txt`, canonText());
-        toast('已导出范式：' + r.path);
+        const r = await saveDocxFile(`${bank.name}-范式.docx`, canonText());
+        toast('已导出范式 Word：' + r.path);
       } catch (e) { toast('导出失败：' + e.message.slice(0, 60)); }
     };
     document.getElementById('copy-canon').onclick = async () => {
-      toast(await copyText(canonText()) ? `已复制 ${qs.length} 题的范式文本` : '复制失败，请用「导出范式」');
+      toast(await copyText(canonText()) ? `已复制 ${qs.length} 题的范式文本` : '复制失败，请用「导出范式 Word」');
     };
 
     // 删除选中 → 移入回收站（可恢复；彻底删除需在回收站二次确认）
