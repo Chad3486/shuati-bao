@@ -187,8 +187,24 @@ body {
 .seg button.on { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 
 /* ---------- 答题 ---------- */
-.quiz-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.quiz-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 4px; }
 .quiz-prog { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; text-align: right; margin-right: 6px; }
+.exam-timer {
+  margin-left: auto; margin-right: 6px; flex: 0 0 auto;
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  padding: 3px 11px; border-radius: 20px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+}
+.exam-timer.warn { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); animation: timerPulse 1s ease-in-out infinite; }
+@keyframes timerPulse { 50% { opacity: .5; } }
+.quiz-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin: 0 0 12px; }
+.quiz-bar-fill { height: 100%; border-radius: 3px; background: var(--hero-grad); transition: width .3s ease; }
+.exam-banner {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface-3); border: 1px solid var(--line); border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm); padding: 9px 12px; font-size: 12.5px; color: var(--text);
+  margin-bottom: 12px; line-height: 1.5;
+}
 .star-btn {
   background: none; border: none; font-size: 24px; line-height: 1;
   color: var(--muted); cursor: pointer; padding: 4px 6px; min-height: 36px; min-width: 36px;
@@ -211,14 +227,19 @@ body {
   width: 40px; height: 40px; border-radius: var(--radius-sm); cursor: pointer; position: relative;
   background: var(--surface-2); border: 1.5px solid var(--line); color: var(--muted);
   font-size: 14px; font-weight: 700; font-family: inherit;
-  display: flex; align-items: center; justify-content: center;
-  transition: transform .1s;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  line-height: 1;
+  transition: transform .1s, background .15s, color .15s, border-color .15s;
 }
 .sheet-cell:active { transform: scale(.94); }
 .sheet-cell.done { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 .sheet-cell.wrong { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
-.sheet-cell.cur { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
+.sheet-cell.filled { border-color: var(--primary-dark); color: var(--on-primary); background: var(--primary); box-shadow: 0 2px 6px var(--primary-glow); }
+.sheet-cell.cur { outline: 2px solid var(--primary); outline-offset: 1px; }
+.sheet-cell.cur:not(.filled):not(.done):not(.wrong) { border-color: var(--primary); color: var(--primary); }
 .sheet-cell.star::after { content: '★'; position: absolute; top: -7px; right: -5px; font-size: 12px; color: var(--star); }
+/* 答题卡格子里的「你选了什么」 */
+.cell-pick { font-size: 9.5px; font-weight: 600; opacity: .92; letter-spacing: .5px; max-width: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--muted); align-items: center; }
 .sheet-legend i {
   display: inline-block; width: 12px; height: 12px; border-radius: 4px;
@@ -226,6 +247,7 @@ body {
 }
 .sheet-legend i.done { border-color: var(--ok); background: var(--ok-bg); }
 .sheet-legend i.wrong { border-color: var(--bad); background: var(--bad-bg); }
+.sheet-legend i.filled { border-color: var(--primary-dark); background: var(--primary); }
 .sheet-legend i.cur { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
 
 .stem { font-size: 16px; line-height: 1.7; font-weight: 500; }
@@ -236,10 +258,12 @@ body {
 .option {
   display: flex; gap: 10px; align-items: flex-start; text-align: left;
   background: var(--surface-2); border: 1.5px solid transparent; border-radius: var(--radius-sm);
-  padding: 11px 12px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
+  padding: 12px 13px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
   min-width: 0;
+  transition: border-color .15s, background .15s, box-shadow .15s, transform .1s;
 }
-.option.picked { border-color: var(--primary); background: var(--surface-3); }
+.option:active { transform: scale(.99); }
+.option.picked { border-color: var(--primary); background: var(--surface-3); box-shadow: 0 2px 10px var(--primary-glow); }
 .option.right { border-color: var(--ok); background: var(--ok-bg); }
 .option.wrong { border-color: var(--bad); background: var(--bad-bg); }
 .option.disabled { pointer-events: none; }
@@ -263,10 +287,14 @@ body {
 .fill-input:focus { outline: none; border-color: var(--primary); }
 .fill-input:disabled { background: var(--surface-2); color: var(--muted); }
 
-.judge-area { margin-top: 14px; padding: 13px; border-radius: var(--radius-sm); font-size: 14px; display: none; }
+.judge-area {
+  margin-top: 14px; padding: 13px 14px; border-radius: var(--radius-sm); font-size: 14px;
+  display: none; border-left: 3px solid transparent; animation: judgeIn .2s ease;
+}
 .judge-area.show { display: block; }
-.judge-area.ok { background: var(--ok-bg); }
-.judge-area.bad { background: var(--bad-bg); }
+.judge-area.ok { background: var(--ok-bg); border-left-color: var(--ok); }
+.judge-area.bad { background: var(--bad-bg); border-left-color: var(--bad); }
+@keyframes judgeIn { from { opacity: 0; transform: translateY(5px); } }
 .judge-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
 .judge-area.ok .judge-title { color: var(--ok); }
 .judge-area.bad .judge-title { color: var(--bad); }

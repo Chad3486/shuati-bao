@@ -195,8 +195,24 @@ body {
 .seg button.on { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 
 /* ---------- 答题 ---------- */
-.quiz-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.quiz-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 4px; }
 .quiz-prog { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; text-align: right; margin-right: 6px; }
+.exam-timer {
+  margin-left: auto; margin-right: 6px; flex: 0 0 auto;
+  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  padding: 3px 11px; border-radius: 20px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+}
+.exam-timer.warn { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); animation: timerPulse 1s ease-in-out infinite; }
+@keyframes timerPulse { 50% { opacity: .5; } }
+.quiz-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin: 0 0 12px; }
+.quiz-bar-fill { height: 100%; border-radius: 3px; background: var(--hero-grad); transition: width .3s ease; }
+.exam-banner {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface-3); border: 1px solid var(--line); border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm); padding: 9px 12px; font-size: 12.5px; color: var(--text);
+  margin-bottom: 12px; line-height: 1.5;
+}
 .star-btn {
   background: none; border: none; font-size: 24px; line-height: 1;
   color: var(--muted); cursor: pointer; padding: 4px 6px; min-height: 36px; min-width: 36px;
@@ -219,14 +235,19 @@ body {
   width: 40px; height: 40px; border-radius: var(--radius-sm); cursor: pointer; position: relative;
   background: var(--surface-2); border: 1.5px solid var(--line); color: var(--muted);
   font-size: 14px; font-weight: 700; font-family: inherit;
-  display: flex; align-items: center; justify-content: center;
-  transition: transform .1s;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  line-height: 1;
+  transition: transform .1s, background .15s, color .15s, border-color .15s;
 }
 .sheet-cell:active { transform: scale(.94); }
 .sheet-cell.done { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 .sheet-cell.wrong { border-color: var(--bad); color: var(--bad); background: var(--bad-bg); }
-.sheet-cell.cur { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
+.sheet-cell.filled { border-color: var(--primary-dark); color: var(--on-primary); background: var(--primary); box-shadow: 0 2px 6px var(--primary-glow); }
+.sheet-cell.cur { outline: 2px solid var(--primary); outline-offset: 1px; }
+.sheet-cell.cur:not(.filled):not(.done):not(.wrong) { border-color: var(--primary); color: var(--primary); }
 .sheet-cell.star::after { content: '★'; position: absolute; top: -7px; right: -5px; font-size: 12px; color: var(--star); }
+/* 答题卡格子里的「你选了什么」 */
+.cell-pick { font-size: 9.5px; font-weight: 600; opacity: .92; letter-spacing: .5px; max-width: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--muted); align-items: center; }
 .sheet-legend i {
   display: inline-block; width: 12px; height: 12px; border-radius: 4px;
@@ -234,6 +255,7 @@ body {
 }
 .sheet-legend i.done { border-color: var(--ok); background: var(--ok-bg); }
 .sheet-legend i.wrong { border-color: var(--bad); background: var(--bad-bg); }
+.sheet-legend i.filled { border-color: var(--primary-dark); background: var(--primary); }
 .sheet-legend i.cur { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
 
 .stem { font-size: 16px; line-height: 1.7; font-weight: 500; }
@@ -244,10 +266,12 @@ body {
 .option {
   display: flex; gap: 10px; align-items: flex-start; text-align: left;
   background: var(--surface-2); border: 1.5px solid transparent; border-radius: var(--radius-sm);
-  padding: 11px 12px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
+  padding: 12px 13px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
   min-width: 0;
+  transition: border-color .15s, background .15s, box-shadow .15s, transform .1s;
 }
-.option.picked { border-color: var(--primary); background: var(--surface-3); }
+.option:active { transform: scale(.99); }
+.option.picked { border-color: var(--primary); background: var(--surface-3); box-shadow: 0 2px 10px var(--primary-glow); }
 .option.right { border-color: var(--ok); background: var(--ok-bg); }
 .option.wrong { border-color: var(--bad); background: var(--bad-bg); }
 .option.disabled { pointer-events: none; }
@@ -271,10 +295,14 @@ body {
 .fill-input:focus { outline: none; border-color: var(--primary); }
 .fill-input:disabled { background: var(--surface-2); color: var(--muted); }
 
-.judge-area { margin-top: 14px; padding: 13px; border-radius: var(--radius-sm); font-size: 14px; display: none; }
+.judge-area {
+  margin-top: 14px; padding: 13px 14px; border-radius: var(--radius-sm); font-size: 14px;
+  display: none; border-left: 3px solid transparent; animation: judgeIn .2s ease;
+}
 .judge-area.show { display: block; }
-.judge-area.ok { background: var(--ok-bg); }
-.judge-area.bad { background: var(--bad-bg); }
+.judge-area.ok { background: var(--ok-bg); border-left-color: var(--ok); }
+.judge-area.bad { background: var(--bad-bg); border-left-color: var(--bad); }
+@keyframes judgeIn { from { opacity: 0; transform: translateY(5px); } }
 .judge-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
 .judge-area.ok .judge-title { color: var(--ok); }
 .judge-area.bad .judge-title { color: var(--bad); }
@@ -3976,11 +4004,25 @@ const App = (() => {
         .sec-head { display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px dashed var(--line, #e3e8f0); }
         .sec-head b { flex:1; font-size:14px; min-width:0; }
         .no-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .no-cell { display:flex; align-items:center; gap:4px; background:var(--surface-2, #f7f9fc); border-radius:8px; padding:4px 8px; font-size:13px; cursor:pointer; border-left:3px solid transparent; }
-        .no-cell.no-ans { opacity:.55; border:1px dashed var(--line, #e3e8f0); }
+        .no-cell {
+          position:relative; display:inline-flex; align-items:center; justify-content:center; gap:2px;
+          min-width:40px; height:34px; padding:0 9px;
+          background:var(--surface-2, #f7f9fc); border:1.5px solid transparent; border-left:3px solid transparent;
+          border-radius:9px; font-size:13px; font-weight:600; color:var(--text);
+          cursor:pointer; user-select:none; -webkit-user-select:none;
+          transition:background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
+        }
+        .no-cell:active { transform:scale(.94); }
+        .no-cell input { position:absolute; opacity:0; width:0; height:0; margin:0; }
+        .no-cell::before { content:'✓'; font-size:11px; line-height:1; opacity:0; width:0; overflow:hidden; transition:opacity .15s, width .15s; }
+        /* 已选：整格填色 + 打勾，一眼能看出选了什么 */
+        .no-cell.on { background:var(--primary); border-color:var(--primary-dark); color:var(--on-primary); box-shadow:0 2px 8px var(--primary-glow); }
+        .no-cell.on::before { opacity:1; width:11px; }
+        .no-cell.no-ans { border-style:dashed; border-color:var(--line, #e3e8f0); opacity:.6; }
+        .no-cell.no-ans.on { border-style:solid; opacity:1; }
         .no-cell.st-wrong { border-left-color:var(--bad); }
         .no-cell.st-done { border-left-color:var(--ok); }
-        .no-cell input { margin:0; }
+        .no-cell.on.st-wrong, .no-cell.on.st-done { border-left-color:var(--primary-dark); }
       </style>`;
 
     const grid = document.getElementById('no-grid');
@@ -4015,18 +4057,20 @@ const App = (() => {
         if (!idxs.length) return '';
         shown += idxs.length;
         const isCollapsed = collapsed.has(g.sec);
+        const secIds = idxs.map(i => qs[i].id);
+        const allOn = secIds.length > 0 && secIds.every(id => sel.has(id));
         return `
           <div class="sec-group">
             <div class="sec-head">
               <button class="sec-toggle" data-fold="${escapeHtml(g.sec)}">${isCollapsed ? '▸' : '▾'}</button>
               <b>${escapeHtml(g.title)}${g.type && !String(g.title).includes(TYPE_NAME[g.type] || '\u0000') ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
               <span class="muted small">${idxs.length}${idxs.length !== g.idxs.length ? '/' + g.idxs.length : ''} 题</span>
-              <button class="chip" data-sec="${escapeHtml(g.sec)}">本节全选</button>
+              <button class="chip ${allOn ? 'on' : ''}" data-sec="${escapeHtml(g.sec)}">${allOn ? '取消本节' : '本节全选'}</button>
             </div>
             ${isCollapsed ? '' : `<div class="no-grid">
               ${idxs.map(i => {
                 const q = qs[i];
-                return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
+                return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}${sel.has(q.id) ? ' on' : ''}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
                   <input type="checkbox" data-id="${q.id}" ${sel.has(q.id) ? 'checked' : ''}>
                   <span>${q.no ?? i + 1}</span>
                 </label>`;
@@ -4038,7 +4082,13 @@ const App = (() => {
 
       // 每次重渲染后重新绑定（事件委托会因 innerHTML 变化而失效）
       grid.querySelectorAll('input[data-id]').forEach(box => {
-        box.onchange = () => { box.checked ? sel.add(box.dataset.id) : sel.delete(box.dataset.id); update(); };
+        box.onchange = () => {
+          const on = box.checked;
+          on ? sel.add(box.dataset.id) : sel.delete(box.dataset.id);
+          const cell = box.closest('.no-cell');
+          if (cell) cell.classList.toggle('on', on);
+          update();
+        };
       });
       grid.querySelectorAll('[data-fold]').forEach(b => {
         b.onclick = () => {
@@ -4709,6 +4759,7 @@ const App = (() => {
     const starSet = new Set(await DB.starIds());
     const inExam = session.inExam;
     const examPicked = inExam ? (session.examAnswers.get(q.id) || '') : '';
+    const donePct = session.total ? Math.round(session.progress.done / session.total * 100) : 0;
 
     $view().innerHTML = `
       <div class="quiz-head">
@@ -4718,6 +4769,7 @@ const App = (() => {
         <button class="star-btn" id="star-btn" title="收藏本题">☆</button>
         <button class="star-btn" id="edit-btn" title="修改答案与解析" style="font-size:19px">✎</button>
       </div>
+      <div class="quiz-bar"><div class="quiz-bar-fill" style="width:${donePct}%"></div></div>
       ${inExam ? `<div class="exam-banner">📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分</div>` : ''}
       <div class="card" id="sheet-card" style="display:none"></div>
       <div class="card" id="edit-card" style="display:none"></div>
@@ -4764,14 +4816,20 @@ const App = (() => {
       const cells = session.list.map((item, i) => {
         const a = session.answered.get(item.id);
         const cls = ['sheet-cell'];
+        let pick = '';
         if (inExam) {
-          if (session.examAnswers.has(item.id)) cls.push('filled');   // 考试中只标「已答」，不泄露对错
+          const ea = session.examAnswers.get(item.id);
+          if (ea) { cls.push('filled'); pick = String(ea); }   // 考试中只标「已答」，不泄露对错
         } else if (a) {
           cls.push(a.correct ? 'done' : 'wrong');
+          pick = String(a.userAnswer ?? '');
         }
         if (i === session.index) cls.push('cur');
         if (starSet.has(item.id)) cls.push('star');
-        return `<button class="${cls.join(' ')}" data-i="${i}">${i + 1}</button>`;
+        // 格子里带上「你选了什么」，一眼看清；填空答案太长就只留配色
+        if (item.type === 'fill') pick = '';
+        else { pick = pick.replace(/\|\|\|/g, '/'); if (pick.length > 3) pick = pick.slice(0, 3) + '…'; }
+        return `<button class="${cls.join(' ')}" data-i="${i}" title="${pick ? '已答：' + escapeHtml(pick) : '未答'}">${i + 1}${pick ? `<span class="cell-pick">${escapeHtml(pick)}</span>` : ''}</button>`;
       }).join('');
       sheetCard.innerHTML = `
         <div class="card-title">答题卡 · 已答 ${p.done}/${p.total}${!inExam && p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : ''}</div>
@@ -4782,7 +4840,7 @@ const App = (() => {
           <span><i class="cur"></i>当前题</span>
           <span>★ 收藏</span>
         </div>
-        <div class="muted small" style="margin-top:8px">${inExam ? '点题号直接跳到该题，答案可随时修改' : '点题号直接跳到该题；已答过的题可随时回看答案与解析'}</div>`;
+        <div class="muted small" style="margin-top:8px">${inExam ? '格子下方小字是你已选答案；点题号直接跳到该题，答案可随时修改' : '格子下方小字是你选的答案；点题号直接跳到该题，已答过的题可随时回看答案与解析'}</div>`;
       sheetCard.querySelectorAll('.sheet-cell').forEach(b => {
         b.onclick = () => {
           session.jump(+b.dataset.i);
@@ -4790,6 +4848,15 @@ const App = (() => {
           render();
         };
       });
+    }
+
+    /* ---- 顶部进度条 + 已答文字：作答后实时更新 ---- */
+    function updateBar() {
+      const p = session.progress;
+      const bar = document.querySelector('.quiz-bar-fill');
+      if (bar) bar.style.width = (session.total ? Math.round(p.done / session.total * 100) : 0) + '%';
+      const prog = document.querySelector('.quiz-prog');
+      if (prog) prog.textContent = `${p.done} 已答`;
     }
 
     function showResult(res) {
@@ -4824,6 +4891,7 @@ const App = (() => {
       }
       // 答题卡开着时实时更新对错着色
       if (sheetOpen) renderSheet();
+      updateBar();
     }
 
     if (answered) showResult(answered);
@@ -4837,6 +4905,7 @@ const App = (() => {
       saveProgress();
       const banner = document.querySelector('.exam-banner');
       if (banner) banner.textContent = `📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分`;
+      updateBar();
       if (sheetOpen) renderSheet();
     };
 
