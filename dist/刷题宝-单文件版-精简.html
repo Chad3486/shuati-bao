@@ -368,6 +368,34 @@ body {
 .wrong-head { margin-bottom: 6px; }
 .wrong-ans { margin-top: 8px; color: var(--ok); font-weight: 600; font-size: 14px; }
 
+/* ---------- 成绩单：逐题解析（成绩单页可筛选 / 翻阅 / 跳题） ---------- */
+.rev-nav { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.rev-nav .btn { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; }
+.rev-nav .btn:disabled { opacity: .4; }
+.rev-pos { flex: 1; min-width: 0; text-align: center; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rev-card { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rev-no {
+  flex: 0 0 auto; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.rev-status { flex: 0 0 auto; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.rev-status.ok { color: var(--ok); background: var(--ok-bg); }
+.rev-status.bad { color: var(--bad); background: var(--bad-bg); }
+.rev-status.none { color: var(--muted); background: var(--surface-2); }
+/* 选项右侧的「正确答案 / 你的选择」小标签 */
+.opt-mark { flex: 0 0 auto; align-self: center; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.opt-mark.ok { color: var(--ok); background: var(--ok-bg); }
+.opt-mark.bad { color: var(--bad); background: var(--bad-bg); }
+/* 填空题：你的 / 正确 对照 */
+.rev-ans { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.rev-ans-row { display: flex; gap: 10px; align-items: baseline; font-size: 14px; flex-wrap: wrap; line-height: 1.6; }
+.rev-ans-k { flex: 0 0 auto; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 2px 8px; }
+.rev-ua-ok { color: var(--ok); font-weight: 600; }
+.rev-ua-bad { color: var(--bad); font-weight: 600; }
+.rev-ua-none { color: var(--muted); }
+
 /* ---------- 统计 ---------- */
 .stats-row { display: flex; gap: 10px; margin-bottom: 14px; }
 .stat-cell {
@@ -3088,7 +3116,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.2';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.3';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5109,10 +5137,20 @@ const App = (() => {
       return;
     }
 
-    // ---- 考试：成绩单 + 错题速览 ----
+    // ---- 考试：成绩单 + 逐题解析（可筛选 / 逐题翻阅 / 题号跳转） ----
     const wrongs = session.wrongList();
     const mm = Math.floor(r.timeUsed / 60), ss = r.timeUsed % 60;
-    const wrongShown = wrongs.slice(0, 20);
+    // 把整张卷子摊平：每题带上「你选了什么 / 对不对」，供逐题回看
+    const rows = session.list.map((q, i) => {
+      const a = session.answered.get(q.id);
+      const ua = a ? a.userAnswer : (session.examAnswers.get(q.id) || null);
+      const status = !a ? 'none' : (a.correct ? 'ok' : 'bad');
+      return { q, a, ua, status, no: i + 1 };
+    });
+    const nOk = rows.filter(x => x.status === 'ok').length;
+    const nBad = rows.filter(x => x.status === 'bad').length;
+    const nNone = rows.filter(x => x.status === 'none').length;
+
     $view().innerHTML = `
       <div class="result-hero">
         <div class="result-ring" style="--p:${r.acc}">
@@ -5126,23 +5164,136 @@ const App = (() => {
         </div>
         <div class="muted small" style="margin-top:10px">用时 ${mm} 分 ${ss} 秒 · 已答 ${r.answered} 题</div>
       </div>
-      ${wrongs.length ? `
+
       <div class="card">
-        <div class="card-title">错题与未答（${wrongs.length}）</div>
-        ${wrongShown.map(x => `
-          <div class="exam-wrong">
-            <div class="stem sm">${renderStem(x.q)}</div>
-            <div class="exam-wrong-row">
-              <span class="tag-bad">你的：${x.userAnswer ? escapeHtml(x.q.type === 'fill' ? String(x.userAnswer).replace(/\|\|\|/g, ' ／ ') : String(x.userAnswer)) : '未作答'}</span>
-              <span class="tag-ok">正确：${escapeHtml((x.q.answer || '—').replace(/\|\|\|/g, ' ／ '))}</span>
-            </div>
-            ${x.q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(x.q.explanation)}</div>` : ''}
-          </div>`).join('')}
-        ${wrongs.length > wrongShown.length ? `<div class="muted small">仅列出前 ${wrongShown.length} 题</div>` : ''}
-      </div>` : `<div class="card"><div class="card-title">全部答对 🎉</div><div class="muted small">这套题没有错题，继续保持。</div></div>`}
-      ${wrongs.length ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${wrongs.length}）</button>` : ''}
+        <div class="card-title">逐题解析</div>
+        <div class="chips" id="rev-filter">
+          <button class="chip" data-v="all">全部 ${r.total}</button>
+          <button class="chip" data-v="bad">答错 ${nBad}</button>
+          <button class="chip" data-v="none">未答 ${nNone}</button>
+          <button class="chip" data-v="ok">答对 ${nOk}</button>
+        </div>
+        <div class="rev-nav">
+          <button class="btn ghost" id="rev-prev">‹ 上一题</button>
+          <span class="rev-pos" id="rev-pos"></span>
+          <button class="btn ghost" id="rev-next">下一题 ›</button>
+        </div>
+        <div id="rev-body"></div>
+        <button class="btn ghost" id="rev-jump-btn" style="margin-top:10px">▦ 题号速览（点号码跳题）</button>
+        <div id="rev-jump" style="display:none"></div>
+      </div>
+
+      ${wrongs.length
+        ? `<button class="btn primary big" onclick="App.examWrongRedo()">重做错题（${wrongs.length}）</button>`
+        : `<div class="card"><div class="card-title">全部答对 🎉</div><div class="muted small">这套题没有错题，继续保持。</div></div>`}
       <button class="btn ghost big" onclick="App.replay()">再来一轮</button>
       <button class="btn ghost big" onclick="App.finishQuiz()">返回题库</button>`;
+
+    /* ---- 逐题解析：筛选 + 逐题翻阅 + 题号跳转 ---- */
+    let revFilter = (nBad + nNone) ? 'bad' : 'all';   // 优先看错题；全对则看全部
+    let revIdx = 0;
+    const revRows = () => revFilter === 'all' ? rows
+      : revFilter === 'bad' ? rows.filter(x => x.status === 'bad')
+      : revFilter === 'none' ? rows.filter(x => x.status === 'none')
+      : rows.filter(x => x.status === 'ok');
+
+    // 单题详情卡：选项高亮「正确答案 / 你的选择」，填空给「你的 / 正确」对照
+    function reviewCard(x) {
+      const { q, ua, status, no } = x;
+      const badge = status === 'ok' ? '<span class="rev-status ok">答对</span>'
+        : status === 'bad' ? '<span class="rev-status bad">答错</span>'
+        : '<span class="rev-status none">未作答</span>';
+      let body;
+      if (q.type === 'fill') {
+        const u = (ua != null && ua !== '') ? escapeHtml(String(ua).replace(/\|\|\|/g, ' ／ ')) : '（未作答）';
+        const c = escapeHtml((q.answer || '—').replace(/\|\|\|/g, ' ／ '));
+        body = `<div class="rev-ans">
+          <div class="rev-ans-row"><span class="rev-ans-k">你的</span><span class="${status === 'ok' ? 'rev-ua-ok' : (ua ? 'rev-ua-bad' : 'rev-ua-none')}">${u}</span></div>
+          <div class="rev-ans-row"><span class="rev-ans-k">正确</span><span class="rev-ua-ok">${c}</span></div>
+        </div>`;
+      } else {
+        const optKeys = q.options ? Object.keys(q.options) : [];
+        const norm = s => String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+        const correct = new Set(norm(q.answer).split(''));
+        const picked = new Set(norm(ua).split(''));
+        body = `<div class="options">${optKeys.map(k => {
+          const isC = correct.has(k), isP = picked.has(k);
+          const cls = ['option', 'disabled'];
+          if (isC) cls.push('right');
+          if (isP && !isC) cls.push('wrong');
+          if (isP) cls.push('picked');
+          const mark = isC && isP ? '<span class="opt-mark ok">你的选择 ✓</span>'
+            : isC ? '<span class="opt-mark ok">正确答案</span>'
+            : isP ? '<span class="opt-mark bad">你的选择</span>' : '';
+          return `<button class="${cls.join(' ')}">
+            <span class="opt-key">${k}</span>
+            <span class="opt-text">${escapeHtml(q.options[k])}</span>
+            ${mark}
+          </button>`;
+        }).join('')}</div>`;
+      }
+      return `<div class="rev-card">
+        <div class="rev-head">
+          <span class="rev-no">${no}</span>
+          <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+          ${badge}
+        </div>
+        <div class="stem sm">${renderStem(q)}</div>
+        ${body}
+        ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : '<div class="muted small" style="margin-top:8px">（本题无解析）</div>'}
+      </div>`;
+    }
+
+    function renderReview() {
+      const list = revRows();
+      const bodyEl = document.getElementById('rev-body');
+      const posEl = document.getElementById('rev-pos');
+      const prevBtn = document.getElementById('rev-prev');
+      const nextBtn = document.getElementById('rev-next');
+      if (!list.length) {
+        bodyEl.innerHTML = '<div class="muted small" style="padding:12px 0">该筛选下没有题目</div>';
+        posEl.textContent = '0 / 0';
+        prevBtn.disabled = nextBtn.disabled = true;
+        const j0 = document.getElementById('rev-jump');
+        if (j0) j0.innerHTML = '';
+        return;
+      }
+      if (revIdx >= list.length) revIdx = list.length - 1;
+      if (revIdx < 0) revIdx = 0;
+      const x = list[revIdx];
+      bodyEl.innerHTML = reviewCard(x);
+      posEl.textContent = `${revIdx + 1} / ${list.length} · 第 ${x.no} 题`;
+      prevBtn.disabled = revIdx === 0;
+      nextBtn.disabled = revIdx === list.length - 1;
+      const jump = document.getElementById('rev-jump');
+      if (jump && jump.style.display !== 'none') {
+        jump.innerHTML = `<div class="sheet-grid">${list.map((y, i) =>
+          `<button class="sheet-cell ${y.status === 'ok' ? 'done' : y.status === 'bad' ? 'wrong' : ''} ${i === revIdx ? 'cur' : ''}" data-ri="${i}">${y.no}</button>`).join('')}</div>`;
+        jump.querySelectorAll('.sheet-cell').forEach(b => {
+          b.onclick = () => { revIdx = +b.dataset.ri; renderReview(); document.getElementById('rev-body').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); };
+        });
+      }
+    }
+
+    document.getElementById('rev-filter').querySelectorAll('.chip').forEach(b => {
+      b.classList.toggle('on', b.dataset.v === revFilter);
+      b.onclick = () => {
+        revFilter = b.dataset.v;
+        revIdx = 0;
+        document.getElementById('rev-filter').querySelectorAll('.chip').forEach(o => o.classList.toggle('on', o === b));
+        renderReview();
+      };
+    });
+    document.getElementById('rev-prev').onclick = () => { if (revIdx > 0) { revIdx--; renderReview(); } };
+    document.getElementById('rev-next').onclick = () => { if (revIdx < revRows().length - 1) { revIdx++; renderReview(); } };
+    document.getElementById('rev-jump-btn').onclick = () => {
+      const j = document.getElementById('rev-jump');
+      const open = j.style.display === 'none';
+      j.style.display = open ? '' : 'none';
+      document.getElementById('rev-jump-btn').textContent = open ? '▦ 收起题号速览' : '▦ 题号速览（点号码跳题）';
+      if (open) renderReview();
+    };
+    renderReview();
   }
 
   function finishQuiz() {

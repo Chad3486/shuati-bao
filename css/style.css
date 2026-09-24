@@ -360,6 +360,34 @@ body {
 .wrong-head { margin-bottom: 6px; }
 .wrong-ans { margin-top: 8px; color: var(--ok); font-weight: 600; font-size: 14px; }
 
+/* ---------- 成绩单：逐题解析（成绩单页可筛选 / 翻阅 / 跳题） ---------- */
+.rev-nav { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.rev-nav .btn { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; }
+.rev-nav .btn:disabled { opacity: .4; }
+.rev-pos { flex: 1; min-width: 0; text-align: center; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rev-card { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rev-no {
+  flex: 0 0 auto; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.rev-status { flex: 0 0 auto; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.rev-status.ok { color: var(--ok); background: var(--ok-bg); }
+.rev-status.bad { color: var(--bad); background: var(--bad-bg); }
+.rev-status.none { color: var(--muted); background: var(--surface-2); }
+/* 选项右侧的「正确答案 / 你的选择」小标签 */
+.opt-mark { flex: 0 0 auto; align-self: center; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.opt-mark.ok { color: var(--ok); background: var(--ok-bg); }
+.opt-mark.bad { color: var(--bad); background: var(--bad-bg); }
+/* 填空题：你的 / 正确 对照 */
+.rev-ans { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.rev-ans-row { display: flex; gap: 10px; align-items: baseline; font-size: 14px; flex-wrap: wrap; line-height: 1.6; }
+.rev-ans-k { flex: 0 0 auto; font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 2px 8px; }
+.rev-ua-ok { color: var(--ok); font-weight: 600; }
+.rev-ua-bad { color: var(--bad); font-weight: 600; }
+.rev-ua-none { color: var(--muted); }
+
 /* ---------- 统计 ---------- */
 .stats-row { display: flex; gap: 10px; margin-bottom: 14px; }
 .stat-cell {
