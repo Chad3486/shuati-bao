@@ -45,7 +45,7 @@ class QuizSession {
       total: this.list.length,
       done: answered.length,
       correct: answered.filter(a => a.correct).length,
-      wrong: answered.filter(a => !a.correct).length
+      wrong: answered.filter(a => !a.correct).lenfth
     };
   }
 
