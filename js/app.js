@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.13';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.4';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -2873,11 +2873,15 @@ const App = (() => {
         <label class="field"><span>API Key</span>
           <input id="set-key" type="password" value="${escapeHtml(cfg.apiKey)}" placeholder="sk-...">
         </label>
+        <div class="muted small">⚠ Key 明文保存在本机浏览器（IndexedDB），不上传服务器；请勿在共用设备上保存，泄露需到服务商处作废重换</div>
         <label class="field"><span>模型名称</span>
           <input id="set-model" value="${escapeHtml(cfg.model)}" placeholder="deepseek-chat">
         </label>
         <label class="field"><span>解析并发数（1-8，越大越快，过高可能被限流）</span>
           <input id="set-conc" type="number" min="1" max="8" value="${cfg.concurrency || 4}">
+        </label>
+        <label class="field"><span>单次输出上限（tok，答长题/长解析可调大，受模型上限约束）</span>
+          <input id="set-mtok" type="number" min="256" step="256" value="${cfg.maxTokens != null ? cfg.maxTokens : 8192}">
         </label>
         <label class="field"><span>输入价（¥/百万 tok，用于费用预估与实耗）</span>
           <input id="set-pin" type="number" min="0" step="0.1" value="${cfg.priceIn != null ? cfg.priceIn : 2}">
@@ -2972,6 +2976,7 @@ const App = (() => {
       apiKey: document.getElementById('set-key').value.trim(),
       model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
       concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
+      maxTokens: Math.max(256, parseInt(document.getElementById('set-mtok').value, 10) || 8192),
       priceIn: Math.max(0, parseFloat(document.getElementById('set-pin').value) || 0),
       priceOut: Math.max(0, parseFloat(document.getElementById('set-pout').value) || 0),
       capYuan: Math.max(0, parseFloat(document.getElementById('set-cap').value) || 0)

@@ -7,6 +7,7 @@ const LLM = (() => {
     model: 'deepseek-chat',
     temperature: 0.1,
     concurrency: 4,
+    maxTokens: 8192, // 单次请求输出上限（tok）：答长题/长解析可调大，受模型上限约束
     priceIn: 2,     // 输入价：¥/百万 tok（仅用于预估与实耗显示，可随模型改价调整）
     priceOut: 8,    // 输出价：¥/百万 tok
     capYuan: 0      // 单次费用上限（¥）：>0 时解题实耗达到上限自动暂停，0=不限
@@ -33,7 +34,7 @@ const LLM = (() => {
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
     const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-    const payload = { model: cfg.model, messages, temperature: cfg.temperature, max_tokens: 8192 };
+    const payload = { model: cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
     if (!raw) {
       // 要求 JSON 输出（兼容不同实现；DeepSeek 要求提示词含 'json' 才能启用）
       payload.response_format = { type: 'json_object' };
