@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.3.12';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.3.13';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -649,6 +649,15 @@ const App = (() => {
           <span>开启后，本地规则<b>匹配不到答案</b>的题，由 AI 直接<b>从答案文件原文智能对位</b>填入：答案照抄原文而非 AI 做题，正确率高；按题型严格校验，校验不过的宁缺毋错。需在「设置」配置 API Key，消耗少量额度；关闭或无 Key 时纯本地解析零调用。</span>
         </label>
       </div>
+      <div class="card" id="ocr-panel" style="display:none">
+        <div class="card-title">OCR 识别 <span id="ocr-count"></span></div>
+        <div class="progress"><div class="progress-bar" id="ocr-bar"></div></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <button class="btn" id="ocr-pause-btn" data-mode="pause">⏸ 暂停</button>
+          <span class="muted small" id="ocr-stat"></span>
+        </div>
+        <div class="muted small" id="ocr-lowq" style="margin-top:6px"></div>
+      </div>
       <div class="card" id="parse-card" style="display:none">
         <div class="card-title">第 2 步 · 解析</div>
         <div class="muted" id="parse-status"></div>
@@ -689,6 +698,31 @@ const App = (() => {
       rows.set(i, row);
     });
 
+    // OCR 面板控制（图片型 DOCX 显示：进度 / 暂停继续 / 质量反馈）
+    const ocrPanel = document.getElementById('ocr-panel');
+    const ocrCount = document.getElementById('ocr-count');
+    const ocrBar = document.getElementById('ocr-bar');
+    const ocrStat = document.getElementById('ocr-stat');
+    const ocrLowq = document.getElementById('ocr-lowq');
+    const ocrBtn = document.getElementById('ocr-pause-btn');
+    ocrPanel.style.display = 'none';
+    ocrCount.textContent = '';
+    ocrBar.style.width = '0%';
+    ocrStat.textContent = '';
+    ocrLowq.textContent = '';
+    let ocrAborted = false;
+    const ctl = new AbortController();
+    const agg = { skipped: 0, retried: 0, lowQuality: [] };
+    ocrBtn.onclick = () => {
+      if (ocrBtn.dataset.mode === 'pause') {
+        ctl.abort();
+        ocrAborted = true;
+        ocrStat.textContent = '正在暂停…（当前张识别完即停）';
+      } else if (ocrBtn.dataset.mode === 'resume') {
+        handleFiles(files);
+      }
+    };
+
     // 第 1 步 · 全部提取文本
     const texts = new Map();
     for (let i = 0; i < files.length; i++) {
@@ -696,8 +730,44 @@ const App = (() => {
       const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
       setState('提取文本…');
+      if (ocrAborted) {
+        stateEl.textContent = '已暂停';
+        continue;
+      }
       try {
-        const raw = await Extractor.extract(f, (p, t) => setState(`提取 ${p}/${t}`));
+        const raw = await Extractor.extract(f, (p, t) => {
+          setState(`识别图 ${p}/${t}`);
+          ocrPanel.style.display = '';
+          ocrCount.textContent = `${p}/${t} 张`;
+          ocrBar.style.width = Math.round(p / t * 100) + '%';
+          ocrBtn.dataset.mode = 'pause';
+          ocrBtn.textContent = '⏸ 暂停';
+        }, {
+          ctl,
+          shouldStop: () => ocrAborted,
+          onReport: (rep, aborted) => {
+            if (!rep) return;
+            agg.skipped += rep.skipped || 0;
+            agg.retried += rep.retried || 0;
+            rep.lowQuality.forEach(n => { if (!agg.lowQuality.includes(n)) agg.lowQuality.push(n); });
+            const bits = [];
+            if (agg.skipped) bits.push(`跳过装饰图 ${agg.skipped}`);
+            if (agg.retried) bits.push(`低质重试 ${agg.retried}`);
+            if (agg.lowQuality.length) bits.push(`质量偏低 ${agg.lowQuality.length}`);
+            ocrStat.textContent = aborted ? '已存档，可续跑' : (bits.join(' · ') || '全部识别完成');
+            if (agg.lowQuality.length) {
+              ocrLowq.textContent = `⚠ 低质图片（OCR 可能不准，建议逐题核对）：第 ${agg.lowQuality.join('、')} 张`;
+            }
+            if (aborted) {
+              ocrBtn.dataset.mode = 'resume';
+              ocrBtn.textContent = '▶ 继续';
+            }
+          }
+        });
+        if (ocrAborted) {
+          setState('已暂停');
+          continue;
+        }
         const text = Extractor.cleanText(raw);
         if (text.replace(/\s/g, '').length < 50) {
           setState('失败');
@@ -711,6 +781,16 @@ const App = (() => {
         stateEl.innerHTML = '⚠ 失败';
         toast(files[i].name + '：' + e.message.slice(0, 80));
       }
+    }
+
+    if (ocrAborted) {
+      for (let k = 0; k < files.length; k++) {
+        const el = rows.get(k).querySelector('.file-state');
+        if (!texts.has(k)) el.textContent = '已暂停';
+      }
+      statusEl.textContent = '⏸ OCR 已暂停：识别过的图已存档，点「▶ 继续」接着跑，不重头再来';
+      bar.style.width = '100%';
+      return;
     }
 
     // 第 2 步 · 区分题目文件 / 配套答案文件（文件名含「答案」或答案行占比≥30%）

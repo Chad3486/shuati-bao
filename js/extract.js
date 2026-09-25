@@ -34,7 +34,7 @@ const Extractor = (() => {
     return ta.value.replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n');
   }
 
-  async function fromDOCX(file, onProgress) {
+  async function fromDOCX(file, onProgress, opts) {
     if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
     const imgs = [];
@@ -47,28 +47,101 @@ const Extractor = (() => {
     });
     let text = htmlToPlainText(result.value);
     if (!imgs.length) {
-      if (onProgress) onProgress(1, 1);
       return text;
     }
+    const docId = file.name + ':' + file.size + ':' + (file.lastModified || 0);
+    const { texts, report, aborted } = await ocrImages(imgs, docId, onProgress, opts);
     for (let i = 0; i < imgs.length; i++) {
-      if (onProgress) onProgress(i, imgs.length);
-      let t = '';
-      try {
-        t = polishOCR(await OCR.recognize(b64ToBlob(imgs[i].b64, imgs[i].type)));
-      } catch (e) {
-        if (/OCR 未离线打包|未内置 OCR/.test(e.message || '')) throw e;
-      }
-      text = text.split('[[OCRIMG:' + i + ']]').join(t || '[第 ' + (i + 1) + ' 张图：未识别到文字（示意图或纯装饰图）]');
+      text = text.split('[[OCRIMG:' + i + ']]').join(texts[i] || '[第 ' + (i + 1) + ' 张图：未识别到文字（示意图或纯装饰图）]');
     }
-    if (onProgress) onProgress(imgs.length, imgs.length);
+    if (opts && opts.onReport) opts.onReport(report, aborted);
     return text;
   }
 
+  /* ---- 图片 OCR 四态状态机：PENDING → SKIP/DONE/RETRY/ABORTED ----
+     分批跑（防手机内存峰值）、每张落盘（崩/退出后按 docId 断点续跑）、
+     低质图换预处理变体重试一次、跳过纯装饰图 ---- */
+  const ST = { PENDING: 0, SKIP: 1, DONE: 2, RETRY: 3, ABORTED: 4 };
+  const OCR_BATCH = 4;
+  const PROG_KEY = id => 'ocrProgress:' + id;
+
+  async function loadProgress(docId) {
+    try { return (await DB.metaGet(PROG_KEY(docId))) || null; } catch (e) { return null; }
+  }
+  async function saveProgress(docId, states, texts) {
+    try { await DB.metaSet(PROG_KEY(docId), { states, texts }); } catch (e) { /* 存档失败不阻断识别 */ }
+  }
+
+  async function ocrImages(imgs, docId, onProgress, opts) {
+    opts = opts || {};
+    const total = imgs.length;
+    const saved = await loadProgress(docId);
+    const states = (saved && saved.states && saved.states.length === total)
+      ? saved.states.slice()
+      : Array(total).fill(ST.PENDING);
+    const texts = (saved && saved.texts && saved.texts.length === total)
+      ? saved.texts.slice()
+      : Array(total).fill('');
+    const report = { total, skipped: 0, retried: 0, lowQuality: [] };
+    const shouldStop = opts.shouldStop || (() => false);
+    const ctl = opts.ctl;
+
+    for (let i = 0; i < total; i += OCR_BATCH) {
+      if (shouldStop() || (ctl && ctl.signal.aborted)) {
+        for (let j = i; j < total; j++) if (states[j] === ST.PENDING) states[j] = ST.ABORTED;
+        await saveProgress(docId, states, texts);
+        return { texts, report, aborted: true };
+      }
+      const end = Math.min(i + OCR_BATCH, total);
+      for (let j = i; j < end; j++) {
+        if (states[j] === ST.DONE || states[j] === ST.SKIP) continue;
+        if (ctl && ctl.signal.aborted) {
+          for (let k = j; k < total; k++) if (states[k] === ST.PENDING) states[k] = ST.ABORTED;
+          await saveProgress(docId, states, texts);
+          return { texts, report, aborted: true };
+        }
+        const blob = b64ToBlob(imgs[j].b64, imgs[j].type);
+        const meta = await OCR.inspect(blob);
+        if (meta.skip) {
+          states[j] = ST.SKIP;
+          texts[j] = '[装饰图，已跳过]';
+          report.skipped++;
+          await saveProgress(docId, states, texts);
+          continue;
+        }
+        if (meta.lowQuality) report.lowQuality.push(j + 1);
+        let t = '';
+        try {
+          t = await OCR.recognize(meta.blob, null, { prepared: true });
+        } catch (e) {
+          if (/OCR 未离线打包|未内置 OCR/.test(e.message || '')) throw e;
+        }
+        let retried = false;
+        if (meta.lowQuality && t.replace(/\s/g, '').length < 6) {
+          try {
+            const t2 = await OCR.recognize(blob, null, { raw: true });
+            if (t2.replace(/\s/g, '').length > t.replace(/\s/g, '').length) {
+              t = t2;
+              retried = true;
+            }
+          } catch (e) { /* 重试失败保留原结果 */ }
+        }
+        if (retried) report.retried++;
+        texts[j] = polishOCR(t);
+        states[j] = retried ? ST.RETRY : ST.DONE;
+        await saveProgress(docId, states, texts);
+      }
+      if (onProgress) onProgress(Math.min(i + OCR_BATCH, total), total);
+    }
+    await saveProgress(docId, states, texts);
+    return { texts, report, aborted: false };
+  }
+
   /* ---- 统一入口 ---- */
-  async function extract(file, onProgress) {
+  async function extract(file, onProgress, opts) {
     const name = file.name.toLowerCase();
     if (name.endsWith('.docx')) {
-      return fromDOCX(file, onProgress);
+      return fromDOCX(file, onProgress, opts);
     }
     if (name.endsWith('.doc')) {
       throw new Error('暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后重试');
