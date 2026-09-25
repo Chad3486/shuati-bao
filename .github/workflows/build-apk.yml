@@ -4,7 +4,11 @@ on:
   workflow_dispatch: # 手动触发：Actions → 选此 workflow → Run workflow
   push:
     branches: [ main ]
+    tags: [ 'v*' ] # 推送 v 开头的 tag 时触发发版（paths 过滤器不作用于 tag，tag 必触发）
     paths: [ 'apk-src/**' ]
+
+permissions:
+  contents: write # 发布 Release 需要写权限，否则会 403
 
 jobs:
   build:
@@ -27,7 +31,36 @@ jobs:
       - name: Rename APK
         run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk 刷题宝.apk
 
+      # Artifact 仅作临时产物，保留期拉到 GitHub 上限（400 天）
       - uses: actions/upload-artifact@v4
         with:
           name: shuati-bao-apk
           path: 刷题宝.apk
+          retention-days: 400
+
+      # ── 以下步骤仅打 tag 时执行（推 main 和手动触发只构建、不发版）──
+
+      # 从 README「## 更新日志」中提取当前 tag 对应的一段作为 Release 说明；
+      # 找不到对应段落时退化为 tag 名
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BODY="发布 ${TAG}"
+          if grep -qE "^#+ .*${TAG}" README.md; then
+            BODY="$(awk -v tag="${TAG}" '
+              index($0, tag) && /^#+ / {p=1; next}
+              p && /^#+ / {exit}
+              p {print}
+            ' README.md)"
+          fi
+          printf '%s\n' "${BODY}" > release_notes.md
+
+      # 发布到 GitHub Releases：永久保存、免登录直链下载；
+      # tag 已存在 Release 时自动更新（幂等），不会报错
+      - name: Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: 刷题宝.apk
+          body_path: release_notes.md
