@@ -10,7 +10,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 
-import androidx.core.app.NotificationCompat;
+import android.app.Notification;
 
 /**
  * 前台保活服务（第二期）：AI 长任务（批量解题 / 导入兜底 / 转范式）进行时拉起，
@@ -59,11 +59,16 @@ public class KeepAliveService extends Service {
             ch.setDescription("AI 批量解题/导入进行时的后台进度");
             nm.createNotificationChannel(ch);
         }
-        return new NotificationCompat.Builder(c, CHANNEL_ID)
+        // 轻量构建不引入 androidx.core：直接用框架 Notification.Builder；
+        // 渠道构造器是 API 26+ 的，低版本走单参构造器（安装时授权，无运行时通知权限）
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(c, CHANNEL_ID)
+                : new Notification.Builder(c);
+        return b
                 .setSmallIcon(R.drawable.ic_fg)
                 .setContentTitle("刷题宝 · AI 任务进行中")
                 .setContentText(text == null || text.isEmpty() ? "任务进行中，请保持网络畅通" : text)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setProgress(0, 0, true)

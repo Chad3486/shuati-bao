@@ -1,6 +1,7 @@
 package com.shuati.bao;
 
 import android.Manifest;
+import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
@@ -20,17 +21,13 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
-import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
     private WebView wv;
     private ValueCallback<Uri[]> mFilePathCallback;
@@ -39,7 +36,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_NOTI = 1002; // Android 13+ 通知运行时权限（保活通知）
 
     @Override
-    protected void onCreate(@Nullable Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
@@ -165,10 +162,11 @@ public class MainActivity extends AppCompatActivity {
                     sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri));
                 } else {
                     // Android 9 及以下：需要 WRITE_EXTERNAL_STORAGE 权限
-                    if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                            != PackageManager.PERMISSION_GRANTED) {
-                        ActivityCompat.requestPermissions(MainActivity.this,
-                                new String[]{ Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQUEST_STORAGE);
+                    if (Build.VERSION.SDK_INT >= 23 &&
+                            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                    != PackageManager.PERMISSION_GRANTED) {
+                        // API 23+ 才有运行时权限；更低版本安装时即授权，无需申请
+                        requestPermissions(new String[]{ Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQUEST_STORAGE);
                         return "NEED_PERMISSION: 请授予存储权限后重试";
                     }
                     File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
@@ -204,10 +202,9 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(new Runnable() {
                 @Override public void run() {
                     if (Build.VERSION.SDK_INT >= 33 &&
-                            ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.POST_NOTIFICATIONS)
+                            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                                     != PackageManager.PERMISSION_GRANTED) {
-                        ActivityCompat.requestPermissions(MainActivity.this,
-                                new String[]{ Manifest.permission.POST_NOTIFICATIONS }, REQUEST_NOTI);
+                        requestPermissions(new String[]{ Manifest.permission.POST_NOTIFICATIONS }, REQUEST_NOTI);
                     }
                     KeepAliveService.start(MainActivity.this, text);
                 }
@@ -282,7 +279,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == FILE_CHOOSE) {
             Uri[] results = null;

@@ -43,7 +43,11 @@ const LLM = (() => {
     let buf = '', acc = '', idleTimer = null;
     const resetIdle = () => {
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（90 秒没收到任何数据）'), { timeout: true })), 90000);
+      // v1.7.3：首字到达前等 45s 就砍——网关假死（有响应头但一直不出字）早发现、早重试/早降级；
+      // 首字之后放宽到 90s，慢模型长输出不被误砍
+      idleTimer = setTimeout(() => ctl.abort(Object.assign(
+        new Error(acc ? '请求超时（90 秒没收到新数据）' : '请求超时（45 秒没等到首字）'),
+        { timeout: true })), acc ? 90000 : 45000);
     };
     try {
       resetIdle();
@@ -80,22 +84,15 @@ const LLM = (() => {
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
     const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-    const payload = { model: modelOverride || cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
-    if (!raw) {
-      // 要求 JSON 输出（兼容不同实现；DeepSeek 要求提示词含 'json' 才能启用）
-      payload.response_format = { type: 'json_object' };
-    }
-    // 传了 onDelta → 走流式：首字 1~2 秒可见，边生成边显示
-    const streaming = typeof onDelta === 'function';
-    if (streaming) {
-      payload.stream = true;
-      payload.stream_options = { include_usage: true }; // 末端 chunk 附带 usage，保住费用统计
-    }
-    const body = JSON.stringify(payload);
-
     const maxRetry = 4;
     let lastErr = null;
+    // 传了 onDelta → 走流式：首字 1~2 秒可见，边生成边显示
+    const streaming = typeof onDelta === 'function';
+    // v1.7.3：流式连续失败计数——有的网关对 SSE 支持差（长时间「已 0 字」假死），
+    // 连续 2 次自动降级为非流式整段接收；重试原因同步透传给任务中心展示
+    let streamFails = 0;
     for (let attempt = 0; attempt <= maxRetry; attempt++) {
+      let useStream = streaming && streamFails < 2;
       try {
         // 外部中止（如「暂停」）→ 立即停手，不发请求不烧 token
         if (signal && signal.aborted) throw Object.assign(new Error('已暂停（当前请求已中断）'), { aborted: true });
@@ -106,9 +103,16 @@ const LLM = (() => {
         // 连不通看门狗对流式同样生效（v1.7.1 修复：此前流式在「等响应头」阶段无超时，
         // 弱网下 fetch 挂起 = 永远卡住，重试逻辑走不到）；响应头到达后，
         // 流式交给 readStream 的空闲看门狗（连接挂起同样会被砍）
+        const payload = { model: modelOverride || cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
+        if (!raw) payload.response_format = { type: 'json_object' }; // 要求 JSON 输出（DeepSeek 要求提示词含 'json'）
+        if (useStream) {
+          payload.stream = true;
+          payload.stream_options = { include_usage: true }; // 末端 chunk 附带 usage，保住费用统计
+        }
+        const body = JSON.stringify(payload);
         const ctl = new AbortController();
         let timer = null;
-        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), streaming ? 60000 : 90000);
+        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), useStream ? 60000 : 90000);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -132,7 +136,7 @@ const LLM = (() => {
             const ra = parseInt(resp.headers.get('retry-after'), 10);
             const cool = (ra > 0 ? ra * 1000 : 15000) * (attempt + 1);
             _throttleUntil = Date.now() + cool;
-            if (onRetry) onRetry(attempt + 1, Math.round(cool / 1000));
+            if (onRetry) onRetry(attempt + 1, Math.round(cool / 1000), 'API 限流');
             lastErr = new Error('API 429 限流');
             continue;
           }
@@ -140,7 +144,7 @@ const LLM = (() => {
           throw new Error(`API ${resp.status}: ${errText.slice(0, 300)}`);
         }
         let content;
-        if (streaming) {
+        if (useStream) {
           if (attempt > 0 && onDelta) onDelta(''); // 重试后清空已显示的残段
           content = await readStream(resp, onDelta, ctl);
           if (!content) throw new Error('API 返回为空');
@@ -160,8 +164,18 @@ const LLM = (() => {
         }
         // 网络错误 / 超时 / 5xx → 重试；400/401/403/404 配置错误直接抛
         if (/API (400|401|403|404)/.test(e.message)) throw e;
+        // v1.7.3：流式失败计数 + 重试原因透传（任务中心显示「第 N/4 次重试 · 原因」）
+        if (useStream) {
+          streamFails++;
+          if (streamFails === 2) e._degraded = true; // 连续两次流式失败 → 本请求降级整段模式
+        }
         if (attempt < maxRetry) {
-          if (onRetry) onRetry(attempt + 1, 0);
+          const why = e._degraded ? '流式不出字，已切换整段接收模式'
+            : /超时|timeout/i.test(e.message) ? '请求超时'
+            : /Failed to fetch|NetworkError|network|fetch/i.test(e.message) ? '网络连不上'
+            : /^API 5\d\d/.test(e.message) ? '服务过载'
+            : '返回异常：' + String(e.message || '').slice(0, 50);
+          if (onRetry) onRetry(attempt + 1, 0, why);
           // 弱网退避：3s 起步逐次加长，给手机网络恢复时间
           await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
         }
@@ -196,12 +210,14 @@ const LLM = (() => {
     return null;
   }
 
-  /* ---- 从全文提取答案区（启发式）：
+  /* ---- 从全文提取答案区（启发式），返回 { text, first, last }（first/last 为答案区行区间，可能为 null）：
      A. 逐行答案条目：「2、答案：A（解析：…）」「3.答案：BCD」「4、对」——出现≥5条即认定答案区，
         连同其间的 章/节 标题一起收集（保留结构上下文，供跨节对位）
      B. 传统模式：密集答案行「1.C 2.A」（每行≥3对）或「参考答案」等标题触发 ---- */
-  function findAnswerTable(text) {
+  function findAnswerTableSpan(text) {
     const lines = text.split('\n');
+    let first = null, last = null;
+    const mark = i => { if (first == null) first = i; last = i; };
     const isStruct = t => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
       /^[一二三四五六七八九十]+\s*[、.．]/.test(t) ||
       /^(单项选择题|单选题|多项选择题|多选题|判断题|填空题|选择题)\s*[：:]?\s*$/.test(t);
@@ -221,13 +237,14 @@ const LLM = (() => {
     }
     if (entryIdx.length >= 5) {
       const out = [];
-      for (let i = entryIdx[0]; i <= entryIdx[entryIdx.length - 1]; i++) {
+      first = entryIdx[0]; last = entryIdx[entryIdx.length - 1];
+      for (let i = first; i <= last; i++) {
         const t = lines[i].trim();
         if (!t) continue;
         if (isStruct(t)) { out.push(t); continue; }
         if (entryIdx.includes(i)) out.push(t);
       }
-      return out.join('\n');
+      return { text: out.join('\n'), first, last };
     }
     // 传统模式：密集答案行 / 答案区标题 / 逐行答案条目
     const tableLines = [];
@@ -236,24 +253,26 @@ const LLM = (() => {
     const pair = /(\d{1,3})\s*[.、．:：)]?\s*([A-D]|对|错|√|×)(?![A-Za-z0-9])/g;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (/参考答案|答案速查|答案表|答案汇总/.test(line)) { inTable = true; tableLines.push(line); continue; }
+      if (/参考答案|答案速查|答案表|答案汇总/.test(line)) { inTable = true; tableLines.push(line); mark(i); continue; }
       // 逐行答案条目（「2、答案：A（解析：…）」）
       const mE = line.match(entryRe);
-      if (mE && tailOk(line.slice(mE.index + mE[0].length))) { inTable = true; tableLines.push(line); continue; }
+      if (mE && tailOk(line.slice(mE.index + mE[0].length))) { inTable = true; tableLines.push(line); mark(i); continue; }
       // 多字母密集表（「1.ABD 2.BC」「1.对 2.错」：整行除题号/答案/分隔符外无其他内容）
-      if (tryDenseLine(line)) { inTable = true; tableLines.push(line); continue; }
+      if (tryDenseLine(line)) { inTable = true; tableLines.push(line); mark(i); continue; }
       let count = 0; let m;
       pair.lastIndex = 0;
       while ((m = pair.exec(line)) !== null) count++;
-      if (count >= 3) { inTable = true; tableLines.push(line); }
+      if (count >= 3) { inTable = true; tableLines.push(line); mark(i); }
+      else if (inTable && count > 0) { tableLines.push(line); mark(i); } // 表内续行（如「1.B 2.A 3.绝缘栅双极型晶体管」混排填空答案）
       else if (inTable && line.trim() === '') { /* 表中空行跳过 */ }
       else if (inTable && count === 0 && tableLines.length > 0 && !/^答案/.test(line)) {
         // 表结束条件：连续非答案行
         if (!lines[i + 1] || !/(参考答案|答案)/.test(lines[i + 1])) inTable = false;
       }
     }
-    return tableLines.join('\n');
+    return { text: tableLines.join('\n'), first, last };
   }
+  function findAnswerTable(text) { return findAnswerTableSpan(text).text; }
 
   /* ================= 配套答案文件 · 结构化解析与精确匹配 ================= */
 
@@ -681,7 +700,26 @@ const LLM = (() => {
     return filled;
   }
 
-/* ================= 文件 → 范式（AI 只排版，不做题） =================
+  /* ---- 长文档切片：累积到目标长度后，尽量在「空行 / 题号行 / 章节标题 / 题型标记行」处断开，
+     避免把一道题切成两半（fileToCanon 与 fileToCanonLite 共用） ---- */
+  function chunkSource(src, TARGET) {
+    const chunks = [];
+    let buf = [], size = 0;
+    const flush = () => { const t = buf.join('\n').trim(); if (t) chunks.push(t); buf = []; size = 0; };
+    for (const line of src.split('\n')) {
+      buf.push(line);
+      size += line.length + 1;
+      if (size < TARGET) continue;
+      const t = line.trim();
+      const boundary = !t || /^\d{1,3}\s*[.、．]/.test(t) || /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
+        /^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^【/.test(t) || /^#{1,2}\s/.test(t);
+      if (boundary || size >= TARGET * 1.6) flush();
+    }
+    flush();
+    return chunks;
+  }
+
+  /* ================= 文件 → 范式（AI 只排版，不做题） =================
      与「AI 解题」相反：答案必须从原卷（题目下方标注 / 文末答案表）照抄，AI 严禁自己推理作答。
      用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
      产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
@@ -714,40 +752,202 @@ const LLM = (() => {
 - 只输出范式文本本身：不要任何解释、前后缀说明、markdown 代码块或 JSON`;
 
     /* 切片：累积到目标长度后，尽量在「空行 / 题号行 / 章节标题 / 题型标记行」处断开 */
-    const TARGET = 5000;
-    const chunks = [];
-    let buf = [], size = 0;
-    const flush = () => { const t = buf.join('\n').trim(); if (t) chunks.push(t); buf = []; size = 0; };
-    for (const line of src.split('\n')) {
-      buf.push(line);
-      size += line.length + 1;
-      if (size < TARGET) continue;
-      const t = line.trim();
-      const boundary = !t || /^\d{1,3}\s*[.、．]/.test(t) || /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
-        /^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^【/.test(t) || /^#{1,2}\s/.test(t);
-      if (boundary || size >= TARGET * 1.6) flush();
-    }
-    flush();
+    const chunks = chunkSource(src, 5000);
 
-    const pieces = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const head = `【原卷文档片段 ${i + 1}/${chunks.length}】\n` + chunks[i];
-      const user = answerTable
-        ? `【全文答案表（只能从这里或正文标注处照抄答案）】\n${answerTable}\n\n${head}`
-        : head;
-      const raw = await chat([
-        { role: 'system', content: PROMPT },
-        { role: 'user', content: user }
-      ], { onRetry, raw: true, onDelta: onDelta ? (acc) => onDelta(acc, i + 1, chunks.length) : null });
-      const piece = String(raw || '').trim()
-        .replace(/^```(?:text|markdown|md)?\s*/i, '')
-        .replace(/```\s*$/, '')
-        .trim();
-      if (piece) { pieces.push(piece); if (onPiece) onPiece(i, chunks.length, piece); }
-      if (onProgress) onProgress(i + 1, chunks.length, `片段 ${i + 1}/${chunks.length}`);
-    }
-    const out = pieces.join('\n\n').trim();
+    /* v1.7.3：片段并发处理（读设置并发数，上限 4）——
+       各片段相互独立（共享答案表上下文），逐片排队是「转范式卡半天」的主因之一；
+       4 路并发约快 4 倍，费用不变。流式回显只跟随当前「持有者」片段，多片不互相打架 */
+    const conc = Math.max(1, Math.min(4, parseInt((await getConfig()).concurrency, 10) || 4));
+    const pieces = new Array(chunks.length).fill('');
+    let next = 0, done = 0, streamOwner = null;
+    const worker = async () => {
+      while (next < chunks.length) {
+        const i = next++;
+        const head = `【原卷文档片段 ${i + 1}/${chunks.length}】\n` + chunks[i];
+        const user = answerTable
+          ? `【全文答案表（只能从这里或正文标注处照抄答案）】\n${answerTable}\n\n${head}`
+          : head;
+        const mine = streamOwner === null;
+        if (mine) streamOwner = i;
+        let raw = '';
+        try {
+          raw = await chat([
+            { role: 'system', content: PROMPT },
+            { role: 'user', content: user }
+          ], { onRetry, raw: true, onDelta: onDelta && mine ? (acc) => onDelta(acc, i + 1, chunks.length) : null });
+        } finally {
+          if (mine) streamOwner = null;
+        }
+        const piece = String(raw || '').trim()
+          .replace(/^```(?:text|markdown|md)?\s*/i, '')
+          .replace(/```\s*$/, '')
+          .trim();
+        if (piece) { pieces[i] = piece; if (onPiece) onPiece(i, chunks.length, piece); }
+        if (onProgress) onProgress(++done, chunks.length, `片段 ${done}/${chunks.length}`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(conc, chunks.length) }, worker));
+    const out = pieces.filter(Boolean).join('\n\n').trim();
     if (!out) throw new Error('AI 没有返回可用的范式文本');
+    return out;
+  }
+
+  /* ================= 乱格式快速通道（v1.7.3 · AI 只出标注，本地装配） =================
+     病根：全量转范式要 AI 把题干选项逐字重打一遍，1000 题输出几万字，
+     十几分钟是模型打字速度的物理上限，怎么优化流程都绕不过去。
+     做法：文字已能提取的文档，AI 只输出「标注」——每题的定位开头(at)/题型/答案/解析，
+     题干、选项由本地从原文照抄切块装配成范式文本。AI 输出量降到零头，快 5~10 倍，费用也降。
+     红线不变：答案只照抄（原卷标注 / 全文答案表），严禁 AI 自己推理；定位失败的题宁缺毋错。
+     适用：原卷文字可提取但排版乱（题号怪、答案分离、噪声多）；纯图片仍走视觉识别。 */
+  const LITE_PROMPT = `你是题库标注助手。输入【原卷片段】（可能含多道题）和【全文答案表】，找出片段里的每道题，只输出定位与答案标注。严格按 json 输出（不要 markdown 代码块、不要任何解释文字）：
+{"questions":[{"at":"题干第一行开头的连续原文","type":"single","answer":"B","exp":"解析原文"}]}
+- at：题干第一行里连续的一段原文（10~25 字，可含题号），逐字照抄；程序靠它在原文里定位题目开头，必须与原文完全一致
+- type：single / multi / judge / fill（简答、问答、名词解释、计算一律填 fill）
+- answer：只照抄——原卷题目旁的答案标注，或【全文答案表】里对应题号的答案；原文没有就省略该字段，严禁自己推理作答
+- 选择题 answer 为字母（如 "C"、"ACD"）；判断题为 "对" 或 "错"；填空题照抄文本答案，多个空用 ||| 分隔
+- exp：原卷或答案表里有解析才照抄，没有就省略
+- 页眉、页脚、页码、水印、装订线不是题，不要输出
+- questions 按原文顺序排列，片段里每道题输出一项，不要遗漏`;
+
+  async function fileToCanonLite(text, opts = {}) {
+    const { onProgress, onRetry, onDelta, onPiece } = opts;
+    const src = String(text || '').replace(/\r\n?/g, '\n').trim();
+    if (!src) throw new Error('文档里没有可转换的文字');
+
+    // 全文答案表作为每片的共享上下文（与全量转范式同口径）；并把它从正文剥掉——
+    // 否则残留的答案表既会挡住 AI 答案的追加（HAS_ANS 误判），还会被 Canon.parse 误认成题目
+    const span = findAnswerTableSpan(src);
+    let answerTable = span.text.trim();
+    if (answerTable.length > 40000) answerTable = answerTable.slice(0, 40000);
+    let bodySrc = src;
+    if (answerTable && span.first != null && span.last != null) {
+      const ls = src.split('\n');
+      const stripped = ls.slice(0, span.first).concat(ls.slice(span.last + 1)).join('\n');
+      // 护栏：答案区若散布在全文中（如逐题下方标注），剥离会掏空正文——此时不剥，仅作上下文
+      const before = src.replace(/\s/g, '').length;
+      const after = stripped.replace(/\s/g, '').length;
+      if (after >= before * 0.3) bodySrc = stripped.trim();
+    }
+
+    const chunks = chunkSource(bodySrc, 3500); // 标注模式输出短，片也切小些，定位更准
+    const conc = Math.max(1, Math.min(4, parseInt((await getConfig()).concurrency, 10) || 4));
+    const pieces = new Array(chunks.length).fill('');
+    let next = 0, done = 0, streamOwner = null;
+
+    /* 定位：把 AI 给的「题干开头」在片段里按行找（忽略空白差异），只往后找不回头 */
+    const norm = s => String(s || '').replace(/\s+/g, '');
+    const locate = (lines, needle, from) => {
+      const n = norm(needle).slice(0, 30);
+      if (!n) return -1;
+      for (let i = Math.max(0, from); i < lines.length; i++) {
+        if (norm(lines[i]).includes(n)) return i;
+      }
+      // 兜底：题干开头可能被换行截开，相邻两行拼起来再找一次
+      for (let i = Math.max(0, from); i < lines.length - 1; i++) {
+        if (norm(lines[i] + lines[i + 1]).includes(n)) return i;
+      }
+      return -1;
+    };
+
+    /* 答案清洗：选择题只留字母并排序，判断归一为 对/错，填空照抄 */
+    const ansClean = it => {
+      if (!it || it.answer == null) return '';
+      const t = String(it.answer).trim();
+      if (!t) return '';
+      if (it.type === 'single' || it.type === 'multi') {
+        const letters = t.toUpperCase().replace(/[^A-H]/g, '');
+        return letters ? letters.split('').sort().join('') : '';
+      }
+      if (it.type === 'judge') {
+        if (/对|正确|√|true|^T$/i.test(t)) return '对';
+        if (/错|误|×|false|^F$/i.test(t)) return '错';
+        return '';
+      }
+      return t; // fill：照抄文本
+    };
+
+    /* 装配：按定位行切出每题的原文块，原卷已有答案/解析就不重复追加。
+       块尾若挂着下一节的章节标题，先摘出来、答案行插在它前面——
+       否则「答案：X」落在节标题之后，导入解析会把它孤立丢弃 */
+    const HAS_ANS = /【\s*答案\s*】|^\s*(?:参考答案|正确答案|答案|答)\s*[:：]/m;
+    const HAS_EXP = /【\s*解析\s*】|^\s*(?:参考)?解析\s*[:：]/m;
+    // 注意：只认中文数字节标题（「二、填空题」「第一部分」），不能放宽到阿拉伯数字——
+    // 否则「3．IGBT…」这类题号行会被误当标题整块摘走，答案也随之丢失
+    const SEC_HEAD = /^\s*(?:第\s*[一二三四五六七八九十\d]+\s*[章节部分]|[一二三四五六七八九十]+\s*[、.．]|【(?!答案|解析)[^】]{0,12}】|#{1,3}\s)/;
+    const assemble = (chunk, items) => {
+      const lines = chunk.split('\n');
+      const found = [];
+      let cursor = 0;
+      for (const it of items || []) {
+        const L = locate(lines, it && it.at, cursor);
+        if (L < 0) continue; // 定位失败的题：宁缺毋错，不乱插答案
+        found.push({ line: L, it });
+        cursor = L + 1;
+      }
+      if (!found.length) return '';
+      const out = [];
+      if (found[0].line > 0) {
+        const head = lines.slice(0, found[0].line).join('\n').trim();
+        if (head) out.push(head, ''); // 片段开头没被标注到的文字原样保留，交给 Canon.parse 兜底
+      }
+      for (let k = 0; k < found.length; k++) {
+        const end = k + 1 < found.length ? found[k + 1].line : lines.length;
+        const blines = lines.slice(found[k].line, end);
+        const after = [];
+        while (blines.length && !blines[blines.length - 1].trim()) blines.pop();
+        while (blines.length && SEC_HEAD.test(blines[blines.length - 1])) {
+          after.unshift(blines.pop());
+          while (blines.length && !blines[blines.length - 1].trim()) blines.pop();
+        }
+        const block = blines.join('\n').trim();
+        if (block) {
+          out.push(block);
+          const answer = ansClean(found[k].it);
+          if (answer && !HAS_ANS.test(block)) out.push('答案：' + answer);
+          const exp = found[k].it && found[k].it.exp ? String(found[k].it.exp).trim() : '';
+          if (exp && !HAS_EXP.test(block)) out.push('解析：' + exp.slice(0, 600));
+        }
+        if (after.length) out.push(after.join('\n'), '');
+        else out.push('');
+      }
+      return out.join('\n').trim();
+    };
+
+    const worker = async () => {
+      while (next < chunks.length) {
+        const i = next++;
+        const head = `【原卷片段 ${i + 1}/${chunks.length}】\n` + chunks[i];
+        const user = answerTable
+          ? `【全文答案表（答案只能从这里或正文标注处照抄）】\n${answerTable}\n\n${head}`
+          : head;
+        const mine = streamOwner === null;
+        if (mine) streamOwner = i;
+        let raw = '';
+        try {
+          raw = await chat([
+            { role: 'system', content: LITE_PROMPT },
+            { role: 'user', content: user }
+          ], { onRetry, raw: true, onDelta: onDelta && mine ? (acc) => onDelta(acc, i + 1, chunks.length) : null });
+        } finally {
+          if (mine) streamOwner = null;
+        }
+        let items = [];
+        try {
+          const m = String(raw || '').match(/\{[\s\S]*\}/); // 容错：剥掉可能的说明文字，取 JSON 本体
+          if (m) {
+            const j = JSON.parse(m[0]);
+            items = Array.isArray(j.questions) ? j.questions : [];
+          }
+        } catch (e) { items = []; }
+        const piece = items.length ? assemble(chunks[i], items) : '';
+        if (piece) { pieces[i] = piece; if (onPiece) onPiece(i, chunks.length, piece); }
+        if (onProgress) onProgress(++done, chunks.length, `片段 ${done}/${chunks.length}`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(conc, chunks.length) }, worker));
+
+    const out = pieces.filter(Boolean).join('\n\n').trim();
+    if (!out) throw new Error('标注路线没切出题目（原卷格式太乱或 AI 定位失败）');
     return out;
   }
 
@@ -945,5 +1145,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, visionCanon, solveMissing, getLastUsage, testConnection, chat };
+  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
 })();

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- parent 必须是 AppCompat 主题：AppCompatActivity 启动时校验，平台主题会直接崩 -->
-    <style name="Theme.AppCompat.Light.NoActionBar.Fullscreen" parent="Theme.AppCompat.Light.NoActionBar">
+    <!-- 轻量构建不引入 appcompat：MainActivity 已改为系统 Activity，parent 换平台 Material 主题；
+         style 名保持不变（Manifest 引用不动）。windowActionBar 为 appcompat 专属属性，移除 -->
+    <style name="Theme.AppCompat.Light.NoActionBar.Fullscreen" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">#1652f0</item>
         <item name="android:windowNoTitle">true</item>
-        <item name="android:windowActionBar">false</item>
     </style>
 </resources>

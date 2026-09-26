@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.4';   // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.7.3'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -119,7 +119,8 @@ const App = (() => {
       const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
       out.textContent = tail || '（等待模型输出…）';
       if (stick) out.scrollTop = out.scrollHeight;
-      this.note(`流式生成中 · 已 ${acc.length} 字`);
+      // v1.7.3：acc 为空 = 重试后清屏，此时不覆盖 note——保留「第 N/4 次重试 · 原因」提示
+      if (acc) this.note(`流式生成中 · 已 ${acc.length} 字`);
     },
     finish(ok, summary) {
       if (!this.wrap) return;
@@ -308,13 +309,32 @@ const App = (() => {
       prog(1);
       return local.text;
     }
-    const text = await LLM.fileToCanon(raw,
-      (done, total, note) => {
-        prog(total ? done / total : 0);
-        say(`AI 转换中：${note || ''} · 只做排版，答案从原卷照抄`);
-      },
-      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'),
-      ui.onDelta || null);
+    /* v1.7.3：先走「AI 只出标注」快速通道（输出量零头，快 5~10 倍）；
+       标注路线没走通再退回全量重排。两条路产物都是范式文本，交给下方预览页人工核对 */
+    const liteRetry = (att, cool, why) => say(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`);
+    let text = '';
+    try {
+      text = await LLM.fileToCanonLite(raw, {
+        onProgress: (done, total, note) => {
+          prog(total ? done / total : 0);
+          say(`AI 标注转换中：${note || ''} · AI 只出定位和答案，题干本地照抄`);
+        },
+        onRetry: liteRetry,
+        onDelta: ui.onDelta || null
+      });
+      say('✓ 快速通道完成 · 请核对下方范式（题干为原文照抄）');
+    } catch (e) {
+      console.warn('标注快速通道失败，退回全量重排：', e);
+    }
+    if (!text) {
+      text = await LLM.fileToCanon(raw,
+        (done, total, note) => {
+          prog(total ? done / total : 0);
+          say(`AI 转换中：${note || ''} · 只做排版，答案从原卷照抄`);
+        },
+        liteRetry,
+        ui.onDelta || null);
+    }
     prog(1);
     return text;
   }
@@ -701,7 +721,7 @@ const App = (() => {
         const text = await aiCanonFromFiles(files, {
           onStatus: s => { aiConvStatus.textContent = s; TC.note(s); },
           onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; TC.set(Math.round(p * 100), 100, `转换中 ${Math.round(p * 100)}%`); },
-          onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+          onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
           // 流式：AI 生成内容实时回显（1~2 秒出首字，页面内 + 任务中心双处可见）
           onDelta: acc => {
             liveEl.style.display = '';
@@ -967,20 +987,47 @@ const App = (() => {
                   bar.style.width = Math.round(done / total * 95) + '%';
                   TC.set(done, total, `已入库 ${gotTotal} 题`);
                 },
-                onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+                onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
                 onDelta: acc => { TC.delta(acc); },
                 onPiece
               });
             } else {
-              await LLM.fileToCanon(text,
-                (done, total, note) => {
-                  setState(`AI 兜底转换中… 片段 ${done}/${total}`);
-                  bar.style.width = Math.round(done / total * 95) + '%';
-                  TC.set(done, total, `已入库 ${gotTotal} 题`);
-                },
-                (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
-                acc => { TC.delta(acc); },
-                onPiece);
+              /* v1.7.3 快速通道：文字能提取但本地规则没切出题 → AI 只出「标注」（定位/题型/答案/解析），
+                 题干选项本地从原文照抄切块装配——AI 输出量降到零头，快 5~10 倍；
+                 标注路线没走通（失败或一题没切出）再退回全量重排兜底 */
+              setState('AI 快速转换中…');
+              let liteErr = null;
+              try {
+                await LLM.fileToCanonLite(text, {
+                  onProgress: (done, total, note) => {
+                    setState(`AI 快速转换中… 片段 ${done}/${total}`);
+                    bar.style.width = Math.round(done / total * 95) + '%';
+                    TC.set(done, total, `已入库 ${gotTotal} 题`);
+                  },
+                  onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
+                  onDelta: acc => { TC.delta(acc); },
+                  onPiece: async (pi, tot, txt) => {
+                    const got = await save.add(txt);
+                    gotTotal += got;
+                    TC.set(pi, tot, got ? `已入库 ${gotTotal} 题` : '本片暂未解析出题');
+                  }
+                });
+              } catch (e) {
+                liteErr = e;
+                console.warn('标注快速通道失败，降级全量重排：', e);
+              }
+              if (!gotTotal) {
+                TC.note(liteErr ? '快速通道没走通，改用全量重排…' : '快速通道没切出题，改用全量重排…');
+                await LLM.fileToCanon(text,
+                  (done, total, note) => {
+                    setState(`AI 兜底转换中… 片段 ${done}/${total}`);
+                    bar.style.width = Math.round(done / total * 95) + '%';
+                    TC.set(done, total, `已入库 ${gotTotal} 题`);
+                  },
+                  (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
+                  acc => { TC.delta(acc); },
+                  onPiece);
+              }
             }
             gotTotal += await save.flush(); // 收尾：攒着的片合并再试一次
             const st = save.stats();
@@ -1038,8 +1085,8 @@ const App = (() => {
                   statusEl.textContent = `AI 辅助对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
                   TC.set(done, total, `已填 ${got} 个答案`);
                 },
-                (att, cool) => {
-                  statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…';
+                (att, cool, why) => {
+                  statusEl.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`;
                   TC.note(statusEl.textContent);
                 });
               aiFilled = r.filled; aiExplained = r.explained;
@@ -1115,7 +1162,7 @@ const App = (() => {
                 bar.style.width = Math.round((k + done / total) / imgFiles.length * 95) + '%';
                 TC.set(k + done / total, imgFiles.length, `识别「${f.name}」· 已入库 ${gotTotal} 题`);
               },
-              onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+              onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
               onDelta: acc => { TC.delta(acc); },
               onPiece: async (pi, tot, txt) => {
                 const got = await save.add(txt);
@@ -1163,7 +1210,7 @@ const App = (() => {
         const text = await aiCanonFromFiles(lastPickedFiles, {
           onStatus: s => { statusEl.textContent = s; TC.note(s); },
           onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; TC.set(Math.round(p * 100), 100, `转换中 ${Math.round(p * 100)}%`); },
-          onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+          onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
           onDelta: acc => { TC.delta(acc); }
         });
         await DB.metaSet('canonDraft', text);
@@ -1739,7 +1786,7 @@ const App = (() => {
           (done, total, got, si, sc) => {
             if (st) st.textContent = `AI 对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
           },
-          (att, cool) => { if (st) st.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…'; },
+          (att, cool, why) => { if (st) st.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`; },
           async (batch) => { for (const q of batch) if (q.answer) await DB.questionPut(q); });
         const left = noAns.filter(q => !q.answer).length;
         if (st) st.textContent = r.filled
@@ -1819,8 +1866,8 @@ const App = (() => {
               // 每批解出的立即落库，断网/退出不丢
               for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
             },
-            (att, cool) => {
-              aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…';
+            (att, cool, why) => {
+              aiStatus.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`;
               TC.note(aiStatus.textContent);
             },
             { shouldStop: () => stop, signal: aborter.signal, isDone: q => !!q.answer, markAI: true, concurrency: conc, capYuan: cfg.capYuan });
@@ -3143,7 +3190,7 @@ const App = (() => {
       <div class="card me-hero">
         <div class="me-avatar">刷</div>
         <div class="me-name">刷题宝</div>
-        <div class="muted small">v1.7.2 · ${banks.length} 个题库 · ${qTotal} 道题</div>
+        <div class="muted small">v1.7.3 · ${banks.length} 个题库 · ${qTotal} 道题</div>
       </div>
       <div class="card me-list">
         <button class="me-entry" onclick="App.navigate('#/settings')">
