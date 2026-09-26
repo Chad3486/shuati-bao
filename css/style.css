@@ -51,7 +51,7 @@
   --toast-bg: rgba(26, 34, 51, .92);
   --toast-text: #fff;
 
-  --tabbar-h: 60px;
+  --tabbar-h: 64px;
 }
 
 /* 夜间 */
@@ -107,19 +107,21 @@ body {
   width: 100%; max-width: 560px; height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   display: flex; background: var(--glass-bg); border-top: 1px solid var(--glass-line); z-index: 20;
+  box-shadow: 0 -6px 24px rgba(15, 30, 70, .06);
   -webkit-backdrop-filter: blur(18px) saturate(1.6); backdrop-filter: blur(18px) saturate(1.6);
 }
 .tab {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  background: none; border: none; color: var(--muted); font-size: 10px; cursor: pointer; font-family: inherit;
+  background: none; border: none; color: var(--muted); font-size: 10.5px; cursor: pointer; font-family: inherit;
   transition: color .18s;
 }
 .tab svg {
-  width: 44px; height: 26px; padding: 2px 10px; border-radius: 10px;
-  transition: background .18s, transform .18s;
+  width: 48px; height: 30px; padding: 3px 12px; border-radius: 12px;
+  stroke-width: 2;
+  transition: background .18s, transform .18s, stroke-width .18s;
 }
 .tab.on { color: var(--primary); font-weight: 700; }
-.tab.on svg { background: var(--surface-3); transform: translateY(-1px); }
+.tab.on svg { background: var(--surface-3); transform: translateY(-2px) scale(1.05); stroke-width: 2.3; }
 .tab.on span { letter-spacing: .5px; }
 
 /* ---------- ③ 通用组件 ---------- */
@@ -581,3 +583,44 @@ body {
 @media (min-width: 560px) {
   .stem { font-size: 17px; }
 }
+
+
+/* ---------- ⑤ 「我的」页（v1.7.2 主流化改版） ---------- */
+.me-hero {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  padding: 30px 16px 24px; text-align: center;
+  background: var(--hero-grad); border: none; color: #fff;
+}
+.me-hero .muted { color: rgba(255, 255, 255, .78); }
+.me-avatar {
+  width: 66px; height: 66px; border-radius: 22px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 800; letter-spacing: 1px;
+  background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .3);
+  box-shadow: 0 8px 20px rgba(9, 24, 66, .22);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.me-name { font-size: 19px; font-weight: 800; letter-spacing: 1px; }
+
+.me-list { padding: 6px 8px; }
+.me-entry {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 14px 10px; min-height: 56px;
+  background: none; border: none; border-radius: 12px;
+  font-family: inherit; font-size: 15px; color: var(--text);
+  cursor: pointer; text-align: left; transition: background .15s;
+}
+.me-entry:active { background: var(--surface-2); }
+.me-entry + .me-entry { position: relative; }
+.me-entry + .me-entry::before {
+  content: ''; position: absolute; top: 0; left: 56px; right: 10px;
+  height: 1px; background: var(--line);
+}
+.me-ico {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 16px; box-shadow: 0 3px 8px rgba(15, 30, 70, .18);
+}
+.me-label { flex: 0 0 auto; font-weight: 650; }
+.me-entry .muted { flex: 1 1 auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me-chev { flex: 0 0 auto; color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; }

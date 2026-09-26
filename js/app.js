@@ -23,6 +23,7 @@ const App = (() => {
     'search': pageSearch,
     'history': pageHistory,
     'stats': pageStats,
+    'me': pageMe,
     'settings': pageSettings
   };
 
@@ -177,11 +178,12 @@ const App = (() => {
     const { path, params } = parseHash();
     clearExamTimer();   // 离开答题页就停掉倒计时，避免计时器写已移除的 DOM
     const page = routes[path] || pageHome;
-    const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'settings'];
+    const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'me'];
     const active = tabs.includes(path) ? path
       : path.startsWith('quiz') ? 'quiz-setup'
       : path === 'star' ? 'wrong'
       : path === 'history' ? 'stats'
+      : path === 'settings' ? 'me'
       : 'home';
     renderTabbar(active);
     page(params);
@@ -203,7 +205,7 @@ const App = (() => {
       ['quiz-setup', '练习', 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4'],
       ['wrong', '复习', 'M12 8v4m0 4h.01M12 3l9 16H3l9-16z'],
       ['stats', '统计', 'M4 20V10m6 10V4m6 16v-7m4 7H2'],
-      ['settings', '设置', 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z']
+      ['me', '我的', 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z']
     ];
     $tabbar().innerHTML = items.map(([id, label, d]) => {
       const on = id === active;
@@ -3131,6 +3133,41 @@ const App = (() => {
   }
 
   /* ================= 页面：设置 ================= */
+  /* ---- 「我的」页（v1.7.2）：主流 App 的最后一栏——个人中心承载低频入口，
+     设置从底部导航收进来，底部五栏回归纯功能页 ---- */
+  async function pageMe() {
+    topbar('我的');
+    const banks = await DB.bankList();
+    const qTotal = banks.reduce((n, b) => n + (b.count || 0), 0);
+    $view().innerHTML = `
+      <div class="card me-hero">
+        <div class="me-avatar">刷</div>
+        <div class="me-name">刷题宝</div>
+        <div class="muted small">v1.7.2 · ${banks.length} 个题库 · ${qTotal} 道题</div>
+      </div>
+      <div class="card me-list">
+        <button class="me-entry" onclick="App.navigate('#/settings')">
+          <span class="me-ico" style="background:var(--primary)">⚙</span>
+          <span class="me-label">设置</span>
+          <span class="muted small">模型 / Key / 外观 / 计费</span>
+          <span class="me-chev">›</span>
+        </button>
+        <button class="me-entry" onclick="App.navigate('#/recycle')">
+          <span class="me-ico" style="background:#8a93a8">🗑</span>
+          <span class="me-label">回收站</span>
+          <span class="muted small">删掉的题库先放这里</span>
+          <span class="me-chev">›</span>
+        </button>
+        <button class="me-entry" onclick="window.open('https://github.com/Chad3486/shuati-bao/releases','_blank')">
+          <span class="me-ico" style="background:#3d8f5f">⟳</span>
+          <span class="me-label">检查更新</span>
+          <span class="muted small">GitHub Releases</span>
+          <span class="me-chev">›</span>
+        </button>
+      </div>
+      <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
+  }
+
   async function pageSettings() {
     topbar('设置');
     const cfg = await LLM.getConfig();
