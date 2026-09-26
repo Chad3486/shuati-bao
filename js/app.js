@@ -463,7 +463,6 @@ const App = (() => {
       <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
       <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
       ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
-      ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       ${banks.length > LIMIT ? `
       <div class="list-tools">
         <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
@@ -815,29 +814,17 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。<b>题目文件与配套答案文件可一起选中</b>：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 匹配填入答案与解析。识别不了格式时会自动请 AI 兜底重排（需配置 API Key）；图片和图片型 Word 由 AI 视觉模型识别（需在「设置」里配置支持图片的视觉模型）。</p>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完：<b>AI 直接把原卷转成范式并入库</b>，原卷里的答案、解析原样带走，不用再手动补。需在「设置」配置 API Key；<b>没配 Key 时自动降级本地解析</b>（免费、快，但排版乱的文档可能切不准）。图片和图片型 Word 由 AI 视觉模型识别。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
-      <details class="card">
-        <summary style="cursor:pointer;font-weight:600">高级选项 · AI 辅助录入答案</summary>
-        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6;margin-top:8px">
-          <input type="checkbox" id="ai-assist-toggle" style="margin-top:3px;flex:none">
-          <span>开启后，本地规则<b>匹配不到答案</b>的题，由 AI 直接<b>从答案文件原文智能对位</b>填入：答案照抄原文而非 AI 做题，正确率高；按题型严格校验，校验不过的宁缺毋错。需在「设置」配置 API Key，消耗少量额度；关闭或无 Key 时纯本地解析零调用。</span>
-        </label>
-      </details>
       <div class="card" id="parse-card" style="display:none">
         <div class="card-title">解析</div>
         <div class="muted" id="parse-status"></div>
         <div class="progress"><div class="progress-bar" id="parse-bar"></div></div>
         <div id="parse-result"></div>
       </div>`;
-
-    // AI 辅助开关：状态持久化
-    const aiToggle = document.getElementById('ai-assist-toggle');
-    DB.metaGet('aiAssistImport').then(v => { aiToggle.checked = !!v; });
-    aiToggle.onchange = () => DB.metaSet('aiAssistImport', aiToggle.checked);
 
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
@@ -945,27 +932,18 @@ const App = (() => {
     for (const { f, i, text } of qFiles) {
       const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
-      setState('本地解析…');
       bar.style.width = '5%';
       const t0 = Date.now();
       try {
-        const res = await LLM.parseDocument(text, (done, total, got) => {
-          const elapsed = Math.round((Date.now() - t0) / 1000);
-          statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
-          bar.style.width = Math.round(done / total * 95) + '%';
-        });
-        if (!res.questions.length) {
-          // 本地规则没认出题 → AI 兜底：自动重排成范式文本再解析（用户无需手动换路径）
-          const cfg = await LLM.getConfig();
-          if (!cfg.apiKey) {
-            setState('未发现题目');
-            continue;
-          }
-          setState('AI 兜底转换中…');
+        // v1.8 快速通道 = AI 转范式直通：配了 API Key → AI 直接把原卷转成范式、逐片入库，
+        // 答案/解析原样带走，导入即用；没配 Key → 本地解析保底。不再本地先行、不再两条路绕
+        const cfg = await LLM.getConfig();
+        if (cfg.apiKey) {
+          setState('AI 转范式…');
           // v1.7.1：全局任务中心接管进度与通知栏（换页/锁屏回来自动可见）；逐批入库不等整份
           const dImgs = docImgs.get(i) || [];
           const textOnly = text.replace(/\[图片[^\]]*\]/g, '').trim();
-          const srcLabel = (dImgs.length && textOnly.length < dImgs.length * 15) ? 'AI 视觉识别' : 'AI 兜底';
+          const srcLabel = (dImgs.length && textOnly.length < dImgs.length * 15) ? 'AI 视觉识别' : 'AI 转范式';
           const save = pieceSaver(f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40), f.name + `（${srcLabel}）`);
           let gotTotal = 0;
           const onPiece = async (pi, tot, txt) => {
@@ -992,53 +970,29 @@ const App = (() => {
                 onPiece
               });
             } else {
-              /* v1.7.3 快速通道：文字能提取但本地规则没切出题 → AI 只出「标注」（定位/题型/答案/解析），
-                 题干选项本地从原文照抄切块装配——AI 输出量降到零头，快 5~10 倍；
-                 标注路线没走通（失败或一题没切出）再退回全量重排兜底 */
-              setState('AI 快速转换中…');
-              let liteErr = null;
-              try {
-                await LLM.fileToCanonLite(text, {
-                  onProgress: (done, total, note) => {
-                    setState(`AI 快速转换中… 片段 ${done}/${total}`);
-                    bar.style.width = Math.round(done / total * 95) + '%';
-                    TC.set(done, total, `已入库 ${gotTotal} 题`);
-                  },
-                  onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
-                  onDelta: acc => { TC.delta(acc); },
-                  onPiece: async (pi, tot, txt) => {
-                    const got = await save.add(txt);
-                    gotTotal += got;
-                    TC.set(pi, tot, got ? `已入库 ${gotTotal} 题` : '本片暂未解析出题');
-                  }
-                });
-              } catch (e) {
-                liteErr = e;
-                console.warn('标注快速通道失败，降级全量重排：', e);
-              }
-              if (!gotTotal) {
-                TC.note(liteErr ? '快速通道没走通，改用全量重排…' : '快速通道没切出题，改用全量重排…');
-                await LLM.fileToCanon(text,
-                  (done, total, note) => {
-                    setState(`AI 兜底转换中… 片段 ${done}/${total}`);
-                    bar.style.width = Math.round(done / total * 95) + '%';
-                    TC.set(done, total, `已入库 ${gotTotal} 题`);
-                  },
-                  (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
-                  acc => { TC.delta(acc); },
-                  onPiece);
-              }
+              // v1.8 快速通道本体：AI 全量转范式，逐片解析直接入库（不再走「只出标注」的实验路线）
+              setState('AI 转范式并入库中…');
+              await LLM.fileToCanon(text,
+                (done, total, note) => {
+                  setState(`AI 转范式… 片段 ${done}/${total}${note ? ' · ' + note : ''}`);
+                  bar.style.width = Math.round(done / total * 95) + '%';
+                  TC.set(done, total, `已入库 ${gotTotal} 题`);
+                },
+                (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
+                acc => { TC.delta(acc); },
+                onPiece);
             }
             gotTotal += await save.flush(); // 收尾：攒着的片合并再试一次
             const st = save.stats();
             if (!st.total) {
               setState('未发现题目');
-              statusEl.textContent = '⚠ 本地与 AI 兜底都没解析出题目：建议在「粘贴文本导入」里人工核对原文';
+              statusEl.textContent = '⚠ AI 转完没解析出题目：建议在「粘贴文本导入（高级）」里人工核对原文';
               TC.finish(false, '转换完成，但没解析出题目');
               continue;
             }
             setState(`✓ ${srcLabel} ${st.total} 题${st.noAns ? `（${st.noAns} 题缺答案）` : ''}`);
-            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 ${srcLabel}导入 ${st.total} 题`
+            const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
+            statusEl.textContent = `✓ 「${f.name}」${srcLabel}并入库 ${st.total} 题 · 用时 ${secs}s`
               + (st.noAns ? `（缺答案 ${st.noAns}，可稍后「补答案」）` : '');
             toast(`${srcLabel}导入 ${st.total} 题`);
             TC.finish(true, `已入库 ${st.total} 题${st.noAns ? ` · 缺答案 ${st.noAns}` : ''}`);
@@ -1046,10 +1000,22 @@ const App = (() => {
             console.error(e);
             const st = save.stats();
             setState(st.total ? `⚠ 中断（已入库 ${st.total} 题）` : '未发现题目');
-            statusEl.textContent = '⚠ AI 兜底失败：' + e.message.slice(0, 120)
-              + (st.total ? `。已入库的 ${st.total} 题不丢，可重新导入补齐` : '。可点下方「改用 AI 转范式导入」重试');
+            statusEl.textContent = '⚠ AI 转范式失败：' + e.message.slice(0, 120)
+              + (st.total ? `。已入库的 ${st.total} 题不丢，可重新导入补齐` : '。可在「粘贴文本导入（高级）」里重试');
             TC.finish(false, `中断：${e.message.slice(0, 60)}${st.total ? ` · 已入库 ${st.total} 题不丢` : ''}`);
           }
+          continue;
+        }
+        // ---- 无 API Key：本地解析保底（零调用、免费） ----
+        setState('本地解析…');
+        const res = await LLM.parseDocument(text, (done, total, got) => {
+          const elapsed = Math.round((Date.now() - t0) / 1000);
+          statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
+          bar.style.width = Math.round(done / total * 95) + '%';
+        });
+        if (!res.questions.length) {
+          setState('未发现题目');
+          statusEl.textContent = '⚠ 本地解析没切出题，且未配置 API Key（AI 转范式不可用）。到「设置」配好 Key 后重新导入，或到「粘贴文本导入（高级）」人工核对原文';
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库
@@ -1067,36 +1033,6 @@ const App = (() => {
           filled = r.filled; explained = r.explained;
         }
 
-        // AI 辅助录入：开关开启 + 有答案文件 + 本地匹配后仍有缺答案 → AI 从答案原文智能对位
-        let aiFilled = 0, aiExplained = 0;
-        const aiAssistOn = document.getElementById('ai-assist-toggle')?.checked;
-        if (aiAssistOn && aFiles.length && res.questions.some(q => !q.answer)) {
-          const cfg = await LLM.getConfig();
-          if (!cfg.apiKey) {
-            toast('AI 辅助需先在「设置」配置 API Key，本次已跳过');
-          } else {
-            setState('AI 对位答案…');
-            statusEl.textContent = 'AI 辅助录入：从答案文件原文智能对位中…';
-            TC.start('AI 辅助对位');
-            try {
-              const answerRaw = aFiles.map(x => x.text).join('\n');
-              const r = await LLM.aiMatchAnswers(res.questions, answerRaw, res.sections,
-                (done, total, got, si, sc) => {
-                  statusEl.textContent = `AI 辅助对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
-                  TC.set(done, total, `已填 ${got} 个答案`);
-                },
-                (att, cool, why) => {
-                  statusEl.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`;
-                  TC.note(statusEl.textContent);
-                });
-              aiFilled = r.filled; aiExplained = r.explained;
-              TC.finish(true, `对位完成 · 已填 ${r.filled} 个答案`);
-            } catch (e) {
-              TC.finish(false, 'AI 辅助失败（不影响本地结果）');
-              toast('AI 辅助失败（不影响本地结果）：' + e.message.slice(0, 60));
-            }
-          }
-        }
         const noAnswer = res.questions.filter(q => !q.answer).length;
 
         const bank = {
@@ -1110,9 +1046,9 @@ const App = (() => {
         res.questions.forEach(q => q.bankId = bank.id);
         await DB.questionAddMany(res.questions);
         await DB.bankAdd(bank);
-        const totalFilled = filled + aiFilled, totalExp = explained + aiExplained;
+        const totalFilled = filled, totalExp = explained;
         if (totalFilled) {
-          setState(`✓ ${res.questions.length} 题 · 答案填入 ${totalFilled}${aiFilled ? `（AI 辅助 ${aiFilled}）` : ''}`);
+          setState(`✓ ${res.questions.length} 题 · 答案填入 ${totalFilled}`);
           toast(`提取 ${res.questions.length} 题，答案填入 ${totalFilled} 个${totalExp ? `（含 ${totalExp} 条解析）` : ''}`);
         } else if (noAnswer > 0) {
           setState(`✓ ${res.questions.length} 题（${noAnswer} 题缺答案）`);
@@ -1873,6 +1809,9 @@ const App = (() => {
             { shouldStop: () => stop, signal: aborter.signal, isDone: q => !!q.answer, markAI: true, concurrency: conc, capYuan: cfg.capYuan });
 
           for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
+          // v1.8：等写入真正落库再报成功，并统计实际存上的题数——杜绝「显示解出但没存上」
+          await new Promise(r => setTimeout(r, 50));
+          const persisted = noAns.filter(q => q.answer && savedIds.has(q.id)).length;
           const left = noAns.filter(q => !q.answer).length;
           if (ret.paused) {
             toast(ret.stopReason === 'cap'
@@ -1883,7 +1822,10 @@ const App = (() => {
             toast(`AI 解出 ${ret.solved} 题答案（已标「AI 解答·需核对」），实耗 ¥${(ret.cost || 0).toFixed(3)}，请核对${left ? `，剩 ${left} 题未解出` : ''}`);
             render();
           } else {
-            aiStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
+            // v1.8：0 解出时把最后一次模型返回亮出来——一眼看出是网络问题还是格式没对上
+            aiStatus.textContent = '⚠ 这次没解出任何答案'
+              + (ret.lastFailNote ? `（最后一批返回: ${ret.lastFailNote}）` : '（网络或模型返回异常）')
+              + '，可再点一次重试';
             toast('未解出任何答案');
           }
           const fin = ret.paused

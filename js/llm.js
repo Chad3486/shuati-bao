@@ -1042,7 +1042,7 @@ const LLM = (() => {
 - 填空题 answer 为答案文本，多个空用 ||| 分隔
 只给答案，不要写解析。`;
 
-    let solved = 0, round = 0;
+    let solved = 0, round = 0, lastFailNote = '';
     const usage = { prompt_tokens: 0, completion_tokens: 0 };
     let paused = false, stopReason = '', capHit = false;
     const capYuan = parseFloat(opts.capYuan) || 0;
@@ -1088,9 +1088,59 @@ const LLM = (() => {
               if (capYuan > 0 && costOf(usage, cfg) >= capYuan) capHit = true;
             }
             const obj = parseJSON(raw);
-            const arr = obj && Array.isArray(obj.answers) ? obj.answers : (Array.isArray(obj) ? obj : null);
-            if (arr) {
-              for (const a of arr) {
+            /* v1.8 修复「AI 解题没效果」：模型返回形态五花八门，全部兼容——
+               ① {"answers":[{"idx":0,"answer":"C"}]}（提示词要求的标准形）
+               ② [{"idx":0,"answer":"C"}] / [{"no":1,...}]（数组、题号字段名不同）
+               ③ ["C","A","B"]（按位置对位的纯字符串数组）
+               ④ {"0":"C","1":"A"}（键为序号的对象）
+               ⑤ 都不是 → 兜底从原文抓「1. C / 1、C / 1：C」式答案行
+               此前只认①，模型一旦换形态整批作废，表现为「解出 0 题、没效果」 */
+            let arr = null;
+            if (obj) {
+              if (Array.isArray(obj.answers)) arr = obj.answers;
+              else if (Array.isArray(obj)) arr = obj;
+              else if (typeof obj === 'object') {
+                const keys = Object.keys(obj);
+                if (keys.length && keys.every(k => /^\d+$/.test(k))) {
+                  // 序号键可能是 0 起始或 1 起始：min=1 且 max=N（正好铺满）时按 1 起始处理，防整体错位
+                  const nums = keys.map(Number).sort((a, b) => a - b);
+                  const oneBased = nums[0] === 1 && nums[nums.length - 1] === nums.length;
+                  arr = nums.map(n => ({ idx: oneBased ? n - 1 : n, answer: obj[String(n)] }));
+                }
+              }
+            }
+            let pairs = null;
+            if (Array.isArray(arr)) {
+              pairs = arr.map((a, i) => {
+                if (typeof a === 'string') return { idx: i, answer: a };           // ③ 位置数组
+                if (a && typeof a === 'object') {
+                  const idx = a.idx != null ? +a.idx : (a.no != null ? +a.no - 1 : (a.i != null ? +a.i : i));
+                  const ans = a.answer != null ? a.answer : (a.ans != null ? a.ans : (a.result != null ? a.result : ''));
+                  return { idx, answer: String(ans) };                             // ①② + 字段名变体
+                }
+                return null;
+              }).filter(Boolean);
+            } else if (obj && typeof obj === 'object') {
+              // {"answers":{"0":"C","1":"A"}} 这类嵌套键值对
+              const inner = obj.answers;
+              if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+                const keys = Object.keys(inner);
+                if (keys.length && keys.every(k => /^\d+$/.test(k))) {
+                  const nums = keys.map(Number).sort((a, b) => a - b);
+                  const oneBased = nums[0] === 1 && nums[nums.length - 1] === nums.length;
+                  pairs = nums.map(n => ({ idx: oneBased ? n - 1 : n, answer: String(inner[String(n)]) }));
+                }
+              }
+            }
+            if (!pairs && raw) {
+              // ⑤ 非结构化兜底：从返回文本里抓「1. C」「1、C」「1：C」「1) C」式答案行
+              const m = [...String(raw).matchAll(/(\d{1,3})\s*[、.．:：)]\s*([A-D]{1,4}\b|对|错|正确|错误|√|×)/g)];
+              if (m.length >= Math.max(1, Math.ceil(batch.length / 2))) {
+                pairs = m.map(x => ({ idx: +x[1] - 1, answer: x[2] }));
+              }
+            }
+            if (pairs) {
+              for (const a of pairs) {
                 const q = batch[+a.idx];
                 if (!q || q.answer) continue;
                 let ans = String(a.answer == null ? '' : a.answer).trim();
@@ -1111,8 +1161,8 @@ const LLM = (() => {
                 solved++; solvedHere++;
               }
             }
-            // 返回非 JSON 或一题都没解出 → 标失败进重试队列（避免静默"什么都不出"）
-            if (!arr || solvedHere === 0) {
+            // 返回没解析出任何答案对、或一题都没解出 → 标失败进重试队列（避免静默"什么都不出"）
+            if (!pairs || solvedHere === 0) {
               ok = false;
               failNote = (raw || '(空)').replace(/\s+/g, ' ').slice(0, 80);
             }
@@ -1127,6 +1177,7 @@ const LLM = (() => {
           }
           if (!ok) failed.push(batch);
           done++;
+          if (failNote) lastFailNote = failNote;
           emit(done, batches.length, failNote ? `该批未解出 · 返回: ${failNote}` : (round > 1 ? `第 ${round} 轮` : ''));
         }
       }
@@ -1136,7 +1187,7 @@ const LLM = (() => {
       pool = failed.flat().filter(q => !q.answer);
     }
 
-    return { solved, usage: { ...usage }, cost: +costOf(usage, cfg).toFixed(4), paused, stopReason };
+    return { solved, usage: { ...usage }, cost: +costOf(usage, cfg).toFixed(4), paused, stopReason, lastFailNote };
   }
 
   /* ---- 测试连接 ---- */

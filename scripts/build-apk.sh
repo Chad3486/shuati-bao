@@ -3,6 +3,7 @@
 set -e
 SDK=/home/z/my-project/share/agent-model/6ab5ec7b89102b93e992b3d8/tmp/android-sdk
 BT=$SDK/android-14              # build-tools 34（zip 内目录名就叫 android-14）
+D8=$SDK/android-15/d8           # build-tools 35 的 d8：34 自带的 8.2.2-dev 写 dex 时 NPE，换新版
 PLAT=$SDK/android-34/android.jar
 SRC=/home/z/my-project/share/agent-model/6ab5ec7b89102b93e992b3d8/tmp/shuati-bao-push/apk-src/app/src/main
 OUT=/home/z/my-project/share/agent-model/6ab5ec7b89102b93e992b3d8/tmp/apk-build
@@ -24,13 +25,20 @@ sed 's/<manifest /<manifest package="com.shuati.bao" /' "$SRC/AndroidManifest.xm
 echo '[3/6] javac 编译 Java'
 JDK=/home/z/my-project/share/agent-model/6ab5ec7b89102b93e992b3d8/tmp/android-sdk/jdk-21.0.5+11
 find "$SRC/java" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
-"$JDK/bin/javac" -Xlint:none -nowarn -source 17 -target 17 \
-  -bootclasspath "$PLAT" -classpath "$PLAT" \
-  -d "$OUT/classes" @"$OUT/sources.txt" 2>&1 | grep -v 'bootstrap class path' || true
+# javac 21 限制：target 17 不允许 -bootclasspath，故按 Java 8 编译（lambda 由 d8 脱糖到 API 21）
+# core-lambda-stubs.jar 提供 LambdaMetafactory 编译期符号（AGP 同款做法）；编译失败必须中止，绝不签出坏包
+if ! "$JDK/bin/javac" -Xlint:none -nowarn -source 8 -target 8 \
+  -bootclasspath "$PLAT:$BT/core-lambda-stubs.jar" -classpath "$PLAT:$BT/core-lambda-stubs.jar" \
+  -d "$OUT/classes" @"$OUT/sources.txt" > "$OUT/javac.log" 2>&1; then
+  echo 'javac 失败：'; cat "$OUT/javac.log"; exit 1
+fi
+grep -E 'error|错误' "$OUT/javac.log" || true
 
 echo '[4/6] d8 出 dex'
-"$BT/d8" --release --lib "$PLAT" --min-api 21 \
-  --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
+# d8 对绝对路径类文件有 NPE 的坑：进 classes 目录用相对路径喂（包路径即类的包名）
+cd "$OUT/classes"
+PATH="$JDK/bin:$PATH" "$D8" --release --lib "$PLAT" --min-api 21 \
+  --output "$OUT/dex" $(find . -name '*.class' | sed 's|^\./||')
 
 echo '[5/6] 组装 + 对齐'
 cp "$OUT/base.apk" "$OUT/unsigned.apk"
