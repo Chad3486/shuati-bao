@@ -3379,6 +3379,19 @@ const App = (() => {
 
   function navigate(hash) { location.hash = hash; }
 
+  /* ---- 后台保活桥（第二期）：AI 长任务进行时拉起 Android 前台服务——
+     锁屏后进程不被冻结/杀掉，通知栏实时进度，结束自动撤通知释放唤醒锁。
+     仅 APK 内生效（AndroidBridge 注入时）；浏览器/单文件版全部静默 no-op。 ---- */
+  const BG = {
+    on() {
+      try { return typeof AndroidBridge !== 'undefined' && AndroidBridge.isAvailable(); }
+      catch (e) { return false; }
+    },
+    start(text) { if (BG.on()) try { AndroidBridge.keepAliveStart(text || '任务进行中'); } catch (e) {} },
+    update(text) { if (BG.on()) try { AndroidBridge.keepAliveUpdate(text); } catch (e) {} },
+    stop() { if (BG.on()) try { AndroidBridge.keepAliveStop(); } catch (e) {} }
+  };
+
   function render() {
     const { path, params } = parseHash();
     clearExamTimer();   // 离开答题页就停掉倒计时，避免计时器写已移除的 DOM
@@ -3897,12 +3910,14 @@ const App = (() => {
       aiConvBtn.disabled = true;
       aiProg.style.display = '';
       aiBar.style.width = '0%';
+      // 锁屏保活：转范式逐片调 API，长文档可能十几分钟
+      BG.start('AI 转范式进行中');
       const liveEl = document.getElementById('canon-ai-live');
       liveEl.textContent = '';
       try {
         const text = await aiCanonFromFiles(files, {
           onStatus: s => { aiConvStatus.textContent = s; },
-          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; },
+          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; BG.update(`AI 转范式：完成 ${Math.round(p * 100)}%`); },
           // 流式：AI 生成内容实时回显（1~2 秒出首字，边生成边可见）
           onDelta: acc => {
             liveEl.style.display = '';
@@ -3922,6 +3937,7 @@ const App = (() => {
         aiProg.style.display = 'none';
         const liveEl = document.getElementById('canon-ai-live');
         if (liveEl) liveEl.style.display = 'none';
+        BG.stop(); // 结束撤通知（成功/失败都走这里）
       }
     };
 
@@ -4113,11 +4129,14 @@ const App = (() => {
             continue;
           }
           setState('AI 兜底转换中…');
+          // 锁屏保活：兜底转换逐片调 API，可能耗时数分钟
+          BG.start(`AI 兜底转换：${f.name}`);
           try {
             const canonText = await LLM.fileToCanon(text,
               (done, total, note) => {
                 statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
                 bar.style.width = Math.round(done / total * 95) + '%';
+                BG.update(`AI 兜底：片段 ${done}/${total}`);
               },
               (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
               acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
@@ -4228,6 +4247,7 @@ const App = (() => {
     }
     bar.style.width = '100%';
     statusEl.textContent = '全部完成';
+    BG.stop(); // 导入流程结束：撤保活通知（无 AI 任务时为空操作）
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
       ${lastPickedFiles.length ? '<button class="btn ghost big" id="to-canon-btn">解析不满意？改用 AI 转范式导入</button>' : ''}
       <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；.doc 需另存为 .docx</div>`;
@@ -4236,10 +4256,11 @@ const App = (() => {
     if (toCanonBtn) toCanonBtn.onclick = async () => {
       if (!await ensureApiKey()) return;
       toCanonBtn.disabled = true;
+      BG.start('AI 转范式进行中');
       try {
         const text = await aiCanonFromFiles(lastPickedFiles, {
           onStatus: s => { statusEl.textContent = s; },
-          onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; }
+          onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; BG.update(`AI 转范式：完成 ${Math.round(p * 100)}%`); }
         });
         await DB.metaSet('canonDraft', text);
         toast('已转成范式，去核对后导入');
@@ -4247,6 +4268,8 @@ const App = (() => {
       } catch (e) {
         statusEl.textContent = '⚠ ' + e.message.slice(0, 140);
         toCanonBtn.disabled = false;
+      } finally {
+        BG.stop();
       }
     };
   }
@@ -4847,6 +4870,8 @@ const App = (() => {
         aiProg.style.display = '';
         aiBar.style.width = '0%';
         aiStatus.textContent = `AI 正在解答 ${todo.length} 题（已有答案的不动）…`;
+        // 锁屏保活：批量解题可能几十分钟，前台服务保证不被冻结（每批进度同步到通知栏）
+        BG.start(`AI 解答中 · 共 ${todo.length} 题`);
         const savedIds = new Set();
         try {
           const ret = await LLM.solveMissing(noAns,
@@ -4860,6 +4885,7 @@ const App = (() => {
               if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
                 aiStatus.textContent += ` · 实耗 ${(usage.prompt_tokens || 0) + (usage.completion_tokens || 0)} tok ≈ ¥${(cost != null ? cost : LLM.costOf(usage, cfg)).toFixed(3)}`;
               }
+              BG.update(`AI 解题：已解出 ${solved} 题 · 进度 ${done}/${total} 批`);
               // 每批解出的立即落库，断网/退出不丢
               for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
             },
@@ -4888,6 +4914,7 @@ const App = (() => {
           aiBtn.disabled = false;
           aiCtrl.style.display = 'none';
           aiProg.style.display = 'none';
+          BG.stop(); // 任务结束（完成/暂停/中断）都撤通知、释放唤醒锁
         }
       };
     }

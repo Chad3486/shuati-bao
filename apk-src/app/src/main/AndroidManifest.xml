@@ -6,6 +6,11 @@
     <!-- Android 9 及以下导出文件到 Download 需要；Android 10+ 用 MediaStore 不需要 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- 第二期：AI 长任务后台保活（前台服务 + 通知进度 + 锁屏 CPU 唤醒） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -25,5 +30,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- AI 长任务保活：specialUse 类型（不上架商店，无需过审；subtype 说明用途） -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="AI批量解题/导入兜底等长任务进行时，保持通知栏进度与锁屏CPU运行" />
+        </service>
     </application>
 </manifest>

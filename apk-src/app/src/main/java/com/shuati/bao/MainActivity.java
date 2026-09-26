@@ -36,6 +36,7 @@ public class MainActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> mFilePathCallback;
     private static final int FILE_CHOOSE = 1;
     private static final int REQUEST_STORAGE = 1001;
+    private static final int REQUEST_NOTI = 1002; // Android 13+ 通知运行时权限（保活通知）
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -124,8 +125,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // assets 内联单文件版拷到 filesDir，获得 file:// 完整 API 权限
-        copyAssetDir("tesseract", "tesseract");
+        // assets 内联单文件版拷到 filesDir，获得 file:// 完整 API 权限（v1.5 起 tesseract 已移除，不再拷贝）
         String htmlPath = copyAsset("app.html", "index.html");
         wv.loadUrl("file://" + htmlPath);
     }
@@ -191,6 +191,42 @@ public class MainActivity extends AppCompatActivity {
         /** 判断是否已通过 JS 桥接，用于前端决定走 <a download> 还是原生保存 */
         @android.webkit.JavascriptInterface
         public boolean isAvailable() { return true; }
+
+        /**
+         * AI 长任务开始：拉起前台服务（通知栏进度 + 锁屏 CPU 唤醒）。
+         * Android 13+ 需要通知运行时权限——此处静默请求一次；被拒不影响保活，只是通知不可见。
+         */
+        @android.webkit.JavascriptInterface
+        public String keepAliveStart(final String text) {
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                            ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.POST_NOTIFICATIONS)
+                                    != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{ Manifest.permission.POST_NOTIFICATIONS }, REQUEST_NOTI);
+                    }
+                    KeepAliveService.start(MainActivity.this, text);
+                }
+            });
+            return "OK";
+        }
+
+        /** 长任务进度更新：刷新通知栏文案（锁屏也不停） */
+        @android.webkit.JavascriptInterface
+        public void keepAliveUpdate(final String text) {
+            runOnUiThread(new Runnable() {
+                @Override public void run() { KeepAliveService.update(MainActivity.this, text); }
+            });
+        }
+
+        /** 长任务结束：停服务、撤通知、释放唤醒锁（JS 侧 finally 保证必调） */
+        @android.webkit.JavascriptInterface
+        public void keepAliveStop() {
+            runOnUiThread(new Runnable() {
+                @Override public void run() { KeepAliveService.stop(MainActivity.this); }
+            });
+        }
     }
 
     /** 简易 ContentValues 兼容包装（避免 API 级别分支直接引用） */
@@ -267,5 +303,13 @@ public class MainActivity extends AppCompatActivity {
     public void onBackPressed() {
         if (wv != null && wv.canGoBack()) wv.goBack();
         else super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        // 兜底：Activity 真正销毁（进程退出）时撤保活通知——
+        // 正常的"锁屏/切后台"走 onStop 不销毁，不影响任务继续
+        KeepAliveService.stop(this);
+        super.onDestroy();
     }
 }
