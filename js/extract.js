@@ -1,9 +1,10 @@
-/* ========== 文件文本提取层（Word / 文本） ========== */
+/* ========== 文件文本提取层（Word / 文本 / 图片） ========== */
 const Extractor = (() => {
 
   /* ---- DOCX：mammoth 提取文本；嵌入图片仅计数，正文位置标记 [图片] ----
      （v1.5：内置 Tesseract OCR 已移除——19MB 资源换不来可用的识别质量；
-      图片型题库请改用文字型文件，或粘贴文本到「范式导入」） ---- */
+      v1.7：图片型题库改由 AI 视觉接口识别——extractFull 可带走嵌入图片，
+      交视觉模型转写，准确率远超传统 OCR） ---- */
 
   function htmlToPlainText(html) {
     const ta = document.createElement('textarea');
@@ -15,21 +16,56 @@ const Extractor = (() => {
     return ta.value.replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n');
   }
 
-  async function fromDOCX(file, onProgress, opts) {
+  /* ---- 图片压缩：手机照片动辄 5-10MB，直接 base64 会撑爆请求 ----
+     等比缩到最长边 maxSide（默认 1600px，试卷文字足够清晰），JPEG 质量 quality */
+  function shrinkImage(dataUrl, maxSide = 1600, quality = 0.82) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let { width: w, height: h } = img;
+          if (w <= maxSide && h <= maxSide) return resolve(dataUrl); // 已经够小，不再压
+          const scale = Math.min(maxSide / w, maxSide / h);
+          const cv = document.createElement('canvas');
+          cv.width = Math.round(w * scale);
+          cv.height = Math.round(h * scale);
+          cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+          resolve(cv.toDataURL('image/jpeg', quality));
+        } catch (e) {
+          resolve(dataUrl); // 压缩失败（如跨域污染）就发原图，宁多花流量不失败
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
+  async function fromDOCX(file, onProgress, opts = {}) {
     if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
     let imgCount = 0;
+    const images = [];   // v1.7：嵌图收集（dataUrl），供 AI 视觉识别兜底
     // 图片统一替换为 1px 透明占位：既保留「此处有图」标记，又避免 base64 大图占用内存
     const result = await window.mammoth.convertToHtml({ arrayBuffer: buf }, {
-      convertImage: window.mammoth.images.imgElement(async () => {
+      convertImage: window.mammoth.images.imgElement(async (image) => {
         imgCount++;
+        try {
+          const b64 = await image.readAsBase64String();
+          if (b64 && b64.length > 2000) { // 过滤装饰小图（横线/LOGO），大于 2KB 才可能是题目图
+            images.push({ name: `图片${imgCount}`, dataUrl: `data:${image.contentType};base64,${b64}` });
+          }
+        } catch (e) { /* 读不出就只留标记 */ }
         return { src: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' };
       })
     });
     const text = htmlToPlainText(result.value);
-    // 图片型 DOCX：几乎无文字 → 明确告知，不再静默 OCR
+    if (opts.full) {
+      // 完整模式：调用方（导入页）自己决定图片型文档怎么兜底，这里不抛错
+      return { text, images };
+    }
+    // 兼容模式：图片型 DOCX 仍明确报错（canon.js 的 Word 转换器等旧调用方）
     if (imgCount > 0 && text.replace(/\s|\[图片\]/g, '').length < 50) {
-      throw new Error('该 Word 几乎全是图片（图片型题库）：本版本已移除 OCR。请改用文字型题库文件，或把题目文本粘贴到「范式导入」');
+      throw new Error('该 Word 几乎全是图片（图片型题库）：请在「导入题库」改用 AI 视觉识别，或改用文字型题库文件');
     }
     return text;
   }
@@ -51,6 +87,22 @@ const Extractor = (() => {
       return await file.text();
     }
     throw new Error('不支持的格式：' + file.name + '（支持 DOCX / TXT / MD）');
+  }
+
+  /* ---- 完整提取（v1.7）：文本 + 嵌入图片一起带走，导入页视觉识别用 ---- */
+  async function extractFull(file, onProgress) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.docx')) return fromDOCX(file, onProgress, { full: true });
+    if (name.endsWith('.doc')) {
+      throw new Error('暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后重试');
+    }
+    if (name.endsWith('.pdf')) {
+      throw new Error('已移除 PDF 解析：请先把 PDF 另存为 Word(.docx) 或文本，或用「范式导入」直接贴文本');
+    }
+    if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.markdown')) {
+      return { text: await file.text(), images: [] };
+    }
+    throw new Error('不支持的格式：' + file.name + '（支持 DOCX / TXT / MD / 图片）');
   }
 
 
@@ -504,5 +556,5 @@ const Extractor = (() => {
     return null;
   }
 
-  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
+  return { extract, extractFull, shrinkImage, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
 })();

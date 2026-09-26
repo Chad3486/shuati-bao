@@ -664,9 +664,9 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）/ TXT / MD。<b>题目文件与配套答案文件可一起选中</b>：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 匹配填入答案与解析。识别不了格式时会自动请 AI 兜底重排（需配置 API Key）。</p>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。<b>题目文件与配套答案文件可一起选中</b>：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 匹配填入答案与解析。识别不了格式时会自动请 AI 兜底重排（需配置 API Key）；图片和图片型 Word 由 AI 视觉模型识别（需在「设置」里配置支持图片的视觉模型）。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
-        <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md" style="display:none">
+        <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
       <details class="card">
@@ -716,17 +716,42 @@ const App = (() => {
       rows.set(i, row);
     });
 
-    // 第 1 步 · 全部提取文本
+    // 第 1 步 · 全部提取文本（v1.7：DOCX 顺带收集嵌图，供图片型文档视觉兜底）
     const texts = new Map();
+    const docImgs = new Map();    // i → [{name,dataUrl}]（DOCX 嵌入图，仅兜底时用）
+    const imgStore = new Map();   // i → dataUrl（用户直接选的图片文件，压缩后待识别）
+    const isImageFile = f => /^image\//.test(f.type || '') || /\.(jpe?g|png|webp|bmp)$/i.test(f.name);
+    const fileToDataUrl = f => new Promise((ok, no) => {
+      const r = new FileReader();
+      r.onload = () => ok(r.result);
+      r.onerror = () => no(new Error('读取图片失败'));
+      r.readAsDataURL(f);
+    });
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
-      setState('提取文本…');
       try {
-        const raw = await Extractor.extract(f);
-        const text = Extractor.cleanText(raw);
-        if (text.replace(/\s/g, '').length < 50) {
+        if (isImageFile(f)) {
+          // 图片文件：压缩到长边 1600px（试卷文字足够清晰，请求体也不爆炸），等视觉识别
+          setState('读图中…');
+          imgStore.set(i, await Extractor.shrinkImage(await fileToDataUrl(f)));
+          setState('图片就绪');
+          texts.set(i, '');
+          continue;
+        }
+        setState('提取文本…');
+        const ex = await Extractor.extractFull(f);
+        const text = Extractor.cleanText(ex.text);
+        docImgs.set(i, ex.images || []);
+        if (text.replace(/\s|\[图片[^\]]*\]/g, '').length < 50) {
+          // 文档基本没文字：若有嵌图等视觉兜底来救；彻底没内容才算失败
+          if ((ex.images || []).length) {
+            docImgs.set(i, ex.images);
+            texts.set(i, text);   // 保住 [图片] 标记与极少量文字，兜底分支会判断走视觉
+            setState('图片型文档');
+            continue;
+          }
           setState('失败');
           stateEl.innerHTML = '⚠ 无文本';
           continue;
@@ -745,11 +770,13 @@ const App = (() => {
     files.forEach((f, i) => {
       const text = texts.get(i);
       if (text == null) return;
+      if (isImageFile(f)) return; // 图片不走文本分类，第 5 步统一视觉识别
       const isAns = /答案|answer/i.test(f.name) || LLM.answerLineRatio(text) >= 0.3;
       rows.get(i).querySelector('.file-state').textContent = isAns ? '答案文件' : '题目文件';
       (isAns ? aFiles : qFiles).push({ f, i, text });
     });
-    if (!qFiles.length) {
+    const imgFiles = files.map((f, i) => ({ f, i })).filter(({ f, i }) => imgStore.has(i));
+    if (!qFiles.length && !imgFiles.length) {
       statusEl.textContent = aFiles.length
         ? '⚠ 只识别到答案文件，请把题目文件和答案文件一起选中导入'
         : '⚠ 没有可解析的文件';
@@ -787,14 +814,36 @@ const App = (() => {
           // 锁屏保活：兜底转换逐片调 API，可能耗时数分钟
           BG.start(`AI 兜底转换：${f.name}`);
           try {
-            const canonText = await LLM.fileToCanon(text,
-              (done, total, note) => {
-                statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
-                bar.style.width = Math.round(done / total * 95) + '%';
-                BG.update(`AI 兜底：片段 ${done}/${total}`);
-              },
-              (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
-              acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
+            // v1.7：图片型 DOCX（文字只有几个 [图片] 标记）→ 直接视觉识别嵌入图
+            const dImgs = docImgs.get(i) || [];
+            const textOnly = text.replace(/\[图片[^\]]*\]/g, '').trim();
+            let canonText, srcLabel = 'AI 兜底';
+            if (dImgs.length && textOnly.length < dImgs.length * 15) {
+              srcLabel = 'AI 视觉识别';
+              setState('AI 视觉识别中…');
+              const shrunk = [];
+              for (const im of dImgs) {
+                shrunk.push({ name: im.name, dataUrl: await Extractor.shrinkImage(im.dataUrl) });
+              }
+              canonText = await LLM.visionCanon(shrunk, {
+                onProgress: (done, total, note) => {
+                  statusEl.textContent = `视觉识别「${f.name}」：${note}`;
+                  bar.style.width = Math.round(done / total * 95) + '%';
+                  BG.update(`视觉识别：${done}/${total} 张`);
+                },
+                onRetry: (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
+                onDelta: acc => { statusEl.textContent = `视觉识别中：已生成 ${acc.length} 字…`; }
+              });
+            } else {
+              canonText = await LLM.fileToCanon(text,
+                (done, total, note) => {
+                  statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
+                  bar.style.width = Math.round(done / total * 95) + '%';
+                  BG.update(`AI 兜底：片段 ${done}/${total}`);
+                },
+                (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
+                acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
+            }
             const r = Canon.parse(canonText);
             if (!r.questions.length) {
               setState('未发现题目');
@@ -806,17 +855,17 @@ const App = (() => {
               name: f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40),
               createdAt: Date.now(),
               count: r.questions.length,
-              source: f.name + '（AI 兜底）',
+              source: f.name + `（${srcLabel}）`,
               sections: r.sections && r.sections.length ? r.sections : null
             };
             r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
             await DB.questionAddMany(r.questions);
             await DB.bankAdd(bank);
             const noAns = r.questions.filter(q => !q.answer).length;
-            setState(`✓ AI 兜底 ${r.questions.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`);
-            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 AI 兜底重排并导入 ${r.questions.length} 题`
+            setState(`✓ ${srcLabel} ${r.questions.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`);
+            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 ${srcLabel}导入 ${r.questions.length} 题`
               + (noAns ? `（缺答案 ${noAns}，可稍后「补答案」）` : '');
-            toast(`AI 兜底导入 ${r.questions.length} 题`);
+            toast(`${srcLabel}导入 ${r.questions.length} 题`);
           } catch (e) {
             console.error(e);
             setState('未发现题目');
@@ -900,6 +949,74 @@ const App = (() => {
         toast(f.name + '：' + e.message.slice(0, 80));
       }
     }
+    // 第 5 步 · 图片文件 → AI 视觉识别入库（v1.7：图片型题库的新路，OCR 的替代者）
+    if (imgFiles.length) {
+      const cfg = await LLM.getConfig();
+      if (!cfg.apiKey) {
+        for (const { i } of imgFiles) {
+          const el = rows.get(i).querySelector('.file-state');
+          el.textContent = '⚠ 需 API Key';
+        }
+        statusEl.textContent = '⚠ 图片识别需要 AI 视觉模型：先到「设置」配置 API Key 与「视觉模型」，再重新导入';
+      } else {
+        BG.start(`AI 视觉识别 · 共 ${imgFiles.length} 张`);
+        let okN = 0, failN = 0;
+        const textsOut = [];
+        for (let k = 0; k < imgFiles.length; k++) {
+          const { f, i } = imgFiles[k];
+          const stateEl = rows.get(i).querySelector('.file-state');
+          try {
+            const text = await LLM.visionCanon([{ name: f.name, dataUrl: imgStore.get(i) }], {
+              onProgress: (done, total, note) => {
+                statusEl.textContent = `视觉识别「${f.name}」：${note}`;
+                bar.style.width = Math.round((k + done / total) / imgFiles.length * 95) + '%';
+                BG.update(`视觉识别：${k + 1}/${imgFiles.length} 张`);
+              },
+              onRetry: (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
+              onDelta: acc => { statusEl.textContent = `视觉识别中：已生成 ${acc.length} 字…`; }
+            });
+            textsOut.push(text);
+            okN++;
+            stateEl.textContent = '✓ 已识别';
+          } catch (e) {
+            console.error(e);
+            failN++;
+            stateEl.textContent = '⚠ 识别失败';
+            statusEl.textContent = `⚠ ${f.name} 识别失败：${e.message.slice(0, 100)}${failN < imgFiles.length ? '（继续识别其余图片）' : ''}`;
+          }
+        }
+        BG.stop(); // 识别结束撤保活通知（后面本地解析无需唤醒锁）
+        if (textsOut.length) {
+          bar.style.width = '96%';
+          statusEl.textContent = '解析识别文本中…';
+          try {
+            const r = Canon.parse(textsOut.join('\n\n'));
+            if (!r.questions.length) {
+              statusEl.textContent = '⚠ 识别出了文本但没解析出题目：可到「粘贴文本导入」把识别文本人工核对后导入';
+            } else {
+              const bank = {
+                id: DB.uid(),
+                name: imgFiles[0].f.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 40) + (imgFiles.length > 1 ? ` 等${imgFiles.length}张` : ''),
+                createdAt: Date.now(),
+                count: r.questions.length,
+                source: `图片视觉识别（${okN} 张）`,
+                sections: r.sections && r.sections.length ? r.sections : null
+              };
+              r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
+              await DB.questionAddMany(r.questions);
+              await DB.bankAdd(bank);
+              const noAns = r.questions.filter(q => !q.answer).length;
+              statusEl.textContent = `✓ 视觉识别导入 ${r.questions.length} 题（图片成功 ${okN} 张${failN ? `，失败 ${failN} 张` : ''}）`
+                + (noAns ? `，缺答案 ${noAns} 题可稍后「补答案」或 AI 解答` : '');
+              toast(`视觉识别导入 ${r.questions.length} 题`);
+            }
+          } catch (e) {
+            statusEl.textContent = '⚠ 识别文本解析失败：' + e.message.slice(0, 100);
+          }
+        }
+      }
+    }
+
     bar.style.width = '100%';
     statusEl.textContent = '全部完成';
     BG.stop(); // 导入流程结束：撤保活通知（无 AI 任务时为空操作）
@@ -1062,6 +1179,13 @@ const App = (() => {
       return `<button class="chip ${k === 'all' ? 'on' : ''}" data-v="${k}">${label} ${n}</button>`;
     }).join('');
 
+    /* ---- v1.7 · 第三期：分页渲染 ----
+       大题库（上千题）原先一次画完所有格子：首屏 DOM 上千节点，勾选/筛选/折叠每次全量重排，
+       中低端机明显卡顿。改为：每节先画前 PAGE 题，节尾「显示更多」按页增量；
+       格子勾选改事件委托（不再每次渲染重绑上千个 onchange）；搜索加防抖。 ---- */
+    const PAGE = 80;
+    const secShown = new Map(); // sec → 已显示题数（「显示更多」翻页）
+
     function matchQ(q) {
       if (kw) {
         const hay = [q.stem, q.answer, q.explanation, ...Object.values(q.options || {})].join(' ').toLowerCase();
@@ -1086,6 +1210,10 @@ const App = (() => {
         const isCollapsed = collapsed.has(g.sec);
         const secIds = idxs.map(i => qs[i].id);
         const allOn = secIds.length > 0 && secIds.every(id => sel.has(id));
+        // 分页：每节先画前 secShown.get(sec)||PAGE 题，其余藏进「显示更多」
+        const lim = secShown.get(g.sec) || PAGE;
+        const shownIdxs = idxs.slice(0, lim);
+        const hidden = idxs.length - shownIdxs.length;
         return `
           <div class="sec-group">
             <div class="sec-head">
@@ -1095,47 +1223,56 @@ const App = (() => {
               <button class="chip ${allOn ? 'on' : ''}" data-sec="${escapeHtml(g.sec)}">${allOn ? '取消本节' : '本节全选'}</button>
             </div>
             ${isCollapsed ? '' : `<div class="no-grid">
-              ${idxs.map(i => {
+              ${shownIdxs.map(i => {
                 const q = qs[i];
                 return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}${sel.has(q.id) ? ' on' : ''}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
                   <input type="checkbox" data-id="${q.id}" ${sel.has(q.id) ? 'checked' : ''}>
                   <span>${q.no ?? i + 1}</span>
                 </label>`;
               }).join('')}
-            </div>`}
+            </div>
+            ${hidden > 0 ? `<button class="btn ghost" data-more="${escapeHtml(g.sec)}" style="margin-top:6px">显示更多（还有 ${hidden} 题）</button>` : ''}`}
           </div>`;
       }).join('');
       grid.innerHTML = html || '<div class="muted small" style="padding:12px 0">没有匹配的题（换个关键词或筛选试试）</div>';
-
-      // 每次重渲染后重新绑定（事件委托会因 innerHTML 变化而失效）
-      grid.querySelectorAll('input[data-id]').forEach(box => {
-        box.onchange = () => {
-          const on = box.checked;
-          on ? sel.add(box.dataset.id) : sel.delete(box.dataset.id);
-          const cell = box.closest('.no-cell');
-          if (cell) cell.classList.toggle('on', on);
-          update();
-        };
-      });
-      grid.querySelectorAll('[data-fold]').forEach(b => {
-        b.onclick = () => {
-          const s = b.dataset.fold;
-          collapsed.has(s) ? collapsed.delete(s) : collapsed.add(s);
-          renderGrid();
-        };
-      });
-      grid.querySelectorAll('button[data-sec]').forEach(b => {
-        b.onclick = () => {
-          const g = groups.find(x => String(x.sec) === b.dataset.sec);
-          if (!g) return;
-          const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
-          const allOn = ids.length && ids.every(id => sel.has(id));
-          ids.forEach(id => allOn ? sel.delete(id) : sel.add(id));
-          renderGrid();
-        };
-      });
       update(shown);
     }
+
+    // 事件委托：innerHTML 重写不失效，也不再每次渲染循环重绑上千个 onchange
+    grid.addEventListener('change', (e) => {
+      const box = e.target.closest('input[data-id]');
+      if (!box) return;
+      const on = box.checked;
+      on ? sel.add(box.dataset.id) : sel.delete(box.dataset.id);
+      const cell = box.closest('.no-cell');
+      if (cell) cell.classList.toggle('on', on);
+      update();
+    });
+    grid.addEventListener('click', (e) => {
+      const more = e.target.closest('button[data-more]');
+      if (more) {
+        const sec = more.dataset.more;
+        secShown.set(sec, (secShown.get(sec) || PAGE) + PAGE);
+        renderGrid();
+        return;
+      }
+      const fold = e.target.closest('[data-fold]');
+      if (fold) {
+        const s = fold.dataset.fold;
+        collapsed.has(s) ? collapsed.delete(s) : collapsed.add(s);
+        renderGrid();
+        return;
+      }
+      const secBtn = e.target.closest('button[data-sec]');
+      if (secBtn) {
+        const g = groups.find(x => String(x.sec) === secBtn.dataset.sec);
+        if (!g) return;
+        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const allOn = ids.length && ids.every(id => sel.has(id));
+        ids.forEach(id => allOn ? sel.delete(id) : sel.add(id));
+        renderGrid();
+      }
+    });
 
     // ===== AI 答案逐题核对（采纳 / 修改 / 重跑）=====
     const aiBtnEl = document.getElementById('ai-review-btn');
@@ -1233,7 +1370,13 @@ const App = (() => {
     };
     renderReview();
 
-    document.getElementById('q-search').oninput = (e) => { kw = e.target.value.trim().toLowerCase(); renderGrid(); };
+    // 搜索防抖：大题库逐键全量重排很卡，停 200ms 再过滤
+    let searchTimer = null;
+    document.getElementById('q-search').oninput = (e) => {
+      const v = e.target.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { kw = v.trim().toLowerCase(); renderGrid(); }, 200);
+    };
     filterEl.onclick = (e) => {
       const b = e.target.closest('button[data-v]'); if (!b) return;
       filterEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
@@ -2876,6 +3019,10 @@ const App = (() => {
         <label class="field"><span>模型名称</span>
           <input id="set-model" value="${escapeHtml(cfg.model)}" placeholder="deepseek-chat">
         </label>
+        <label class="field"><span>视觉模型（图片识别用，留空 = 跟随主模型）</span>
+          <input id="set-vmodel" value="${escapeHtml(cfg.visionModel || '')}" placeholder="如 glm-4v / qwen-vl-plus / gpt-4o-mini，需支持图片输入">
+        </label>
+        <div class="muted small">图片识别（导入图片 / 图片型 Word）走「视觉模型」：默认跟随主模型；若主模型不支持图片（如 deepseek-chat），请单独填写支持图片的模型名</div>
         <label class="field"><span>解析并发数（1-8，越大越快，过高可能被限流）</span>
           <input id="set-conc" type="number" min="1" max="8" value="${cfg.concurrency || 4}">
         </label>
@@ -2974,6 +3121,7 @@ const App = (() => {
       baseUrl: document.getElementById('set-url').value.trim(),
       apiKey: document.getElementById('set-key').value.trim(),
       model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
+      visionModel: (document.getElementById('set-vmodel')?.value || '').trim(),
       concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
       maxTokens: Math.max(256, parseInt(document.getElementById('set-mtok').value, 10) || 8192),
       priceIn: Math.max(0, parseFloat(document.getElementById('set-pin').value) || 0),

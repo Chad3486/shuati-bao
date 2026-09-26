@@ -5,6 +5,7 @@ const LLM = (() => {
     baseUrl: 'https://api.deepseek.com/v1',
     apiKey: '',
     model: 'deepseek-chat',
+    visionModel: '', // 视觉模型（图片识别用）：留空=跟随主模型；主模型不支持图片时必须单独指定（如 glm-4v / qwen-vl-plus / gpt-4o-mini）
     temperature: 0.1,
     concurrency: 4,
     maxTokens: 8192, // 单次请求输出上限（tok）：答长题/长解析可调大，受模型上限约束
@@ -74,12 +75,12 @@ const LLM = (() => {
   }
 
   /* ---- 单次 chat 调用 ---- */
-  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null } = {}) {
+  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null, modelOverride = null } = {}) {
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
     const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-    const payload = { model: cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
+    const payload = { model: modelOverride || cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
     if (!raw) {
       // 要求 JSON 输出（兼容不同实现；DeepSeek 要求提示词含 'json' 才能启用）
       payload.response_format = { type: 'json_object' };
@@ -748,6 +749,67 @@ const LLM = (() => {
     return out;
   }
 
+  /* ================= 图片视觉识别（v1.7 · 第三期） =================
+     OCR 走后图片型题库的新路：图片直接交给视觉模型转写成范式文本。
+     - 每张图独立一次请求：单张失败不拖垮整批（调用方可按图重试/跳过）
+     - 流式回显复用 chat() 的 onDelta；重试/限流冷却同样复用
+     - 模型用 cfg.visionModel（留空跟随主模型）；主模型无视觉能力时由设置页单独指定
+     - 成本：视觉模型按图片 token 计费，每张图约几百到一千输入 tok，显著低于识别错误人工返工的成本 */
+  const VISION_PROMPT = `你是专业的试卷转写员。把图片中的全部题目内容逐字转写为「范式文本」，格式要求：
+1. 章节标题行：# 第X章 …（图片里没有章节就省略）
+2. 小节标题行：## X.X …
+3. 题型标记 + 题号 + 题干：【单选】1. …（单选/多选/判断/填空；简答、名词解释、计算等统一按【填空】）
+4. 选择题每个选项一行：A. 选项内容，从 A 开始连续不缺字母
+5. 答案单独一行：答案：B（多选 答案：ABD；判断 答案：对 或 答案：错；图片里没有答案的题不要编造答案行）
+6. 解析单独一行：解析：……（图片里没有解析就省略）
+7. 多空填空用 ||| 分隔：答案：阳极|||阴极
+
+红线：
+- 只转写图片里实际存在的内容：逐字照抄，不改写、不缩写、不补充、不解答
+- 图片模糊看不清的字用 ▢ 占位，不要猜
+- 丢弃页码、页眉页脚、水印、装订线等噪声
+- 只输出范式文本本身：不要任何解释、前后缀说明或 markdown 代码块`;
+
+  /**
+   * 图片 → 范式文本（逐张识别后拼接）
+   * @param {Array<{name:string, dataUrl:string}>} images 已压缩好的图片（data:image/jpeg;base64,...）
+   * @param {Object} opts { onProgress(i,total,note), onRetry(attempt,coolSec), onDelta(i,total,acc) }
+   * @returns {Promise<string>} 所有图片识别文本，按顺序以空行拼接
+   */
+  async function visionCanon(images, opts = {}) {
+    const list = (images || []).filter(x => x && x.dataUrl);
+    if (!list.length) throw new Error('没有可识别的图片');
+    const cfg = await getConfig();
+    const vModel = (cfg.visionModel || '').trim() || cfg.model;
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const img = list[i];
+      if (opts.onProgress) opts.onProgress(i, list.length, `识别 ${img.name || `图片${i + 1}`}…`);
+      const messages = [
+        { role: 'system', content: VISION_PROMPT },
+        { role: 'user', content: [
+          { type: 'image_url', image_url: { url: img.dataUrl } },
+          { type: 'text', text: '把这张图片中的全部题目转写为范式文本。' }
+        ] }
+      ];
+      const raw = await chat(messages, {
+        raw: true,
+        modelOverride: vModel,
+        onRetry: opts.onRetry,
+        onDelta: opts.onDelta ? (acc) => opts.onDelta(i, list.length, acc) : null
+      });
+      const piece = String(raw || '').trim()
+        .replace(/^```(?:text|markdown|md)?\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+      if (piece) out.push(piece);
+      if (opts.onProgress) opts.onProgress(i + 1, list.length, `已完成 ${i + 1}/${list.length} 张`);
+    }
+    const joined = out.join('\n\n').trim();
+    if (!joined) throw new Error('视觉模型没有返回可用的文本，请检查「设置」中的视觉模型是否支持图片');
+    return joined;
+  }
+
   /* ================= 缺答案 AI 解题（只补空答案，绝不覆盖原卷答案） =================
      与「文件 → AI 转范式」配套：范式文本里的题若「答案：」为空，交给 AI 补出来。
      只对 !q.answer 的题调用 API（已答的一律不动，省钱也不覆盖原卷），
@@ -881,5 +943,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, solveMissing, getLastUsage, testConnection, chat };
+  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, visionCanon, solveMissing, getLastUsage, testConnection, chat };
 })();

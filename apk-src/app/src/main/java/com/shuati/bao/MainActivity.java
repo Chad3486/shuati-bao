@@ -79,7 +79,10 @@ public class MainActivity extends AppCompatActivity {
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         "application/msword",
                         "text/plain",
-                        "application/json"
+                        "application/json",
+                        "image/jpeg",
+                        "image/png",
+                        "image/webp"
                 });
                 try {
                     startActivityForResult(Intent.createChooser(i, "选择文件"), FILE_CHOOSE);
