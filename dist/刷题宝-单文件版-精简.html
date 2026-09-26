@@ -1581,7 +1581,7 @@ const LLM = (() => {
     let buf = '', acc = '', idleTimer = null;
     const resetIdle = () => {
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => ctl.abort('timeout'), 90000);
+      idleTimer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（90 秒没收到任何数据）'), { timeout: true })), 90000);
     };
     try {
       resetIdle();
@@ -1641,10 +1641,12 @@ const LLM = (() => {
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
         // 请求级超时：手机网络弱时 fetch 可能挂起几分钟。
-        // 非流式：90s 总时长强制断开；流式：交给 readStream 的空闲看门狗（连接挂起同样会被砍）
+        // 连不通看门狗对流式同样生效（v1.7.1 修复：此前流式在「等响应头」阶段无超时，
+        // 弱网下 fetch 挂起 = 永远卡住，重试逻辑走不到）；响应头到达后，
+        // 流式交给 readStream 的空闲看门狗（连接挂起同样会被砍）
         const ctl = new AbortController();
         let timer = null;
-        if (!streaming) timer = setTimeout(() => ctl.abort('timeout'), 90000);
+        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), streaming ? 60000 : 90000);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -2222,7 +2224,7 @@ const LLM = (() => {
      用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
      产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
      长文档按 空行/题号行/章节标题 就近切片，避免把一道题切成两半。 */
-  async function fileToCanon(text, onProgress, onRetry, onDelta) {
+  async function fileToCanon(text, onProgress, onRetry, onDelta, onPiece) {
     const src = String(text || '').replace(/\r\n?/g, '\n').trim();
     if (!src) throw new Error('文档里没有可转换的文字');
 
@@ -2279,7 +2281,7 @@ const LLM = (() => {
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')
         .trim();
-      if (piece) pieces.push(piece);
+      if (piece) { pieces.push(piece); if (onPiece) onPiece(i, chunks.length, piece); }
       if (onProgress) onProgress(i + 1, chunks.length, `片段 ${i + 1}/${chunks.length}`);
     }
     const out = pieces.join('\n\n').trim();
@@ -2311,7 +2313,7 @@ const LLM = (() => {
   /**
    * 图片 → 范式文本（逐张识别后拼接）
    * @param {Array<{name:string, dataUrl:string}>} images 已压缩好的图片（data:image/jpeg;base64,...）
-   * @param {Object} opts { onProgress(i,total,note), onRetry(attempt,coolSec), onDelta(i,total,acc) }
+   * @param {Object} opts { onProgress(i,total,note), onRetry(attempt,coolSec), onDelta(i,total,acc), onPiece(i,total,txt) }
    * @returns {Promise<string>} 所有图片识别文本，按顺序以空行拼接
    */
   async function visionCanon(images, opts = {}) {
@@ -2340,7 +2342,7 @@ const LLM = (() => {
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')
         .trim();
-      if (piece) out.push(piece);
+      if (piece) { out.push(piece); if (opts.onPiece) opts.onPiece(i, list.length, piece); }
       if (opts.onProgress) opts.onProgress(i + 1, list.length, `已完成 ${i + 1}/${list.length} 张`);
     }
     const joined = out.join('\n\n').trim();
@@ -3506,6 +3508,132 @@ const App = (() => {
     stop() { if (BG.on()) try { AndroidBridge.keepAliveStop(); } catch (e) {} }
   };
 
+  /* ---- 全局任务中心（v1.7.1）：AI 长任务的"仪表盘" ----
+     病根：进度只写在当前页局部 DOM 上，切个页就随视图销毁；流式只给"已生成 X 字"的字数。
+     做法：面板直接挂在 body（不在 #view 内），换页/锁屏回来都常驻可见；
+     进度条 + 耗时 + 实时流式输出（真实内容，非字数）一键展开；
+     通知栏（BG）由这里统一 start/update/stop，各任务不再各管一套。 ---- */
+  const TC = {
+    wrap: null, t0: 0, tick: null, title: '',
+    ensure() {
+      if (this.wrap && document.body.contains(this.wrap)) return;
+      const w = document.createElement('div');
+      w.id = 'tc-panel';
+      w.style.cssText = 'position:fixed;left:12px;right:12px;bottom:78px;z-index:97;display:none;pointer-events:none;';
+      w.innerHTML =
+        '<div style="pointer-events:auto;background:#202634;color:#e8eaf0;border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:13px;line-height:1.5;">' +
+          '<div style="display:flex;align-items:center;gap:8px;min-width:0;">' +
+            '<span data-tc-icon style="flex:none;">⏳</span>' +
+            '<b data-tc-title style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></b>' +
+            '<span data-tc-time style="flex:none;color:#8b93a7;font-variant-numeric:tabular-nums;">0:00</span>' +
+            '<button data-tc-toggle style="flex:none;border:0;border-radius:6px;padding:2px 8px;background:#313a4d;color:#cfd6e4;font-size:12px;">输出</button>' +
+          '</div>' +
+          '<div style="height:4px;background:rgba(255,255,255,.14);border-radius:2px;margin:8px 0 6px;overflow:hidden;">' +
+            '<div data-tc-bar style="height:100%;width:0;background:#4f8cff;transition:width .3s;"></div>' +
+          '</div>' +
+          '<div data-tc-note style="color:#aab2c5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:1.2em;"></div>' +
+          '<pre data-tc-out style="display:none;max-height:170px;overflow:auto;margin:8px 0 0;padding:8px;background:#161b26;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#a8e0a8;"></pre>' +
+        '</div>';
+      document.body.appendChild(w);
+      this.wrap = w;
+      w.querySelector('[data-tc-toggle]').onclick = () => {
+        const out = w.querySelector('[data-tc-out]');
+        out.style.display = out.style.display === 'none' ? 'block' : 'none';
+        if (out.style.display === 'block') out.scrollTop = out.scrollHeight;
+      };
+    },
+    q(sel) { return this.wrap ? this.wrap.querySelector(sel) : null; },
+    start(title) {
+      this.ensure();
+      this.title = title;
+      const q = s => this.q(s);
+      q('[data-tc-title]').textContent = title;
+      q('[data-tc-icon]').textContent = '⏳';
+      q('[data-tc-bar]').style.width = '0%';
+      q('[data-tc-note]').textContent = '准备中…';
+      q('[data-tc-out]').textContent = '';
+      q('[data-tc-time]').textContent = '0:00';
+      this.wrap.style.display = 'block';
+      clearInterval(this.tick);
+      this.t0 = Date.now();
+      this.tick = setInterval(() => {
+        const s = Math.round((Date.now() - this.t0) / 1000);
+        const el = this.q('[data-tc-time]');
+        if (el) el.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      }, 1000);
+      BG.start(title); // 通知栏同步：任务开始即拉前台服务
+    },
+    set(done, total, note) {
+      if (!this.wrap) return;
+      if (total) this.q('[data-tc-bar]').style.width = Math.min(100, Math.round(done / total * 100)) + '%';
+      if (note != null) this.q('[data-tc-note]').textContent = note;
+      BG.update(`${this.title} · ${done}/${total}${note ? ' · ' + note : ''}`);
+    },
+    note(text) { if (this.wrap && text != null) this.q('[data-tc-note]').textContent = text; },
+    /* 流式实时输出：显示真实内容（末尾 1500 字），用户上翻查看时不抢滚动条 */
+    delta(acc) {
+      if (!this.wrap) return;
+      const out = this.q('[data-tc-out]');
+      acc = acc || '';
+      const tail = acc.length > 1500 ? '…' + acc.slice(-1500) : acc;
+      const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+      out.textContent = tail || '（等待模型输出…）';
+      if (stick) out.scrollTop = out.scrollHeight;
+      this.note(`流式生成中 · 已 ${acc.length} 字`);
+    },
+    finish(ok, summary) {
+      if (!this.wrap) return;
+      clearInterval(this.tick);
+      this.q('[data-tc-icon]').textContent = ok ? '✓' : '⚠';
+      this.q('[data-tc-note]').textContent = summary || '';
+      this.q('[data-tc-bar]').style.width = '100%';
+      BG.stop(); // 通知栏撤了；面板保留 8 秒让人看清结果再自动收起
+      setTimeout(() => { if (this.wrap) this.wrap.style.display = 'none'; }, 8000);
+    }
+  };
+
+  /* ---- 逐批入库器（v1.7.1）：每片范式文本一到手就解析入库，不等整份转完 ----
+     「等了半天题库还是空的」的病根就是旧版全部转/识别完才统一入库，
+     中途网络一抖、解析一挂，全白等。现在第 1 片转完题库列表马上就有题；
+     片内解析不出的先攒着，收尾 flush() 时合并再试一次（跨片断题兜底）。 */
+  function pieceSaver(name, source) {
+    let bank = null, total = 0, noAns = 0, sections = [], loose = [];
+    const insert = async r => {
+      if (!bank) {
+        bank = { id: DB.uid(), name, createdAt: Date.now(), count: 0, source, sections: null };
+        await DB.bankAdd(bank);
+      }
+      r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
+      await DB.questionAddMany(r.questions);
+      total += r.questions.length;
+      noAns += r.questions.filter(q => !q.answer).length;
+      if (r.sections && r.sections.length) sections.push(...r.sections);
+      bank.count = total;
+      bank.sections = sections.length ? sections : null;
+      await DB.bankAdd(bank); // 覆盖写：题库列表的题数实时在涨
+    };
+    return {
+      add: async piece => {
+        if (!piece) return 0;
+        let r = null;
+        try { r = Canon.parse(piece); } catch (e) { r = null; }
+        if (!r || !r.questions.length) { loose.push(piece); return 0; }
+        await insert(r);
+        return r.questions.length;
+      },
+      /* 收尾：没解析出题的片合并起来最后再试一次；返回这轮补入的题数 */
+      flush: async () => {
+        if (!loose.length) return 0;
+        let r = null;
+        try { r = Canon.parse(loose.join('\n\n')); } catch (e) { r = null; }
+        loose = [];
+        if (r && r.questions.length) { await insert(r); return r.questions.length; }
+        return 0;
+      },
+      stats: () => ({ total, noAns })
+    };
+  }
+
   function render() {
     const { path, params } = parseHash();
     clearExamTimer();   // 离开答题页就停掉倒计时，避免计时器写已移除的 DOM
@@ -4024,19 +4152,21 @@ const App = (() => {
       aiConvBtn.disabled = true;
       aiProg.style.display = '';
       aiBar.style.width = '0%';
-      // 锁屏保活：转范式逐片调 API，长文档可能十几分钟
-      BG.start('AI 转范式进行中');
+      // v1.7.1：任务中心接管进度与通知栏——转范式逐片调 API，长文档可能十几分钟，换页/锁屏回来照样看得见
+      TC.start('AI 转范式');
       const liveEl = document.getElementById('canon-ai-live');
       liveEl.textContent = '';
       try {
         const text = await aiCanonFromFiles(files, {
-          onStatus: s => { aiConvStatus.textContent = s; },
-          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; BG.update(`AI 转范式：完成 ${Math.round(p * 100)}%`); },
-          // 流式：AI 生成内容实时回显（1~2 秒出首字，边生成边可见）
+          onStatus: s => { aiConvStatus.textContent = s; TC.note(s); },
+          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; TC.set(Math.round(p * 100), 100, `转换中 ${Math.round(p * 100)}%`); },
+          onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+          // 流式：AI 生成内容实时回显（1~2 秒出首字，页面内 + 任务中心双处可见）
           onDelta: acc => {
             liveEl.style.display = '';
             liveEl.textContent = acc.length > 600 ? '…' + acc.slice(-600) : acc;
             liveEl.scrollTop = liveEl.scrollHeight;
+            TC.delta(acc);
           }
         });
         ta.value = text;
@@ -4044,14 +4174,15 @@ const App = (() => {
         const r = runCheck();
         aiConvStatus.textContent = `✓ 已转成范式并填入下方文本框${r ? `：${r.stats.total} 题 · 有答案 ${r.stats.answered}` : ''}，核对无误后点「导入题库」`;
         toast('AI 转范式完成，请核对后导入');
+        TC.finish(true, `转换完成${r ? ` · ${r.stats.total} 题` : ''}`);
       } catch (e) {
         aiConvStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+        TC.finish(false, '中断：' + e.message.slice(0, 60));
       } finally {
         aiConvBtn.disabled = false;
         aiProg.style.display = 'none';
         const liveEl = document.getElementById('canon-ai-live');
         if (liveEl) liveEl.style.display = 'none';
-        BG.stop(); // 结束撤通知（成功/失败都走这里）
       }
     };
 
@@ -4270,65 +4401,66 @@ const App = (() => {
             continue;
           }
           setState('AI 兜底转换中…');
-          // 锁屏保活：兜底转换逐片调 API，可能耗时数分钟
-          BG.start(`AI 兜底转换：${f.name}`);
+          // v1.7.1：全局任务中心接管进度与通知栏（换页/锁屏回来自动可见）；逐批入库不等整份
+          const dImgs = docImgs.get(i) || [];
+          const textOnly = text.replace(/\[图片[^\]]*\]/g, '').trim();
+          const srcLabel = (dImgs.length && textOnly.length < dImgs.length * 15) ? 'AI 视觉识别' : 'AI 兜底';
+          const save = pieceSaver(f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40), f.name + `（${srcLabel}）`);
+          let gotTotal = 0;
+          const onPiece = async (pi, tot, txt) => {
+            const got = await save.add(txt);
+            gotTotal += got;
+            TC.set(pi, tot, got ? `已入库 ${gotTotal} 题` : '本片暂未解析出题，收尾合并再试');
+          };
+          TC.start(`${srcLabel} · ${f.name}`);
           try {
-            // v1.7：图片型 DOCX（文字只有几个 [图片] 标记）→ 直接视觉识别嵌入图
-            const dImgs = docImgs.get(i) || [];
-            const textOnly = text.replace(/\[图片[^\]]*\]/g, '').trim();
-            let canonText, srcLabel = 'AI 兜底';
-            if (dImgs.length && textOnly.length < dImgs.length * 15) {
-              srcLabel = 'AI 视觉识别';
+            if (srcLabel === 'AI 视觉识别') {
               setState('AI 视觉识别中…');
               const shrunk = [];
               for (const im of dImgs) {
                 shrunk.push({ name: im.name, dataUrl: await Extractor.shrinkImage(im.dataUrl) });
               }
-              canonText = await LLM.visionCanon(shrunk, {
+              await LLM.visionCanon(shrunk, {
                 onProgress: (done, total, note) => {
-                  statusEl.textContent = `视觉识别「${f.name}」：${note}`;
+                  setState(`AI 视觉识别中… ${done}/${total}`);
                   bar.style.width = Math.round(done / total * 95) + '%';
-                  BG.update(`视觉识别：${done}/${total} 张`);
+                  TC.set(done, total, `已入库 ${gotTotal} 题`);
                 },
-                onRetry: (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
-                onDelta: acc => { statusEl.textContent = `视觉识别中：已生成 ${acc.length} 字…`; }
+                onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+                onDelta: acc => { TC.delta(acc); },
+                onPiece
               });
             } else {
-              canonText = await LLM.fileToCanon(text,
+              await LLM.fileToCanon(text,
                 (done, total, note) => {
-                  statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
+                  setState(`AI 兜底转换中… 片段 ${done}/${total}`);
                   bar.style.width = Math.round(done / total * 95) + '%';
-                  BG.update(`AI 兜底：片段 ${done}/${total}`);
+                  TC.set(done, total, `已入库 ${gotTotal} 题`);
                 },
-                (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
-                acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
+                (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+                acc => { TC.delta(acc); },
+                onPiece);
             }
-            const r = Canon.parse(canonText);
-            if (!r.questions.length) {
+            gotTotal += await save.flush(); // 收尾：攒着的片合并再试一次
+            const st = save.stats();
+            if (!st.total) {
               setState('未发现题目');
               statusEl.textContent = '⚠ 本地与 AI 兜底都没解析出题目：建议在「粘贴文本导入」里人工核对原文';
+              TC.finish(false, '转换完成，但没解析出题目');
               continue;
             }
-            const bank = {
-              id: DB.uid(),
-              name: f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40),
-              createdAt: Date.now(),
-              count: r.questions.length,
-              source: f.name + `（${srcLabel}）`,
-              sections: r.sections && r.sections.length ? r.sections : null
-            };
-            r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
-            await DB.questionAddMany(r.questions);
-            await DB.bankAdd(bank);
-            const noAns = r.questions.filter(q => !q.answer).length;
-            setState(`✓ ${srcLabel} ${r.questions.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`);
-            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 ${srcLabel}导入 ${r.questions.length} 题`
-              + (noAns ? `（缺答案 ${noAns}，可稍后「补答案」）` : '');
-            toast(`${srcLabel}导入 ${r.questions.length} 题`);
+            setState(`✓ ${srcLabel} ${st.total} 题${st.noAns ? `（${st.noAns} 题缺答案）` : ''}`);
+            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 ${srcLabel}导入 ${st.total} 题`
+              + (st.noAns ? `（缺答案 ${st.noAns}，可稍后「补答案」）` : '');
+            toast(`${srcLabel}导入 ${st.total} 题`);
+            TC.finish(true, `已入库 ${st.total} 题${st.noAns ? ` · 缺答案 ${st.noAns}` : ''}`);
           } catch (e) {
             console.error(e);
-            setState('未发现题目');
-            statusEl.textContent = '⚠ AI 兜底失败：' + e.message.slice(0, 120) + '。可点下方「改用 AI 转范式导入」重试';
+            const st = save.stats();
+            setState(st.total ? `⚠ 中断（已入库 ${st.total} 题）` : '未发现题目');
+            statusEl.textContent = '⚠ AI 兜底失败：' + e.message.slice(0, 120)
+              + (st.total ? `。已入库的 ${st.total} 题不丢，可重新导入补齐` : '。可点下方「改用 AI 转范式导入」重试');
+            TC.finish(false, `中断：${e.message.slice(0, 60)}${st.total ? ` · 已入库 ${st.total} 题不丢` : ''}`);
           }
           continue;
         }
@@ -4357,15 +4489,22 @@ const App = (() => {
           } else {
             setState('AI 对位答案…');
             statusEl.textContent = 'AI 辅助录入：从答案文件原文智能对位中…';
+            TC.start('AI 辅助对位');
             try {
               const answerRaw = aFiles.map(x => x.text).join('\n');
               const r = await LLM.aiMatchAnswers(res.questions, answerRaw, res.sections,
                 (done, total, got, si, sc) => {
                   statusEl.textContent = `AI 辅助对位：${done}/${total} 批 · 已填 ${got} 个答案` + (sc > 1 ? `（答案原文分片 ${si}/${sc}）` : '');
+                  TC.set(done, total, `已填 ${got} 个答案`);
                 },
-                (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…'; });
+                (att, cool) => {
+                  statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后继续` : '网络波动，AI 重试中…';
+                  TC.note(statusEl.textContent);
+                });
               aiFilled = r.filled; aiExplained = r.explained;
+              TC.finish(true, `对位完成 · 已填 ${r.filled} 个答案`);
             } catch (e) {
+              TC.finish(false, 'AI 辅助失败（不影响本地结果）');
               toast('AI 辅助失败（不影响本地结果）：' + e.message.slice(0, 60));
             }
           }
@@ -4418,23 +4557,31 @@ const App = (() => {
         }
         statusEl.textContent = '⚠ 图片识别需要 AI 视觉模型：先到「设置」配置 API Key 与「视觉模型」，再重新导入';
       } else {
-        BG.start(`AI 视觉识别 · 共 ${imgFiles.length} 张`);
-        let okN = 0, failN = 0;
-        const textsOut = [];
+        // v1.7.1：任务中心接管进度/通知栏；逐张识别逐张入库，不等全部识别完
+        const save = pieceSaver(
+          imgFiles[0].f.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 40) + (imgFiles.length > 1 ? ` 等${imgFiles.length}张` : ''),
+          `图片视觉识别（${imgFiles.length} 张）`);
+        let okN = 0, failN = 0, gotTotal = 0;
+        TC.start(`AI 视觉识别 · 共 ${imgFiles.length} 张`);
         for (let k = 0; k < imgFiles.length; k++) {
           const { f, i } = imgFiles[k];
           const stateEl = rows.get(i).querySelector('.file-state');
+          TC.set(k, imgFiles.length, `识别「${f.name}」· 已入库 ${gotTotal} 题`);
           try {
-            const text = await LLM.visionCanon([{ name: f.name, dataUrl: imgStore.get(i) }], {
+            await LLM.visionCanon([{ name: f.name, dataUrl: imgStore.get(i) }], {
               onProgress: (done, total, note) => {
-                statusEl.textContent = `视觉识别「${f.name}」：${note}`;
+                stateEl.textContent = note || '识别中…';
                 bar.style.width = Math.round((k + done / total) / imgFiles.length * 95) + '%';
-                BG.update(`视觉识别：${k + 1}/${imgFiles.length} 张`);
+                TC.set(k + done / total, imgFiles.length, `识别「${f.name}」· 已入库 ${gotTotal} 题`);
               },
-              onRetry: (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
-              onDelta: acc => { statusEl.textContent = `视觉识别中：已生成 ${acc.length} 字…`; }
+              onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+              onDelta: acc => { TC.delta(acc); },
+              onPiece: async (pi, tot, txt) => {
+                const got = await save.add(txt);
+                gotTotal += got;
+                if (got) TC.note(`「${f.name}」已入库 ${got} 题 · 累计 ${gotTotal}`);
+              }
             });
-            textsOut.push(text);
             okN++;
             stateEl.textContent = '✓ 已识别';
           } catch (e) {
@@ -4442,36 +4589,19 @@ const App = (() => {
             failN++;
             stateEl.textContent = '⚠ 识别失败';
             statusEl.textContent = `⚠ ${f.name} 识别失败：${e.message.slice(0, 100)}${failN < imgFiles.length ? '（继续识别其余图片）' : ''}`;
+            TC.note(`「${f.name}」识别失败，继续下一张`);
           }
         }
-        BG.stop(); // 识别结束撤保活通知（后面本地解析无需唤醒锁）
-        if (textsOut.length) {
-          bar.style.width = '96%';
-          statusEl.textContent = '解析识别文本中…';
-          try {
-            const r = Canon.parse(textsOut.join('\n\n'));
-            if (!r.questions.length) {
-              statusEl.textContent = '⚠ 识别出了文本但没解析出题目：可到「粘贴文本导入」把识别文本人工核对后导入';
-            } else {
-              const bank = {
-                id: DB.uid(),
-                name: imgFiles[0].f.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 40) + (imgFiles.length > 1 ? ` 等${imgFiles.length}张` : ''),
-                createdAt: Date.now(),
-                count: r.questions.length,
-                source: `图片视觉识别（${okN} 张）`,
-                sections: r.sections && r.sections.length ? r.sections : null
-              };
-              r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
-              await DB.questionAddMany(r.questions);
-              await DB.bankAdd(bank);
-              const noAns = r.questions.filter(q => !q.answer).length;
-              statusEl.textContent = `✓ 视觉识别导入 ${r.questions.length} 题（图片成功 ${okN} 张${failN ? `，失败 ${failN} 张` : ''}）`
-                + (noAns ? `，缺答案 ${noAns} 题可稍后「补答案」或 AI 解答` : '');
-              toast(`视觉识别导入 ${r.questions.length} 题`);
-            }
-          } catch (e) {
-            statusEl.textContent = '⚠ 识别文本解析失败：' + e.message.slice(0, 100);
-          }
+        gotTotal += await save.flush(); // 收尾：没解析出题的图合并再试一次
+        const st = save.stats();
+        if (!st.total) {
+          statusEl.textContent = '⚠ 识别出了文本但没解析出题目：可到「粘贴文本导入」把识别文本人工核对后导入';
+          TC.finish(false, '识别完成，但没解析出题目');
+        } else {
+          statusEl.textContent = `✓ 视觉识别导入 ${st.total} 题（图片成功 ${okN} 张${failN ? `，失败 ${failN} 张` : ''}）`
+            + (st.noAns ? `，缺答案 ${st.noAns} 题可稍后「补答案」或 AI 解答` : '');
+          toast(`视觉识别导入 ${st.total} 题`);
+          TC.finish(failN === 0, `已入库 ${st.total} 题 · 图片成功 ${okN}/${imgFiles.length} 张`);
         }
       }
     }
@@ -4487,20 +4617,22 @@ const App = (() => {
     if (toCanonBtn) toCanonBtn.onclick = async () => {
       if (!await ensureApiKey()) return;
       toCanonBtn.disabled = true;
-      BG.start('AI 转范式进行中');
+      TC.start('AI 转范式');
       try {
         const text = await aiCanonFromFiles(lastPickedFiles, {
-          onStatus: s => { statusEl.textContent = s; },
-          onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; BG.update(`AI 转范式：完成 ${Math.round(p * 100)}%`); }
+          onStatus: s => { statusEl.textContent = s; TC.note(s); },
+          onProgress: p => { bar.style.width = Math.round(p * 100) + '%'; TC.set(Math.round(p * 100), 100, `转换中 ${Math.round(p * 100)}%`); },
+          onRetry: (att, cool) => { TC.note(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'); },
+          onDelta: acc => { TC.delta(acc); }
         });
         await DB.metaSet('canonDraft', text);
         toast('已转成范式，去核对后导入');
+        TC.finish(true, '转换完成，去核对后导入');
         navigate('#/canon');
       } catch (e) {
         statusEl.textContent = '⚠ ' + e.message.slice(0, 140);
+        TC.finish(false, '中断：' + e.message.slice(0, 60));
         toCanonBtn.disabled = false;
-      } finally {
-        BG.stop();
       }
     };
   }
@@ -5127,8 +5259,8 @@ const App = (() => {
         aiProg.style.display = '';
         aiBar.style.width = '0%';
         aiStatus.textContent = `AI 正在解答 ${todo.length} 题（已有答案的不动）…`;
-        // 锁屏保活：批量解题可能几十分钟，前台服务保证不被冻结（每批进度同步到通知栏）
-        BG.start(`AI 解答中 · 共 ${todo.length} 题`);
+        // v1.7.1：任务中心接管进度与通知栏——换页/锁屏回来照样看得见，还带实时输出
+        TC.start(`AI 解答 · ${todo.length} 题`);
         const savedIds = new Set();
         try {
           const ret = await LLM.solveMissing(noAns,
@@ -5142,11 +5274,14 @@ const App = (() => {
               if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
                 aiStatus.textContent += ` · 实耗 ${(usage.prompt_tokens || 0) + (usage.completion_tokens || 0)} tok ≈ ¥${(cost != null ? cost : LLM.costOf(usage, cfg)).toFixed(3)}`;
               }
-              BG.update(`AI 解题：已解出 ${solved} 题 · 进度 ${done}/${total} 批`);
+              TC.set(done, total, `已解出 ${solved} 题${note ? ' · ' + note : ''}`);
               // 每批解出的立即落库，断网/退出不丢
               for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
             },
-            (att, cool) => { aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'; },
+            (att, cool) => {
+              aiStatus.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…';
+              TC.note(aiStatus.textContent);
+            },
             { shouldStop: () => stop, signal: aborter.signal, isDone: q => !!q.answer, markAI: true, concurrency: conc, capYuan: cfg.capYuan });
 
           for (const q of noAns) if (q.answer && !savedIds.has(q.id)) { savedIds.add(q.id); saveQ(q); }
@@ -5163,15 +5298,19 @@ const App = (() => {
             aiStatus.textContent = '⚠ 这次没解出任何答案（网络或模型返回异常），可再点一次重试';
             toast('未解出任何答案');
           }
+          const fin = ret.paused
+            ? `已暂停 · 已解出 ${ret.solved} 题`
+            : `完成 · 解出 ${ret.solved} 题${left ? ` · 剩 ${left} 题未解出` : ''}`;
+          TC.finish(!ret.paused && ret.solved > 0, fin);
         } catch (e) {
           aiStatus.textContent = '⚠ ' + e.message.slice(0, 140);
+          TC.finish(false, '中断：' + e.message.slice(0, 60) + '（已解出的已存库）');
           toast('解答中断（已解出的已存库，可重试）');
         } finally {
           aborter = null;
           aiBtn.disabled = false;
           aiCtrl.style.display = 'none';
           aiProg.style.display = 'none';
-          BG.stop(); // 任务结束（完成/暂停/中断）都撤通知、释放唤醒锁
         }
       };
     }

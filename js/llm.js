@@ -43,7 +43,7 @@ const LLM = (() => {
     let buf = '', acc = '', idleTimer = null;
     const resetIdle = () => {
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => ctl.abort('timeout'), 90000);
+      idleTimer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（90 秒没收到任何数据）'), { timeout: true })), 90000);
     };
     try {
       resetIdle();
@@ -103,10 +103,12 @@ const LLM = (() => {
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
         // 请求级超时：手机网络弱时 fetch 可能挂起几分钟。
-        // 非流式：90s 总时长强制断开；流式：交给 readStream 的空闲看门狗（连接挂起同样会被砍）
+        // 连不通看门狗对流式同样生效（v1.7.1 修复：此前流式在「等响应头」阶段无超时，
+        // 弱网下 fetch 挂起 = 永远卡住，重试逻辑走不到）；响应头到达后，
+        // 流式交给 readStream 的空闲看门狗（连接挂起同样会被砍）
         const ctl = new AbortController();
         let timer = null;
-        if (!streaming) timer = setTimeout(() => ctl.abort('timeout'), 90000);
+        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), streaming ? 60000 : 90000);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -684,7 +686,7 @@ const LLM = (() => {
      用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
      产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
      长文档按 空行/题号行/章节标题 就近切片，避免把一道题切成两半。 */
-  async function fileToCanon(text, onProgress, onRetry, onDelta) {
+  async function fileToCanon(text, onProgress, onRetry, onDelta, onPiece) {
     const src = String(text || '').replace(/\r\n?/g, '\n').trim();
     if (!src) throw new Error('文档里没有可转换的文字');
 
@@ -741,7 +743,7 @@ const LLM = (() => {
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')
         .trim();
-      if (piece) pieces.push(piece);
+      if (piece) { pieces.push(piece); if (onPiece) onPiece(i, chunks.length, piece); }
       if (onProgress) onProgress(i + 1, chunks.length, `片段 ${i + 1}/${chunks.length}`);
     }
     const out = pieces.join('\n\n').trim();
@@ -773,7 +775,7 @@ const LLM = (() => {
   /**
    * 图片 → 范式文本（逐张识别后拼接）
    * @param {Array<{name:string, dataUrl:string}>} images 已压缩好的图片（data:image/jpeg;base64,...）
-   * @param {Object} opts { onProgress(i,total,note), onRetry(attempt,coolSec), onDelta(i,total,acc) }
+   * @param {Object} opts { onProgress(i,total,note), onRetry(attempt,coolSec), onDelta(i,total,acc), onPiece(i,total,txt) }
    * @returns {Promise<string>} 所有图片识别文本，按顺序以空行拼接
    */
   async function visionCanon(images, opts = {}) {
@@ -802,7 +804,7 @@ const LLM = (() => {
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')
         .trim();
-      if (piece) out.push(piece);
+      if (piece) { out.push(piece); if (opts.onPiece) opts.onPiece(i, list.length, piece); }
       if (opts.onProgress) opts.onProgress(i + 1, list.length, `已完成 ${i + 1}/${list.length} 张`);
     }
     const joined = out.join('\n\n').trim();
