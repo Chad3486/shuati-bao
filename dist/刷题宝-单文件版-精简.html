@@ -1696,8 +1696,10 @@ const LLM = (() => {
         }
         const body = JSON.stringify(payload);
         const ctl = new AbortController();
+        // 解题场景用较短超时（30s），其他场景用原超时
+        const timeout = opts._solveMode ? 30000 : (useStream ? 60000 : 90000);
         let timer = null;
-        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), useStream ? 60000 : 90000);
+        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), timeout);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -2665,13 +2667,16 @@ const LLM = (() => {
             paused = true; stopReason = capHit ? 'cap' : 'paused'; break;
           }
           const batch = batches[idx++];
+          const batchIdx = idx; // 记录当前批次号
           const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: q.stem, options: q.options || undefined }));
           let ok = true, failNote = '', solvedHere = 0;
+          console.log(`[解题] 批次 ${batchIdx}/${batches.length} 开始，${batch.length} 题`);
           try {
             const raw = await chat([
               { role: 'system', content: PROMPT },
               { role: 'user', content: JSON.stringify(body) }
-            ], { onRetry, signal: opts.signal });
+            ], { onRetry, signal: opts.signal, _solveMode: true });
+            console.log(`[解题] 批次 ${batchIdx} API 返回 ${raw ? raw.length : 0} 字`);
             const u = getLastUsage();
             if (u) {
               usage.prompt_tokens += u.prompt_tokens || 0;
@@ -2761,6 +2766,9 @@ const LLM = (() => {
               } else {
                 failNote = `校验失败: 返回 ${pairs.length} 个答案，但 0 个通过校验`;
               }
+              console.log(`[解题] 批次 ${batchIdx} ${failNote}`);
+            } else {
+              console.log(`[解题] 批次 ${batchIdx} 成功解出 ${solvedHere} 题`);
             }
           } catch (e) {
             // 暂停/外部中断：当前批标成可续跑（不进失败队列），立即收摊
@@ -2770,6 +2778,7 @@ const LLM = (() => {
             }
             ok = false;
             failNote = '请求错误：' + String(e.message || '').slice(0, 60);
+            console.log(`[解题] 批次 ${batchIdx} 异常: ${e.message}`);
           }
           if (!ok) failed.push(batch);
           done++;
@@ -5420,6 +5429,7 @@ const App = (() => {
         </div>
         <div class="progress" id="ans-ai-prog" style="display:none"><div class="progress-bar" id="ans-ai-bar"></div></div>
         <div class="muted small" id="ans-ai-status"></div>
+        <div class="muted small" id="solve-timer" style="margin-top:4px"></div>
       </div>` : '<div class="card"><div class="muted small">本库所有题目都已有答案，无需补答案。</div></div>'}`;
 
     const fileStatus = document.getElementById('ans-file-status');
@@ -5555,6 +5565,13 @@ const App = (() => {
         aiStatus.textContent = `AI 正在解答 ${todo.length} 题（已有答案的不动）…`;
         // v1.7.1：任务中心接管进度与通知栏——换页/锁屏回来照样看得见，还带实时输出
         TC.start(`AI 解答 · ${todo.length} 题`);
+        // 实时计时器：让用户看到等待时间
+        const solveTimer = setInterval(() => {
+          const elapsed = Math.round((Date.now() - t0) / 1000);
+          const timerEl = document.getElementById('solve-timer');
+          if (timerEl) timerEl.textContent = `已等待 ${elapsed}s`;
+        }, 1000);
+        const t0 = Date.now();
         const savedIds = new Set();
         try {
           const ret = await LLM.solveMissing(noAns,
@@ -5610,6 +5627,7 @@ const App = (() => {
           toast('解答中断（已解出的已存库，可重试）');
         } finally {
           aborter = null;
+          clearInterval(solveTimer); // 清除计时器
           aiBtn.disabled = false;
           aiCtrl.style.display = 'none';
           aiProg.style.display = 'none';

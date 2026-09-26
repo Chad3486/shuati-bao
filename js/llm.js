@@ -115,8 +115,10 @@ const LLM = (() => {
         }
         const body = JSON.stringify(payload);
         const ctl = new AbortController();
+        // 解题场景用较短超时（30s），其他场景用原超时
+        const timeout = opts._solveMode ? 30000 : (useStream ? 60000 : 90000);
         let timer = null;
-        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), useStream ? 60000 : 90000);
+        timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), timeout);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -1084,13 +1086,16 @@ const LLM = (() => {
             paused = true; stopReason = capHit ? 'cap' : 'paused'; break;
           }
           const batch = batches[idx++];
+          const batchIdx = idx; // 记录当前批次号
           const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: q.stem, options: q.options || undefined }));
           let ok = true, failNote = '', solvedHere = 0;
+          console.log(`[解题] 批次 ${batchIdx}/${batches.length} 开始，${batch.length} 题`);
           try {
             const raw = await chat([
               { role: 'system', content: PROMPT },
               { role: 'user', content: JSON.stringify(body) }
-            ], { onRetry, signal: opts.signal });
+            ], { onRetry, signal: opts.signal, _solveMode: true });
+            console.log(`[解题] 批次 ${batchIdx} API 返回 ${raw ? raw.length : 0} 字`);
             const u = getLastUsage();
             if (u) {
               usage.prompt_tokens += u.prompt_tokens || 0;
@@ -1180,6 +1185,9 @@ const LLM = (() => {
               } else {
                 failNote = `校验失败: 返回 ${pairs.length} 个答案，但 0 个通过校验`;
               }
+              console.log(`[解题] 批次 ${batchIdx} ${failNote}`);
+            } else {
+              console.log(`[解题] 批次 ${batchIdx} 成功解出 ${solvedHere} 题`);
             }
           } catch (e) {
             // 暂停/外部中断：当前批标成可续跑（不进失败队列），立即收摊
@@ -1189,6 +1197,7 @@ const LLM = (() => {
             }
             ok = false;
             failNote = '请求错误：' + String(e.message || '').slice(0, 60);
+            console.log(`[解题] 批次 ${batchIdx} 异常: ${e.message}`);
           }
           if (!ok) failed.push(batch);
           done++;

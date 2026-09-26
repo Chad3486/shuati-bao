@@ -136,6 +136,12 @@ cp "dist/刷题宝-单文件版.html" apk-src/app/src/main/assets/app.html
 
 ## 更新日志
 
+### v1.8.2
+- **解题超时优化**：解题 API 超时从 90s 缩短到 30s，失败更快重试
+- **实时计时器**：解题时显示等待时间，用户能看到进度
+- **详细日志**：控制台输出每批次的开始/成功/失败信息，便于调试
+- **版本号**：APK `versionName` 升到 `1.8.2`（`versionCode` 33）
+
 ### v1.8.1
 - **修复 AI 解题兼容性**：移除对不支持 `response_format` 参数的 API（如小米 MiMo）的强制要求，现在仅对 DeepSeek/OpenAI 域名启用 JSON 格式约束，其他 API 通过 Prompt 约束输出格式
 - **优化解题 Prompt**：更明确的 JSON 格式要求，强调不要输出 markdown 代码块

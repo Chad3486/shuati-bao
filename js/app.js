@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.2'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -1650,6 +1650,7 @@ const App = (() => {
         </div>
         <div class="progress" id="ans-ai-prog" style="display:none"><div class="progress-bar" id="ans-ai-bar"></div></div>
         <div class="muted small" id="ans-ai-status"></div>
+        <div class="muted small" id="solve-timer" style="margin-top:4px"></div>
       </div>` : '<div class="card"><div class="muted small">本库所有题目都已有答案，无需补答案。</div></div>'}`;
 
     const fileStatus = document.getElementById('ans-file-status');
@@ -1785,6 +1786,13 @@ const App = (() => {
         aiStatus.textContent = `AI 正在解答 ${todo.length} 题（已有答案的不动）…`;
         // v1.7.1：任务中心接管进度与通知栏——换页/锁屏回来照样看得见，还带实时输出
         TC.start(`AI 解答 · ${todo.length} 题`);
+        // 实时计时器：让用户看到等待时间
+        const solveTimer = setInterval(() => {
+          const elapsed = Math.round((Date.now() - t0) / 1000);
+          const timerEl = document.getElementById('solve-timer');
+          if (timerEl) timerEl.textContent = `已等待 ${elapsed}s`;
+        }, 1000);
+        const t0 = Date.now();
         const savedIds = new Set();
         try {
           const ret = await LLM.solveMissing(noAns,
@@ -1840,6 +1848,7 @@ const App = (() => {
           toast('解答中断（已解出的已存库，可重试）');
         } finally {
           aborter = null;
+          clearInterval(solveTimer); // 清除计时器
           aiBtn.disabled = false;
           aiCtrl.style.display = 'none';
           aiProg.style.display = 'none';
