@@ -1823,10 +1823,12 @@ const App = (() => {
             render();
           } else {
             // v1.8：0 解出时把最后一次模型返回亮出来——一眼看出是网络问题还是格式没对上
-            aiStatus.textContent = '⚠ 这次没解出任何答案'
-              + (ret.lastFailNote ? `（最后一批返回: ${ret.lastFailNote}）` : '（网络或模型返回异常）')
-              + '，可再点一次重试';
+            const failReason = ret.lastFailNote || '未知原因';
+            aiStatus.innerHTML = '⚠ 这次没解出任何答案<br>'
+              + `<span style="font-size:12px;color:#aab2c5">原因：${escapeHtml(failReason)}</span><br>`
+              + '<span style="font-size:12px">可再点一次重试，或检查 API 配置</span>';
             toast('未解出任何答案');
+            console.log('[解题失败] 最后返回:', ret.lastFailNote);
           }
           const fin = ret.paused
             ? `已暂停 · 已解出 ${ret.solved} 题`

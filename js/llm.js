@@ -104,7 +104,11 @@ const LLM = (() => {
         // 弱网下 fetch 挂起 = 永远卡住，重试逻辑走不到）；响应头到达后，
         // 流式交给 readStream 的空闲看门狗（连接挂起同样会被砍）
         const payload = { model: modelOverride || cfg.model, messages, temperature: cfg.temperature, max_tokens: Math.max(256, parseInt(cfg.maxTokens, 10) || 8192) };
-        if (!raw) payload.response_format = { type: 'json_object' }; // 要求 JSON 输出（DeepSeek 要求提示词含 'json'）
+        // response_format 仅对支持的 API 生效（DeepSeek/GPT），小米 MiMo 等不支持的 API 跳过
+        // 通过 Prompt 约束输出格式，不依赖此参数
+        if (!raw && cfg.baseUrl && /deepseek|openai|api\.openai/i.test(cfg.baseUrl)) {
+          payload.response_format = { type: 'json_object' };
+        }
         if (useStream) {
           payload.stream = true;
           payload.stream_options = { include_usage: true }; // 末端 chunk 附带 usage，保住费用统计
@@ -1034,13 +1038,19 @@ const LLM = (() => {
     const cfg = await getConfig();
     const concurrency = Math.max(1, Math.min(4, parseInt(opts.concurrency || cfg.concurrency, 10) || 4));
 
-    const PROMPT = `你是答题专家。给下列题目补上正确答案，严格按json输出（不要markdown、不要任何解释文字）：
+    const PROMPT = `你是答题专家。给下列题目补上正确答案。
+
+请严格按照以下 JSON 格式输出，不要输出任何其他文字：
 {"answers":[{"idx":0,"answer":"C"}]}
+
+规则：
 - idx 是输入里每题的序号（从0开始）
-- 选择题 answer 为字母串，如 "C" / "ACD"，必须是题目给定选项里的字母
+- 选择题 answer 为选项字母，如 "C" 或 "ACD"，必须是题目给定选项里的字母
 - 判断题 answer 为 "对" 或 "错"
 - 填空题 answer 为答案文本，多个空用 ||| 分隔
-只给答案，不要写解析。`;
+- 只给答案，不要写解析
+- 不确定的题不要猜，宁可不答
+- 必须输出有效的 JSON，不要 markdown 代码块`;
 
     let solved = 0, round = 0, lastFailNote = '';
     const usage = { prompt_tokens: 0, completion_tokens: 0 };
@@ -1164,7 +1174,12 @@ const LLM = (() => {
             // 返回没解析出任何答案对、或一题都没解出 → 标失败进重试队列（避免静默"什么都不出"）
             if (!pairs || solvedHere === 0) {
               ok = false;
-              failNote = (raw || '(空)').replace(/\s+/g, ' ').slice(0, 80);
+              // 显示详细原因：是解析失败还是校验失败
+              if (!pairs) {
+                failNote = '解析失败: ' + (raw || '(空)').replace(/\s+/g, ' ').slice(0, 60);
+              } else {
+                failNote = `校验失败: 返回 ${pairs.length} 个答案，但 0 个通过校验`;
+              }
             }
           } catch (e) {
             // 暂停/外部中断：当前批标成可续跑（不进失败队列），立即收摊
