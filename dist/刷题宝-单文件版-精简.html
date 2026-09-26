@@ -599,231 +599,6 @@ body {
     <nav id="tabbar"></nav>
   </div>
   
-  
-  <script>
-/* ========== 离线 OCR（Tesseract.js 封装：优先本地资源，兜底 CDN） ========== */
-const OCR = (() => {
-  let workerPromise = null;
-  let logSink = null;
-
-  const LOCAL_BASES = ['libs/tesseract', 'tesseract'];
-  const CDN_WORKER = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js';
-  const CDN_CORE = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1';
-  const CDN_LANG = 'https://tessdata.projectnaptha.com/4.0.0_fast';
-  const CDN_LANG_BEST = 'https://tessdata.projectnaptha.com/4.0.0_best';
-  const LANG_CDN = { chi_sim: CDN_LANG_BEST, eng: CDN_LANG };
-  const PRIMARY_LANG = 'chi_sim';
-  const EXTRA_LANGS = ['eng'];
-
-  const offlineError = () => new Error(
-    'OCR 未离线打包：本地 Tesseract 资源缺失，在线加载也失败。请下载完整版（内置离线 OCR），或联网后重试'
-  );
-
-  function withTimeout(promise, ms, label) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(label + ' 超时')), ms);
-      promise.then(
-        v => { clearTimeout(timer); resolve(v); },
-        e => { clearTimeout(timer); reject(e); }
-      );
-    });
-  }
-
-  async function fetchPart(url, as) {
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res[as]();
-  }
-
-  async function tryFetch(url, as) {
-    try { return await fetchPart(url, as); } catch (e) { return null; }
-  }
-
-  const logger = m => { if (logSink) logSink(m); };
-
-  async function loadLangBuf(code, base) {
-    for (const b of [base].concat(LOCAL_BASES.filter(x => x !== base))) {
-      const buf = await tryFetch(b + '/langs/' + code + '.traineddata.gz', 'arrayBuffer');
-      if (buf && buf.byteLength > 1024) return buf;
-    }
-    const buf = await tryFetch((LANG_CDN[code] || CDN_LANG) + '/' + code + '.traineddata.gz', 'arrayBuffer');
-    return buf && buf.byteLength > 1024 ? buf : null;
-  }
-
-  function langBlobURLs(langMap) {
-    const map = {};
-    for (const code of Object.keys(langMap)) {
-      map[code + '.traineddata.gz'] = URL.createObjectURL(new Blob([langMap[code]], { type: 'application/gzip' }));
-    }
-    return map;
-  }
-
-  async function createOfflineWorker(base) {
-    const [wTxt, coreTxt] = await Promise.all([
-      fetchPart(base + '/worker.min.js', 'text'),
-      fetchPart(base + '/tesseract-core.wasm.js', 'text')
-    ]);
-    const langMap = {};
-    const primary = await loadLangBuf(PRIMARY_LANG, base);
-    if (!primary) throw new Error(PRIMARY_LANG + ' 语言包缺失');
-    langMap[PRIMARY_LANG] = primary;
-    for (const code of EXTRA_LANGS) {
-      const buf = await loadLangBuf(code, base);
-      if (buf) langMap[code] = buf;
-    }
-    const codes = Object.keys(langMap);
-    const map = langBlobURLs(langMap);
-    const shim = 'self.importScripts=function(){};\n' +
-      'self.fetch=(function(f){var M=' + JSON.stringify(map) + ';return function(u){' +
-      'var s=String(u||""),n=s.slice(s.lastIndexOf("/")+1);' +
-      'if(s.indexOf("traineddata")>=0){return f(M[n]||M[Object.keys(M)[0]]);}' +
-      'return f.apply(self,arguments);};})(self.fetch.bind(self));\n';
-    const workerURL = URL.createObjectURL(new Blob([shim, coreTxt, '\n', wTxt], { type: 'text/javascript' }));
-    const w = await Tesseract.createWorker(codes.join('+'), 1, {
-      workerPath: workerURL,
-      workerBlobURL: false,
-      corePath: 'offline-core',
-      langPath: 'offline-langs',
-      gzip: true,
-      cacheMethod: 'none',
-      logger
-    });
-    await w.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
-    return w;
-  }
-
-  function ensure() {
-    if (!window.Tesseract) {
-      return Promise.reject(new Error('当前为精简版（未内置 OCR 引擎），请下载完整版后再导入图片题库'));
-    }
-    if (!workerPromise) {
-      workerPromise = (async () => {
-        for (const base of LOCAL_BASES) {
-          try {
-            return await withTimeout(createOfflineWorker(base), 120000, '离线 OCR 加载');
-          } catch (e) { }
-        }
-        try {
-          const w = await withTimeout(Tesseract.createWorker(PRIMARY_LANG + '+' + EXTRA_LANGS.join('+'), 1, {
-            workerPath: CDN_WORKER,
-            corePath: CDN_CORE,
-            langPath: CDN_LANG,
-            gzip: true,
-            logger
-          }), 120000, '在线 OCR 加载');
-          await w.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
-          return w;
-        } catch (e) {
-          workerPromise = null;
-          throw offlineError();
-        }
-      })();
-    }
-    return workerPromise;
-  }
-
-  /* ---- 识别前预处理：灰度 + 留白边（消融实测：插值放大/对比度拉伸会破坏字形，勿加） ---- */
-  async function preprocess(blob) {
-    if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return blob;
-    try {
-      const bmp = await createImageBitmap(blob);
-      const srcW = bmp.width, srcH = bmp.height;
-      if (!srcW || !srcH) return blob;
-      const pad = 24;
-      const cv = document.createElement('canvas');
-      cv.width = srcW + pad * 2; cv.height = srcH + pad * 2;
-      const ctx = cv.getContext('2d', { willReadFrequently: true });
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(bmp, pad, pad, srcW, srcH);
-      if (bmp.close) bmp.close();
-      const img = ctx.getImageData(0, 0, cv.width, cv.height);
-      const d = img.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114 + 500) / 1000 | 0;
-        d[i] = d[i + 1] = d[i + 2] = g;
-      }
-      ctx.putImageData(img, 0, 0);
-      const out = await new Promise(res => cv.toBlob(res, 'image/png'));
-      return out || blob;
-    } catch (e) {
-      return blob;
-    }
-  }
-
-  const MAX_DIM = 1600;
-  const SKIP_INK = 0.004;
-  const SKIP_STD = 6;
-  /* 低质阈值按 115 张真实截图实测标定（std 分布 12~38，p10≈14.2）：
-     只标最糊的尾部；清晰扫描件 std 多在 40+，不会误报 */
-  const LOWQ_STD = 15;
-
-  /* ---- 一次扫描：降采样 + 灰度 + 留白边 + 墨水占比/方差一次算完 ----
-     返回 { skip, quality, lowQuality, blob }：skip=纯装饰/纯色图跳过；lowQuality=低质（糊/暗/淡）建议重试或人工核对 ---- */
-  async function inspect(blob) {
-    if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') {
-      return { skip: false, quality: 999, lowQuality: false, blob };
-    }
-    try {
-      const bmp = await createImageBitmap(blob);
-      const w = bmp.width, h = bmp.height;
-      if (!w || !h) return { skip: false, quality: 999, lowQuality: false, blob };
-      const big = Math.max(w, h) > MAX_DIM;
-      const sw = big ? Math.round(w * MAX_DIM / Math.max(w, h)) : w;
-      const sh = big ? Math.round(h * MAX_DIM / Math.max(w, h)) : h;
-      const pad = 24;
-      const cv = document.createElement('canvas');
-      cv.width = sw + pad * 2;
-      cv.height = sh + pad * 2;
-      const ctx = cv.getContext('2d', { willReadFrequently: true });
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(bmp, pad, pad, sw, sh);
-      if (bmp.close) bmp.close();
-      const img = ctx.getImageData(0, 0, cv.width, cv.height);
-      const d = img.data;
-      let ink = 0, sum = 0, sumSq = 0;
-      const n = cv.width * cv.height;
-      for (let i = 0; i < d.length; i += 4) {
-        const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114 + 500) / 1000 | 0;
-        d[i] = d[i + 1] = d[i + 2] = g;
-        if (g < 240) ink++;
-        sum += g;
-        sumSq += g * g;
-      }
-      const mean = sum / n;
-      const std = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
-      ctx.putImageData(img, 0, 0);
-      const out = await new Promise(res => cv.toBlob(res, 'image/png'));
-      return {
-        skip: ink / n < SKIP_INK && std < SKIP_STD,
-        quality: std,
-        lowQuality: std < LOWQ_STD,
-        blob: out || blob
-      };
-    } catch (e) {
-      return { skip: false, quality: 999, lowQuality: false, blob };
-    }
-  }
-
-  async function recognize(blob, onProgress, opts) {
-    logSink = onProgress
-      ? m => { if (m && m.status === 'recognizing text') onProgress(m.progress || 0); }
-      : null;
-    try {
-      const w = await ensure();
-      const img = (opts && (opts.raw || opts.prepared)) ? blob : await preprocess(blob);
-      const r = await w.recognize(img);
-      return (r && r.data && r.data.text) || '';
-    } finally {
-      logSink = null;
-    }
-  }
-
-  return { ensure, recognize, preprocess, inspect };
-})();
-
-</script>
   <script>
 /* ========== IndexedDB 存储层 ========== */
 const DB = (() => {
@@ -1201,33 +976,14 @@ const DB = (() => {
 /* ========== 文件文本提取层（Word / 文本） ========== */
 const Extractor = (() => {
 
-  /* ---- DOCX：mammoth 提取文本 + 嵌入图片逐张 OCR（按文档顺序回填） ---- */
-  function b64ToBlob(b64, type) {
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return new Blob([arr], { type: type || 'image/png' });
-  }
-
-  /* ---- OCR 乱码规范化：空括号归一为（　）、选项间误识别的句号清理 ---- */
-  function polishOCR(t) {
-    return String(t || '')
-      .replace(/[（(〈〈《\[【\[]+[\s　，,。]*[)）〉〉》\]\]]+/g, '（　）')
-      .replace(/[（(][\s　]*[)）]/g, '（　）')
-      .replace(/[〈〈]+/g, '（')
-      .replace(/[〉〉]+/g, '）')
-      .replace(/[ \t　]+。/g, '。')
-      .replace(/。[ \t　]*(?=[A-Ha-h][.、．:：)）])/g, ' ')
-      .replace(/(?:[\-—–_][\s　]*)+(?=[A-Ha-h][.、．:：)）])/g, '')
-      .replace(/[”’]+[\s　]*(?=[A-Ha-h][.、．:：)）])/g, '')
-      .split('\n').map(l => l.replace(/[ \t]{2,}/g, ' ').trim()).join('\n')
-      .trim();
-  }
+  /* ---- DOCX：mammoth 提取文本；嵌入图片仅计数，正文位置标记 [图片] ----
+     （v1.5：内置 Tesseract OCR 已移除——19MB 资源换不来可用的识别质量；
+      图片型题库请改用文字型文件，或粘贴文本到「范式导入」） ---- */
 
   function htmlToPlainText(html) {
     const ta = document.createElement('textarea');
     ta.innerHTML = html
-      .replace(/<img[^>]*src=["']ocrimg:\/\/(\d+)["'][^>]*>/gi, '\n[[OCRIMG:$1]]\n')
+      .replace(/<img[^>]*>/gi, '\n[图片]\n')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|h[1-6]|li|tr|table|blockquote|section)>/gi, '\n')
       .replace(/<[^>]+>/g, '');
@@ -1237,104 +993,20 @@ const Extractor = (() => {
   async function fromDOCX(file, onProgress, opts) {
     if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
-    const imgs = [];
+    let imgCount = 0;
+    // 图片统一替换为 1px 透明占位：既保留「此处有图」标记，又避免 base64 大图占用内存
     const result = await window.mammoth.convertToHtml({ arrayBuffer: buf }, {
-      convertImage: window.mammoth.images.imgElement(async (image) => {
-        const b64 = await image.readAsBase64String();
-        imgs.push({ b64, type: image.contentType || 'image/png' });
-        return { src: 'ocrimg://' + (imgs.length - 1) };
+      convertImage: window.mammoth.images.imgElement(async () => {
+        imgCount++;
+        return { src: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' };
       })
     });
-    let text = htmlToPlainText(result.value);
-    if (!imgs.length) {
-      return text;
+    const text = htmlToPlainText(result.value);
+    // 图片型 DOCX：几乎无文字 → 明确告知，不再静默 OCR
+    if (imgCount > 0 && text.replace(/\s|\[图片\]/g, '').length < 50) {
+      throw new Error('该 Word 几乎全是图片（图片型题库）：本版本已移除 OCR。请改用文字型题库文件，或把题目文本粘贴到「范式导入」');
     }
-    const docId = file.name + ':' + file.size + ':' + (file.lastModified || 0);
-    const { texts, report, aborted } = await ocrImages(imgs, docId, onProgress, opts);
-    for (let i = 0; i < imgs.length; i++) {
-      text = text.split('[[OCRIMG:' + i + ']]').join(texts[i] || '[第 ' + (i + 1) + ' 张图：未识别到文字（示意图或纯装饰图）]');
-    }
-    if (opts && opts.onReport) opts.onReport(report, aborted);
     return text;
-  }
-
-  /* ---- 图片 OCR 四态状态机：PENDING → SKIP/DONE/RETRY/ABORTED ----
-     分批跑（防手机内存峰值）、每张落盘（崩/退出后按 docId 断点续跑）、
-     低质图换预处理变体重试一次、跳过纯装饰图 ---- */
-  const ST = { PENDING: 0, SKIP: 1, DONE: 2, RETRY: 3, ABORTED: 4 };
-  const OCR_BATCH = 4;
-  const PROG_KEY = id => 'ocrProgress:' + id;
-
-  async function loadProgress(docId) {
-    try { return (await DB.metaGet(PROG_KEY(docId))) || null; } catch (e) { return null; }
-  }
-  async function saveProgress(docId, states, texts) {
-    try { await DB.metaSet(PROG_KEY(docId), { states, texts }); } catch (e) { /* 存档失败不阻断识别 */ }
-  }
-
-  async function ocrImages(imgs, docId, onProgress, opts) {
-    opts = opts || {};
-    const total = imgs.length;
-    const saved = await loadProgress(docId);
-    const states = (saved && saved.states && saved.states.length === total)
-      ? saved.states.slice()
-      : Array(total).fill(ST.PENDING);
-    const texts = (saved && saved.texts && saved.texts.length === total)
-      ? saved.texts.slice()
-      : Array(total).fill('');
-    const report = { total, skipped: 0, retried: 0, lowQuality: [] };
-    const shouldStop = opts.shouldStop || (() => false);
-    const ctl = opts.ctl;
-
-    for (let i = 0; i < total; i += OCR_BATCH) {
-      if (shouldStop() || (ctl && ctl.signal.aborted)) {
-        for (let j = i; j < total; j++) if (states[j] === ST.PENDING) states[j] = ST.ABORTED;
-        await saveProgress(docId, states, texts);
-        return { texts, report, aborted: true };
-      }
-      const end = Math.min(i + OCR_BATCH, total);
-      for (let j = i; j < end; j++) {
-        if (states[j] === ST.DONE || states[j] === ST.SKIP) continue;
-        if (ctl && ctl.signal.aborted) {
-          for (let k = j; k < total; k++) if (states[k] === ST.PENDING) states[k] = ST.ABORTED;
-          await saveProgress(docId, states, texts);
-          return { texts, report, aborted: true };
-        }
-        const blob = b64ToBlob(imgs[j].b64, imgs[j].type);
-        const meta = await OCR.inspect(blob);
-        if (meta.skip) {
-          states[j] = ST.SKIP;
-          texts[j] = '[装饰图，已跳过]';
-          report.skipped++;
-          await saveProgress(docId, states, texts);
-          continue;
-        }
-        if (meta.lowQuality) report.lowQuality.push(j + 1);
-        let t = '';
-        try {
-          t = await OCR.recognize(meta.blob, null, { prepared: true });
-        } catch (e) {
-          if (/OCR 未离线打包|未内置 OCR/.test(e.message || '')) throw e;
-        }
-        let retried = false;
-        if (meta.lowQuality && t.replace(/\s/g, '').length < 6) {
-          try {
-            const t2 = await OCR.recognize(blob, null, { raw: true });
-            if (t2.replace(/\s/g, '').length > t.replace(/\s/g, '').length) {
-              t = t2;
-              retried = true;
-            }
-          } catch (e) { /* 重试失败保留原结果 */ }
-        }
-        if (retried) report.retried++;
-        texts[j] = polishOCR(t);
-        states[j] = retried ? ST.RETRY : ST.DONE;
-        await saveProgress(docId, states, texts);
-      }
-      if (onProgress) onProgress(Math.min(i + OCR_BATCH, total), total);
-    }
-    await saveProgress(docId, states, texts);
-    return { texts, report, aborted: false };
   }
 
   /* ---- 统一入口 ---- */
@@ -1349,8 +1021,13 @@ const Extractor = (() => {
     if (name.endsWith('.pdf')) {
       throw new Error('已移除 PDF 解析：请先把 PDF 另存为 Word(.docx) 或文本，或用「范式导入」直接贴文本');
     }
-    throw new Error('不支持的格式：' + file.name + '（仅支持 DOCX）');
+    // txt / markdown：直接读纯文本（选择器接受 .txt/.md，不再误报「仅支持 DOCX」）
+    if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.markdown')) {
+      return await file.text();
+    }
+    throw new Error('不支持的格式：' + file.name + '（支持 DOCX / TXT / MD）');
   }
+
 
   /* ---- 噪声行检测：统计出现≥3次的短行（页眉页脚）+ 关键词兜底 ----
      排除：选项行（A. 开头）、数字题号行、结构性行（章/节/题型标题——
@@ -1802,7 +1479,7 @@ const Extractor = (() => {
     return null;
   }
 
-  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines, polishOCR };
+  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
 })();
 
 </script>
@@ -1837,8 +1514,53 @@ const LLM = (() => {
     return ((u && u.prompt_tokens) || 0) / 1e6 * pIn + ((u && u.completion_tokens) || 0) / 1e6 * pOut;
   }
 
+  /* ---- 流式响应读取：SSE 增量拼接，逐段回调 onDelta（累计全文） ----
+     空闲看门狗：每收到一个数据块就重置 90s 计时——慢模型长输出不再被总时长砍断，
+     只在「连数据都收不到」时才判超时。首块到达前的等待同样受看门狗保护。 ---- */
+  async function readStream(resp, onDelta, ctl) {
+    if (!resp.body || !resp.body.getReader) {
+      // 兜底：实现不支持流 → 退回整体 JSON
+      const data = await resp.json();
+      return data.choices?.[0]?.message?.content || '';
+    }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder('utf-8');
+    let buf = '', acc = '', idleTimer = null;
+    const resetIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => ctl.abort('timeout'), 90000);
+    };
+    try {
+      resetIdle();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        resetIdle();
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith('data:')) continue;
+          const payload = t.slice(5).trim();
+          if (payload === '[DONE]') return acc;
+          try {
+            const j = JSON.parse(payload);
+            const delta = j.choices?.[0]?.delta?.content;
+            if (delta) { acc += delta; onDelta(acc); }
+            // 开启 include_usage 时，最后一个 chunk 会带 usage（供费用统计）
+            if (j.usage) _lastUsage = j.usage;
+          } catch (e) { /* 半截 JSON 行：下个数据块补齐后再解析 */ }
+        }
+      }
+      return acc;
+    } finally {
+      clearTimeout(idleTimer);
+    }
+  }
+
   /* ---- 单次 chat 调用 ---- */
-  async function chat(messages, { onRetry, raw = false, signal = null } = {}) {
+  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null } = {}) {
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
@@ -1847,6 +1569,12 @@ const LLM = (() => {
     if (!raw) {
       // 要求 JSON 输出（兼容不同实现；DeepSeek 要求提示词含 'json' 才能启用）
       payload.response_format = { type: 'json_object' };
+    }
+    // 传了 onDelta → 走流式：首字 1~2 秒可见，边生成边显示
+    const streaming = typeof onDelta === 'function';
+    if (streaming) {
+      payload.stream = true;
+      payload.stream_options = { include_usage: true }; // 末端 chunk 附带 usage，保住费用统计
     }
     const body = JSON.stringify(payload);
 
@@ -1859,10 +1587,11 @@ const LLM = (() => {
         // 全局限流阀：上一请求撞 429 时，先等冷却结束再发
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
-        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟，90s 强制断开重试；
-        // 外部 signal 触发时立即 abort 进行中的请求（暂停即断，不等当前批跑完）
+        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟。
+        // 非流式：90s 总时长强制断开；流式：交给 readStream 的空闲看门狗（连接挂起同样会被砍）
         const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort('timeout'), 90000);
+        let timer = null;
+        if (!streaming) timer = setTimeout(() => ctl.abort('timeout'), 90000);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -1893,11 +1622,18 @@ const LLM = (() => {
           const errText = await resp.text().catch(() => '');
           throw new Error(`API ${resp.status}: ${errText.slice(0, 300)}`);
         }
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content;
-        if (!content) throw new Error('API 返回为空');
-        // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
-        if (data.usage) _lastUsage = data.usage;
+        let content;
+        if (streaming) {
+          if (attempt > 0 && onDelta) onDelta(''); // 重试后清空已显示的残段
+          content = await readStream(resp, onDelta, ctl);
+          if (!content) throw new Error('API 返回为空');
+        } else {
+          const data = await resp.json();
+          content = data.choices?.[0]?.message?.content;
+          if (!content) throw new Error('API 返回为空');
+          // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
+          if (data.usage) _lastUsage = data.usage;
+        }
         return content;
       } catch (e) {
         lastErr = e;
@@ -2433,7 +2169,7 @@ const LLM = (() => {
      用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
      产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
      长文档按 空行/题号行/章节标题 就近切片，避免把一道题切成两半。 */
-  async function fileToCanon(text, onProgress, onRetry) {
+  async function fileToCanon(text, onProgress, onRetry, onDelta) {
     const src = String(text || '').replace(/\r\n?/g, '\n').trim();
     if (!src) throw new Error('文档里没有可转换的文字');
 
@@ -2485,7 +2221,7 @@ const LLM = (() => {
       const raw = await chat([
         { role: 'system', content: PROMPT },
         { role: 'user', content: user }
-      ], { onRetry, raw: true });
+      ], { onRetry, raw: true, onDelta: onDelta ? (acc) => onDelta(acc, i + 1, chunks.length) : null });
       const piece = String(raw || '').trim()
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')
@@ -3781,7 +3517,8 @@ const App = (() => {
         prog(total ? done / total : 0);
         say(`AI 转换中：${note || ''} · 只做排版，答案从原卷照抄`);
       },
-      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'));
+      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'),
+      ui.onDelta || null);
     prog(1);
     return text;
   }
@@ -3907,8 +3644,8 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
-      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（Word 自动解析）</button>
+      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
+      <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
       ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       ${banks.length > LIMIT ? `
@@ -4027,6 +3764,7 @@ const App = (() => {
         <input type="file" id="canon-ai-file" multiple accept=".docx,.doc,.txt,.md" style="display:none">
         <div class="progress" id="canon-ai-prog" style="display:none"><div class="progress-bar" id="canon-ai-bar"></div></div>
         <div class="muted small" id="canon-ai-conv-status"></div>
+        <pre id="canon-ai-live" style="display:none;max-height:180px;overflow:auto;font-size:11px;line-height:1.5;white-space:pre-wrap;background:#0F1620;color:#9FD8C2;border-radius:8px;padding:8px;margin-top:8px"></pre>
       </div>
 
       <div class="card">
@@ -4159,10 +3897,18 @@ const App = (() => {
       aiConvBtn.disabled = true;
       aiProg.style.display = '';
       aiBar.style.width = '0%';
+      const liveEl = document.getElementById('canon-ai-live');
+      liveEl.textContent = '';
       try {
         const text = await aiCanonFromFiles(files, {
           onStatus: s => { aiConvStatus.textContent = s; },
-          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; }
+          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; },
+          // 流式：AI 生成内容实时回显（1~2 秒出首字，边生成边可见）
+          onDelta: acc => {
+            liveEl.style.display = '';
+            liveEl.textContent = acc.length > 600 ? '…' + acc.slice(-600) : acc;
+            liveEl.scrollTop = liveEl.scrollHeight;
+          }
         });
         ta.value = text;
         invalidate();
@@ -4174,6 +3920,8 @@ const App = (() => {
       } finally {
         aiConvBtn.disabled = false;
         aiProg.style.display = 'none';
+        const liveEl = document.getElementById('canon-ai-live');
+        if (liveEl) liveEl.style.display = 'none';
       }
     };
 
@@ -4241,34 +3989,24 @@ const App = (() => {
   let lastPickedFiles = [];   // 「导入文件」页最近一次选中的文件（供「改用 AI 转范式」复用）
 
   function pageImport() {
-    topbar('导入文件', '#/home');
+    topbar('导入题库', '#/home');
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">第 1 步 · 选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）。题目文件可与<b>配套答案文件</b>一起选中：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 精确匹配填入答案与解析。</p>
-        <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用。</p>
+        <div class="card-title">选择文件</div>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD。<b>题目文件与配套答案文件可一起选中</b>：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 匹配填入答案与解析。识别不了格式时会自动请 AI 兜底重排（需配置 API Key）。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
-        <input type="file" id="file-input" multiple accept=".docx,.doc" style="display:none">
+        <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
-      <div class="card">
-        <div class="card-title">AI 辅助录入（可选开关）</div>
-        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6">
+      <details class="card">
+        <summary style="cursor:pointer;font-weight:600">高级选项 · AI 辅助录入答案</summary>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6;margin-top:8px">
           <input type="checkbox" id="ai-assist-toggle" style="margin-top:3px;flex:none">
           <span>开启后，本地规则<b>匹配不到答案</b>的题，由 AI 直接<b>从答案文件原文智能对位</b>填入：答案照抄原文而非 AI 做题，正确率高；按题型严格校验，校验不过的宁缺毋错。需在「设置」配置 API Key，消耗少量额度；关闭或无 Key 时纯本地解析零调用。</span>
         </label>
-      </div>
-      <div class="card" id="ocr-panel" style="display:none">
-        <div class="card-title">OCR 识别 <span id="ocr-count"></span></div>
-        <div class="progress"><div class="progress-bar" id="ocr-bar"></div></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <button class="btn" id="ocr-pause-btn" data-mode="pause">⏸ 暂停</button>
-          <span class="muted small" id="ocr-stat"></span>
-        </div>
-        <div class="muted small" id="ocr-lowq" style="margin-top:6px"></div>
-      </div>
+      </details>
       <div class="card" id="parse-card" style="display:none">
-        <div class="card-title">第 2 步 · 解析</div>
+        <div class="card-title">解析</div>
         <div class="muted" id="parse-status"></div>
         <div class="progress"><div class="progress-bar" id="parse-bar"></div></div>
         <div id="parse-result"></div>
@@ -4307,31 +4045,6 @@ const App = (() => {
       rows.set(i, row);
     });
 
-    // OCR 面板控制（图片型 DOCX 显示：进度 / 暂停继续 / 质量反馈）
-    const ocrPanel = document.getElementById('ocr-panel');
-    const ocrCount = document.getElementById('ocr-count');
-    const ocrBar = document.getElementById('ocr-bar');
-    const ocrStat = document.getElementById('ocr-stat');
-    const ocrLowq = document.getElementById('ocr-lowq');
-    const ocrBtn = document.getElementById('ocr-pause-btn');
-    ocrPanel.style.display = 'none';
-    ocrCount.textContent = '';
-    ocrBar.style.width = '0%';
-    ocrStat.textContent = '';
-    ocrLowq.textContent = '';
-    let ocrAborted = false;
-    const ctl = new AbortController();
-    const agg = { skipped: 0, retried: 0, lowQuality: [] };
-    ocrBtn.onclick = () => {
-      if (ocrBtn.dataset.mode === 'pause') {
-        ctl.abort();
-        ocrAborted = true;
-        ocrStat.textContent = '正在暂停…（当前张识别完即停）';
-      } else if (ocrBtn.dataset.mode === 'resume') {
-        handleFiles(files);
-      }
-    };
-
     // 第 1 步 · 全部提取文本
     const texts = new Map();
     for (let i = 0; i < files.length; i++) {
@@ -4339,44 +4052,8 @@ const App = (() => {
       const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
       setState('提取文本…');
-      if (ocrAborted) {
-        stateEl.textContent = '已暂停';
-        continue;
-      }
       try {
-        const raw = await Extractor.extract(f, (p, t) => {
-          setState(`识别图 ${p}/${t}`);
-          ocrPanel.style.display = '';
-          ocrCount.textContent = `${p}/${t} 张`;
-          ocrBar.style.width = Math.round(p / t * 100) + '%';
-          ocrBtn.dataset.mode = 'pause';
-          ocrBtn.textContent = '⏸ 暂停';
-        }, {
-          ctl,
-          shouldStop: () => ocrAborted,
-          onReport: (rep, aborted) => {
-            if (!rep) return;
-            agg.skipped += rep.skipped || 0;
-            agg.retried += rep.retried || 0;
-            rep.lowQuality.forEach(n => { if (!agg.lowQuality.includes(n)) agg.lowQuality.push(n); });
-            const bits = [];
-            if (agg.skipped) bits.push(`跳过装饰图 ${agg.skipped}`);
-            if (agg.retried) bits.push(`低质重试 ${agg.retried}`);
-            if (agg.lowQuality.length) bits.push(`质量偏低 ${agg.lowQuality.length}`);
-            ocrStat.textContent = aborted ? '已存档，可续跑' : (bits.join(' · ') || '全部识别完成');
-            if (agg.lowQuality.length) {
-              ocrLowq.textContent = `⚠ 低质图片（OCR 可能不准，建议逐题核对）：第 ${agg.lowQuality.join('、')} 张`;
-            }
-            if (aborted) {
-              ocrBtn.dataset.mode = 'resume';
-              ocrBtn.textContent = '▶ 继续';
-            }
-          }
-        });
-        if (ocrAborted) {
-          setState('已暂停');
-          continue;
-        }
+        const raw = await Extractor.extract(f);
         const text = Extractor.cleanText(raw);
         if (text.replace(/\s/g, '').length < 50) {
           setState('失败');
@@ -4390,16 +4067,6 @@ const App = (() => {
         stateEl.innerHTML = '⚠ 失败';
         toast(files[i].name + '：' + e.message.slice(0, 80));
       }
-    }
-
-    if (ocrAborted) {
-      for (let k = 0; k < files.length; k++) {
-        const el = rows.get(k).querySelector('.file-state');
-        if (!texts.has(k)) el.textContent = '已暂停';
-      }
-      statusEl.textContent = '⏸ OCR 已暂停：识别过的图已存档，点「▶ 继续」接着跑，不重头再来';
-      bar.style.width = '100%';
-      return;
     }
 
     // 第 2 步 · 区分题目文件 / 配套答案文件（文件名含「答案」或答案行占比≥30%）
@@ -4439,7 +4106,48 @@ const App = (() => {
           bar.style.width = Math.round(done / total * 95) + '%';
         });
         if (!res.questions.length) {
-          setState('未发现题目');
+          // 本地规则没认出题 → AI 兜底：自动重排成范式文本再解析（用户无需手动换路径）
+          const cfg = await LLM.getConfig();
+          if (!cfg.apiKey) {
+            setState('未发现题目');
+            continue;
+          }
+          setState('AI 兜底转换中…');
+          try {
+            const canonText = await LLM.fileToCanon(text,
+              (done, total, note) => {
+                statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
+                bar.style.width = Math.round(done / total * 95) + '%';
+              },
+              (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
+              acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
+            const r = Canon.parse(canonText);
+            if (!r.questions.length) {
+              setState('未发现题目');
+              statusEl.textContent = '⚠ 本地与 AI 兜底都没解析出题目：建议在「粘贴文本导入」里人工核对原文';
+              continue;
+            }
+            const bank = {
+              id: DB.uid(),
+              name: f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40),
+              createdAt: Date.now(),
+              count: r.questions.length,
+              source: f.name + '（AI 兜底）',
+              sections: r.sections && r.sections.length ? r.sections : null
+            };
+            r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
+            await DB.questionAddMany(r.questions);
+            await DB.bankAdd(bank);
+            const noAns = r.questions.filter(q => !q.answer).length;
+            setState(`✓ AI 兜底 ${r.questions.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`);
+            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 AI 兜底重排并导入 ${r.questions.length} 题`
+              + (noAns ? `（缺答案 ${noAns}，可稍后「补答案」）` : '');
+            toast(`AI 兜底导入 ${r.questions.length} 题`);
+          } catch (e) {
+            console.error(e);
+            setState('未发现题目');
+            statusEl.textContent = '⚠ AI 兜底失败：' + e.message.slice(0, 120) + '。可点下方「改用 AI 转范式导入」重试';
+          }
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库

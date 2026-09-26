@@ -172,7 +172,8 @@ const App = (() => {
         prog(total ? done / total : 0);
         say(`AI 转换中：${note || ''} · 只做排版，答案从原卷照抄`);
       },
-      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'));
+      (att, cool) => say(cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，重试中…'),
+      ui.onDelta || null);
     prog(1);
     return text;
   }
@@ -298,8 +299,8 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/canon')">范式导入（答案零对齐 · 推荐）</button>
-      <button class="btn ghost big" onclick="App.navigate('#/import')">导入文件（Word 自动解析）</button>
+      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
+      <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
       ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
       ${recycle.length ? `<button class="btn ghost big" onclick="App.navigate('#/recycle')">🗑 回收站（${recycle.length}）</button>` : ''}
       ${banks.length > LIMIT ? `
@@ -418,6 +419,7 @@ const App = (() => {
         <input type="file" id="canon-ai-file" multiple accept=".docx,.doc,.txt,.md" style="display:none">
         <div class="progress" id="canon-ai-prog" style="display:none"><div class="progress-bar" id="canon-ai-bar"></div></div>
         <div class="muted small" id="canon-ai-conv-status"></div>
+        <pre id="canon-ai-live" style="display:none;max-height:180px;overflow:auto;font-size:11px;line-height:1.5;white-space:pre-wrap;background:#0F1620;color:#9FD8C2;border-radius:8px;padding:8px;margin-top:8px"></pre>
       </div>
 
       <div class="card">
@@ -550,10 +552,18 @@ const App = (() => {
       aiConvBtn.disabled = true;
       aiProg.style.display = '';
       aiBar.style.width = '0%';
+      const liveEl = document.getElementById('canon-ai-live');
+      liveEl.textContent = '';
       try {
         const text = await aiCanonFromFiles(files, {
           onStatus: s => { aiConvStatus.textContent = s; },
-          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; }
+          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; },
+          // 流式：AI 生成内容实时回显（1~2 秒出首字，边生成边可见）
+          onDelta: acc => {
+            liveEl.style.display = '';
+            liveEl.textContent = acc.length > 600 ? '…' + acc.slice(-600) : acc;
+            liveEl.scrollTop = liveEl.scrollHeight;
+          }
         });
         ta.value = text;
         invalidate();
@@ -565,6 +575,8 @@ const App = (() => {
       } finally {
         aiConvBtn.disabled = false;
         aiProg.style.display = 'none';
+        const liveEl = document.getElementById('canon-ai-live');
+        if (liveEl) liveEl.style.display = 'none';
       }
     };
 
@@ -632,34 +644,24 @@ const App = (() => {
   let lastPickedFiles = [];   // 「导入文件」页最近一次选中的文件（供「改用 AI 转范式」复用）
 
   function pageImport() {
-    topbar('导入文件', '#/home');
+    topbar('导入题库', '#/home');
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">第 1 步 · 选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）。题目文件可与<b>配套答案文件</b>一起选中：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 精确匹配填入答案与解析。</p>
-        <p class="muted small">纯本地解析：不调用 AI、无需 API Key、零费用。</p>
+        <div class="card-title">选择文件</div>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD。<b>题目文件与配套答案文件可一起选中</b>：自动识别答案文件（文件名含「答案」或内容为答案格式），按 章/节/题号 匹配填入答案与解析。识别不了格式时会自动请 AI 兜底重排（需配置 API Key）。</p>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
-        <input type="file" id="file-input" multiple accept=".docx,.doc" style="display:none">
+        <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md" style="display:none">
         <div id="file-list" class="file-list"></div>
       </div>
-      <div class="card">
-        <div class="card-title">AI 辅助录入（可选开关）</div>
-        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6">
+      <details class="card">
+        <summary style="cursor:pointer;font-weight:600">高级选项 · AI 辅助录入答案</summary>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.6;margin-top:8px">
           <input type="checkbox" id="ai-assist-toggle" style="margin-top:3px;flex:none">
           <span>开启后，本地规则<b>匹配不到答案</b>的题，由 AI 直接<b>从答案文件原文智能对位</b>填入：答案照抄原文而非 AI 做题，正确率高；按题型严格校验，校验不过的宁缺毋错。需在「设置」配置 API Key，消耗少量额度；关闭或无 Key 时纯本地解析零调用。</span>
         </label>
-      </div>
-      <div class="card" id="ocr-panel" style="display:none">
-        <div class="card-title">OCR 识别 <span id="ocr-count"></span></div>
-        <div class="progress"><div class="progress-bar" id="ocr-bar"></div></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <button class="btn" id="ocr-pause-btn" data-mode="pause">⏸ 暂停</button>
-          <span class="muted small" id="ocr-stat"></span>
-        </div>
-        <div class="muted small" id="ocr-lowq" style="margin-top:6px"></div>
-      </div>
+      </details>
       <div class="card" id="parse-card" style="display:none">
-        <div class="card-title">第 2 步 · 解析</div>
+        <div class="card-title">解析</div>
         <div class="muted" id="parse-status"></div>
         <div class="progress"><div class="progress-bar" id="parse-bar"></div></div>
         <div id="parse-result"></div>
@@ -698,31 +700,6 @@ const App = (() => {
       rows.set(i, row);
     });
 
-    // OCR 面板控制（图片型 DOCX 显示：进度 / 暂停继续 / 质量反馈）
-    const ocrPanel = document.getElementById('ocr-panel');
-    const ocrCount = document.getElementById('ocr-count');
-    const ocrBar = document.getElementById('ocr-bar');
-    const ocrStat = document.getElementById('ocr-stat');
-    const ocrLowq = document.getElementById('ocr-lowq');
-    const ocrBtn = document.getElementById('ocr-pause-btn');
-    ocrPanel.style.display = 'none';
-    ocrCount.textContent = '';
-    ocrBar.style.width = '0%';
-    ocrStat.textContent = '';
-    ocrLowq.textContent = '';
-    let ocrAborted = false;
-    const ctl = new AbortController();
-    const agg = { skipped: 0, retried: 0, lowQuality: [] };
-    ocrBtn.onclick = () => {
-      if (ocrBtn.dataset.mode === 'pause') {
-        ctl.abort();
-        ocrAborted = true;
-        ocrStat.textContent = '正在暂停…（当前张识别完即停）';
-      } else if (ocrBtn.dataset.mode === 'resume') {
-        handleFiles(files);
-      }
-    };
-
     // 第 1 步 · 全部提取文本
     const texts = new Map();
     for (let i = 0; i < files.length; i++) {
@@ -730,44 +707,8 @@ const App = (() => {
       const stateEl = rows.get(i).querySelector('.file-state');
       const setState = (s) => { stateEl.textContent = s; stateEl.dataset.state = s; };
       setState('提取文本…');
-      if (ocrAborted) {
-        stateEl.textContent = '已暂停';
-        continue;
-      }
       try {
-        const raw = await Extractor.extract(f, (p, t) => {
-          setState(`识别图 ${p}/${t}`);
-          ocrPanel.style.display = '';
-          ocrCount.textContent = `${p}/${t} 张`;
-          ocrBar.style.width = Math.round(p / t * 100) + '%';
-          ocrBtn.dataset.mode = 'pause';
-          ocrBtn.textContent = '⏸ 暂停';
-        }, {
-          ctl,
-          shouldStop: () => ocrAborted,
-          onReport: (rep, aborted) => {
-            if (!rep) return;
-            agg.skipped += rep.skipped || 0;
-            agg.retried += rep.retried || 0;
-            rep.lowQuality.forEach(n => { if (!agg.lowQuality.includes(n)) agg.lowQuality.push(n); });
-            const bits = [];
-            if (agg.skipped) bits.push(`跳过装饰图 ${agg.skipped}`);
-            if (agg.retried) bits.push(`低质重试 ${agg.retried}`);
-            if (agg.lowQuality.length) bits.push(`质量偏低 ${agg.lowQuality.length}`);
-            ocrStat.textContent = aborted ? '已存档，可续跑' : (bits.join(' · ') || '全部识别完成');
-            if (agg.lowQuality.length) {
-              ocrLowq.textContent = `⚠ 低质图片（OCR 可能不准，建议逐题核对）：第 ${agg.lowQuality.join('、')} 张`;
-            }
-            if (aborted) {
-              ocrBtn.dataset.mode = 'resume';
-              ocrBtn.textContent = '▶ 继续';
-            }
-          }
-        });
-        if (ocrAborted) {
-          setState('已暂停');
-          continue;
-        }
+        const raw = await Extractor.extract(f);
         const text = Extractor.cleanText(raw);
         if (text.replace(/\s/g, '').length < 50) {
           setState('失败');
@@ -781,16 +722,6 @@ const App = (() => {
         stateEl.innerHTML = '⚠ 失败';
         toast(files[i].name + '：' + e.message.slice(0, 80));
       }
-    }
-
-    if (ocrAborted) {
-      for (let k = 0; k < files.length; k++) {
-        const el = rows.get(k).querySelector('.file-state');
-        if (!texts.has(k)) el.textContent = '已暂停';
-      }
-      statusEl.textContent = '⏸ OCR 已暂停：识别过的图已存档，点「▶ 继续」接着跑，不重头再来';
-      bar.style.width = '100%';
-      return;
     }
 
     // 第 2 步 · 区分题目文件 / 配套答案文件（文件名含「答案」或答案行占比≥30%）
@@ -830,7 +761,48 @@ const App = (() => {
           bar.style.width = Math.round(done / total * 95) + '%';
         });
         if (!res.questions.length) {
-          setState('未发现题目');
+          // 本地规则没认出题 → AI 兜底：自动重排成范式文本再解析（用户无需手动换路径）
+          const cfg = await LLM.getConfig();
+          if (!cfg.apiKey) {
+            setState('未发现题目');
+            continue;
+          }
+          setState('AI 兜底转换中…');
+          try {
+            const canonText = await LLM.fileToCanon(text,
+              (done, total, note) => {
+                statusEl.textContent = `AI 兜底：重排「${f.name}」片段 ${done}/${total} ${note || ''}`;
+                bar.style.width = Math.round(done / total * 95) + '%';
+              },
+              (att, cool) => { statusEl.textContent = cool > 0 ? `⏳ API 限流，冷却 ${cool}s 后重试` : '网络波动，AI 重试中…'; },
+              acc => { statusEl.textContent = `AI 兜底转换中：已生成 ${acc.length} 字…`; });
+            const r = Canon.parse(canonText);
+            if (!r.questions.length) {
+              setState('未发现题目');
+              statusEl.textContent = '⚠ 本地与 AI 兜底都没解析出题目：建议在「粘贴文本导入」里人工核对原文';
+              continue;
+            }
+            const bank = {
+              id: DB.uid(),
+              name: f.name.replace(/\.(docx|doc|txt|md)$/i, '').slice(0, 40),
+              createdAt: Date.now(),
+              count: r.questions.length,
+              source: f.name + '（AI 兜底）',
+              sections: r.sections && r.sections.length ? r.sections : null
+            };
+            r.questions.forEach(q => { delete q._srcLine; q.bankId = bank.id; });
+            await DB.questionAddMany(r.questions);
+            await DB.bankAdd(bank);
+            const noAns = r.questions.filter(q => !q.answer).length;
+            setState(`✓ AI 兜底 ${r.questions.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`);
+            statusEl.textContent = `⚡ 本地规则未识别「${f.name}」，已由 AI 兜底重排并导入 ${r.questions.length} 题`
+              + (noAns ? `（缺答案 ${noAns}，可稍后「补答案」）` : '');
+            toast(`AI 兜底导入 ${r.questions.length} 题`);
+          } catch (e) {
+            console.error(e);
+            setState('未发现题目');
+            statusEl.textContent = '⚠ AI 兜底失败：' + e.message.slice(0, 120) + '。可点下方「改用 AI 转范式导入」重试';
+          }
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库

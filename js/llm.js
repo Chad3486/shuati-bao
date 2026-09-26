@@ -28,8 +28,53 @@ const LLM = (() => {
     return ((u && u.prompt_tokens) || 0) / 1e6 * pIn + ((u && u.completion_tokens) || 0) / 1e6 * pOut;
   }
 
+  /* ---- 流式响应读取：SSE 增量拼接，逐段回调 onDelta（累计全文） ----
+     空闲看门狗：每收到一个数据块就重置 90s 计时——慢模型长输出不再被总时长砍断，
+     只在「连数据都收不到」时才判超时。首块到达前的等待同样受看门狗保护。 ---- */
+  async function readStream(resp, onDelta, ctl) {
+    if (!resp.body || !resp.body.getReader) {
+      // 兜底：实现不支持流 → 退回整体 JSON
+      const data = await resp.json();
+      return data.choices?.[0]?.message?.content || '';
+    }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder('utf-8');
+    let buf = '', acc = '', idleTimer = null;
+    const resetIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => ctl.abort('timeout'), 90000);
+    };
+    try {
+      resetIdle();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        resetIdle();
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith('data:')) continue;
+          const payload = t.slice(5).trim();
+          if (payload === '[DONE]') return acc;
+          try {
+            const j = JSON.parse(payload);
+            const delta = j.choices?.[0]?.delta?.content;
+            if (delta) { acc += delta; onDelta(acc); }
+            // 开启 include_usage 时，最后一个 chunk 会带 usage（供费用统计）
+            if (j.usage) _lastUsage = j.usage;
+          } catch (e) { /* 半截 JSON 行：下个数据块补齐后再解析 */ }
+        }
+      }
+      return acc;
+    } finally {
+      clearTimeout(idleTimer);
+    }
+  }
+
   /* ---- 单次 chat 调用 ---- */
-  async function chat(messages, { onRetry, raw = false, signal = null } = {}) {
+  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null } = {}) {
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
@@ -38,6 +83,12 @@ const LLM = (() => {
     if (!raw) {
       // 要求 JSON 输出（兼容不同实现；DeepSeek 要求提示词含 'json' 才能启用）
       payload.response_format = { type: 'json_object' };
+    }
+    // 传了 onDelta → 走流式：首字 1~2 秒可见，边生成边显示
+    const streaming = typeof onDelta === 'function';
+    if (streaming) {
+      payload.stream = true;
+      payload.stream_options = { include_usage: true }; // 末端 chunk 附带 usage，保住费用统计
     }
     const body = JSON.stringify(payload);
 
@@ -50,10 +101,11 @@ const LLM = (() => {
         // 全局限流阀：上一请求撞 429 时，先等冷却结束再发
         const wait = _throttleUntil - Date.now();
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
-        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟，90s 强制断开重试；
-        // 外部 signal 触发时立即 abort 进行中的请求（暂停即断，不等当前批跑完）
+        // 请求级超时：手机网络弱时 fetch 可能挂起几分钟。
+        // 非流式：90s 总时长强制断开；流式：交给 readStream 的空闲看门狗（连接挂起同样会被砍）
         const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort('timeout'), 90000);
+        let timer = null;
+        if (!streaming) timer = setTimeout(() => ctl.abort('timeout'), 90000);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -84,11 +136,18 @@ const LLM = (() => {
           const errText = await resp.text().catch(() => '');
           throw new Error(`API ${resp.status}: ${errText.slice(0, 300)}`);
         }
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content;
-        if (!content) throw new Error('API 返回为空');
-        // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
-        if (data.usage) _lastUsage = data.usage;
+        let content;
+        if (streaming) {
+          if (attempt > 0 && onDelta) onDelta(''); // 重试后清空已显示的残段
+          content = await readStream(resp, onDelta, ctl);
+          if (!content) throw new Error('API 返回为空');
+        } else {
+          const data = await resp.json();
+          content = data.choices?.[0]?.message?.content;
+          if (!content) throw new Error('API 返回为空');
+          // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
+          if (data.usage) _lastUsage = data.usage;
+        }
         return content;
       } catch (e) {
         lastErr = e;
@@ -624,7 +683,7 @@ const LLM = (() => {
      用途：原卷排版太乱、本地规则切不出题时，让 AI 把「正文片段 + 全文答案表」重排成范式文本；
      产物仍是纯文本，交给本地的 Canon.parse 预览 → 导入，导入环节 0 次 API 调用。
      长文档按 空行/题号行/章节标题 就近切片，避免把一道题切成两半。 */
-  async function fileToCanon(text, onProgress, onRetry) {
+  async function fileToCanon(text, onProgress, onRetry, onDelta) {
     const src = String(text || '').replace(/\r\n?/g, '\n').trim();
     if (!src) throw new Error('文档里没有可转换的文字');
 
@@ -676,7 +735,7 @@ const LLM = (() => {
       const raw = await chat([
         { role: 'system', content: PROMPT },
         { role: 'user', content: user }
-      ], { onRetry, raw: true });
+      ], { onRetry, raw: true, onDelta: onDelta ? (acc) => onDelta(acc, i + 1, chunks.length) : null });
       const piece = String(raw || '').trim()
         .replace(/^```(?:text|markdown|md)?\s*/i, '')
         .replace(/```\s*$/, '')

@@ -1,33 +1,14 @@
 /* ========== 文件文本提取层（Word / 文本） ========== */
 const Extractor = (() => {
 
-  /* ---- DOCX：mammoth 提取文本 + 嵌入图片逐张 OCR（按文档顺序回填） ---- */
-  function b64ToBlob(b64, type) {
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return new Blob([arr], { type: type || 'image/png' });
-  }
-
-  /* ---- OCR 乱码规范化：空括号归一为（　）、选项间误识别的句号清理 ---- */
-  function polishOCR(t) {
-    return String(t || '')
-      .replace(/[（(〈〈《\[【\[]+[\s　，,。]*[)）〉〉》\]\]]+/g, '（　）')
-      .replace(/[（(][\s　]*[)）]/g, '（　）')
-      .replace(/[〈〈]+/g, '（')
-      .replace(/[〉〉]+/g, '）')
-      .replace(/[ \t　]+。/g, '。')
-      .replace(/。[ \t　]*(?=[A-Ha-h][.、．:：)）])/g, ' ')
-      .replace(/(?:[\-—–_][\s　]*)+(?=[A-Ha-h][.、．:：)）])/g, '')
-      .replace(/[”’]+[\s　]*(?=[A-Ha-h][.、．:：)）])/g, '')
-      .split('\n').map(l => l.replace(/[ \t]{2,}/g, ' ').trim()).join('\n')
-      .trim();
-  }
+  /* ---- DOCX：mammoth 提取文本；嵌入图片仅计数，正文位置标记 [图片] ----
+     （v1.5：内置 Tesseract OCR 已移除——19MB 资源换不来可用的识别质量；
+      图片型题库请改用文字型文件，或粘贴文本到「范式导入」） ---- */
 
   function htmlToPlainText(html) {
     const ta = document.createElement('textarea');
     ta.innerHTML = html
-      .replace(/<img[^>]*src=["']ocrimg:\/\/(\d+)["'][^>]*>/gi, '\n[[OCRIMG:$1]]\n')
+      .replace(/<img[^>]*>/gi, '\n[图片]\n')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|h[1-6]|li|tr|table|blockquote|section)>/gi, '\n')
       .replace(/<[^>]+>/g, '');
@@ -37,104 +18,20 @@ const Extractor = (() => {
   async function fromDOCX(file, onProgress, opts) {
     if (!window.mammoth) throw new Error('当前为精简版（未内置 Word 解析），请改用「范式导入」，或下载完整版');
     const buf = await file.arrayBuffer();
-    const imgs = [];
+    let imgCount = 0;
+    // 图片统一替换为 1px 透明占位：既保留「此处有图」标记，又避免 base64 大图占用内存
     const result = await window.mammoth.convertToHtml({ arrayBuffer: buf }, {
-      convertImage: window.mammoth.images.imgElement(async (image) => {
-        const b64 = await image.readAsBase64String();
-        imgs.push({ b64, type: image.contentType || 'image/png' });
-        return { src: 'ocrimg://' + (imgs.length - 1) };
+      convertImage: window.mammoth.images.imgElement(async () => {
+        imgCount++;
+        return { src: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' };
       })
     });
-    let text = htmlToPlainText(result.value);
-    if (!imgs.length) {
-      return text;
+    const text = htmlToPlainText(result.value);
+    // 图片型 DOCX：几乎无文字 → 明确告知，不再静默 OCR
+    if (imgCount > 0 && text.replace(/\s|\[图片\]/g, '').length < 50) {
+      throw new Error('该 Word 几乎全是图片（图片型题库）：本版本已移除 OCR。请改用文字型题库文件，或把题目文本粘贴到「范式导入」');
     }
-    const docId = file.name + ':' + file.size + ':' + (file.lastModified || 0);
-    const { texts, report, aborted } = await ocrImages(imgs, docId, onProgress, opts);
-    for (let i = 0; i < imgs.length; i++) {
-      text = text.split('[[OCRIMG:' + i + ']]').join(texts[i] || '[第 ' + (i + 1) + ' 张图：未识别到文字（示意图或纯装饰图）]');
-    }
-    if (opts && opts.onReport) opts.onReport(report, aborted);
     return text;
-  }
-
-  /* ---- 图片 OCR 四态状态机：PENDING → SKIP/DONE/RETRY/ABORTED ----
-     分批跑（防手机内存峰值）、每张落盘（崩/退出后按 docId 断点续跑）、
-     低质图换预处理变体重试一次、跳过纯装饰图 ---- */
-  const ST = { PENDING: 0, SKIP: 1, DONE: 2, RETRY: 3, ABORTED: 4 };
-  const OCR_BATCH = 4;
-  const PROG_KEY = id => 'ocrProgress:' + id;
-
-  async function loadProgress(docId) {
-    try { return (await DB.metaGet(PROG_KEY(docId))) || null; } catch (e) { return null; }
-  }
-  async function saveProgress(docId, states, texts) {
-    try { await DB.metaSet(PROG_KEY(docId), { states, texts }); } catch (e) { /* 存档失败不阻断识别 */ }
-  }
-
-  async function ocrImages(imgs, docId, onProgress, opts) {
-    opts = opts || {};
-    const total = imgs.length;
-    const saved = await loadProgress(docId);
-    const states = (saved && saved.states && saved.states.length === total)
-      ? saved.states.slice()
-      : Array(total).fill(ST.PENDING);
-    const texts = (saved && saved.texts && saved.texts.length === total)
-      ? saved.texts.slice()
-      : Array(total).fill('');
-    const report = { total, skipped: 0, retried: 0, lowQuality: [] };
-    const shouldStop = opts.shouldStop || (() => false);
-    const ctl = opts.ctl;
-
-    for (let i = 0; i < total; i += OCR_BATCH) {
-      if (shouldStop() || (ctl && ctl.signal.aborted)) {
-        for (let j = i; j < total; j++) if (states[j] === ST.PENDING) states[j] = ST.ABORTED;
-        await saveProgress(docId, states, texts);
-        return { texts, report, aborted: true };
-      }
-      const end = Math.min(i + OCR_BATCH, total);
-      for (let j = i; j < end; j++) {
-        if (states[j] === ST.DONE || states[j] === ST.SKIP) continue;
-        if (ctl && ctl.signal.aborted) {
-          for (let k = j; k < total; k++) if (states[k] === ST.PENDING) states[k] = ST.ABORTED;
-          await saveProgress(docId, states, texts);
-          return { texts, report, aborted: true };
-        }
-        const blob = b64ToBlob(imgs[j].b64, imgs[j].type);
-        const meta = await OCR.inspect(blob);
-        if (meta.skip) {
-          states[j] = ST.SKIP;
-          texts[j] = '[装饰图，已跳过]';
-          report.skipped++;
-          await saveProgress(docId, states, texts);
-          continue;
-        }
-        if (meta.lowQuality) report.lowQuality.push(j + 1);
-        let t = '';
-        try {
-          t = await OCR.recognize(meta.blob, null, { prepared: true });
-        } catch (e) {
-          if (/OCR 未离线打包|未内置 OCR/.test(e.message || '')) throw e;
-        }
-        let retried = false;
-        if (meta.lowQuality && t.replace(/\s/g, '').length < 6) {
-          try {
-            const t2 = await OCR.recognize(blob, null, { raw: true });
-            if (t2.replace(/\s/g, '').length > t.replace(/\s/g, '').length) {
-              t = t2;
-              retried = true;
-            }
-          } catch (e) { /* 重试失败保留原结果 */ }
-        }
-        if (retried) report.retried++;
-        texts[j] = polishOCR(t);
-        states[j] = retried ? ST.RETRY : ST.DONE;
-        await saveProgress(docId, states, texts);
-      }
-      if (onProgress) onProgress(Math.min(i + OCR_BATCH, total), total);
-    }
-    await saveProgress(docId, states, texts);
-    return { texts, report, aborted: false };
   }
 
   /* ---- 统一入口 ---- */
@@ -149,8 +46,13 @@ const Extractor = (() => {
     if (name.endsWith('.pdf')) {
       throw new Error('已移除 PDF 解析：请先把 PDF 另存为 Word(.docx) 或文本，或用「范式导入」直接贴文本');
     }
-    throw new Error('不支持的格式：' + file.name + '（仅支持 DOCX）');
+    // txt / markdown：直接读纯文本（选择器接受 .txt/.md，不再误报「仅支持 DOCX」）
+    if (name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.markdown')) {
+      return await file.text();
+    }
+    throw new Error('不支持的格式：' + file.name + '（支持 DOCX / TXT / MD）');
   }
+
 
   /* ---- 噪声行检测：统计出现≥3次的短行（页眉页脚）+ 关键词兜底 ----
      排除：选项行（A. 开头）、数字题号行、结构性行（章/节/题型标题——
@@ -602,5 +504,5 @@ const Extractor = (() => {
     return null;
   }
 
-  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines, polishOCR };
+  return { extract, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
 })();
