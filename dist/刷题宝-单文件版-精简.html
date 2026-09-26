@@ -1660,7 +1660,7 @@ const LLM = (() => {
   }
 
   /* ---- 单次 chat 调用 ---- */
-  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null, modelOverride = null } = {}) {
+  async function chat(messages, { onRetry, raw = false, signal = null, onDelta = null, modelOverride = null, _solveMode = false } = {}) {
     const cfg = await getConfig();
     if (!cfg.apiKey) throw new Error('请先在「设置」中配置 API Key');
 
@@ -1697,9 +1697,10 @@ const LLM = (() => {
         const body = JSON.stringify(payload);
         const ctl = new AbortController();
         // 解题场景用较短超时（30s），其他场景用原超时
-        const timeout = opts._solveMode ? 30000 : (useStream ? 60000 : 90000);
+        const timeout = _solveMode ? 30000 : (useStream ? 60000 : 90000);
         let timer = null;
         timer = setTimeout(() => ctl.abort(Object.assign(new Error('请求超时（网络连不通）'), { timeout: true })), timeout);
+        if (_solveMode) console.log('[解题] 发送请求到:', url, 'model:', payload.model);
         const onAbort = () => ctl.abort('aborted');
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
         let resp;
@@ -1718,6 +1719,7 @@ const LLM = (() => {
           if (signal) signal.removeEventListener('abort', onAbort);
         }
         if (!resp.ok) {
+          if (_solveMode) console.log('[解题] API 响应错误:', resp.status);
           if (resp.status === 429) {
             // 撞限流：读 Retry-After（秒），无头默认 15s；整段冷却时间翻倍逐次递增
             const ra = parseInt(resp.headers.get('retry-after'), 10);
@@ -1732,16 +1734,20 @@ const LLM = (() => {
         }
         let content;
         if (useStream) {
-          if (attempt > 0 && onDelta) onDelta(''); // 重试后清空已显示的残段
+          if (attempt > 0 && onDelta) onDelta('');
           content = await readStream(resp, onDelta, ctl);
           if (!content) throw new Error('API 返回为空');
         } else {
           const data = await resp.json();
+          if (_solveMode) console.log('[解题] API 返回数据:', JSON.stringify(data).slice(0, 200));
           content = data.choices?.[0]?.message?.content;
-          if (!content) throw new Error('API 返回为空');
-          // 累计 token 用量（DeepSeek/OpenAI 都回 usage），用于费用估算与实际消耗展示
+          if (!content) {
+            if (_solveMode) console.log('[解题] content 为空，data:', JSON.stringify(data).slice(0, 300));
+            throw new Error('API 返回为空');
+          }
           if (data.usage) _lastUsage = data.usage;
         }
+        if (_solveMode) console.log('[解题] 最终 content:', String(content).slice(0, 200));
         return content;
       } catch (e) {
         lastErr = e;
@@ -3779,7 +3785,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.2'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
