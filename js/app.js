@@ -970,17 +970,110 @@ const App = (() => {
                 onPiece
               });
             } else {
-              // v1.8 快速通道本体：AI 全量转范式，逐片解析直接入库（不再走「只出标注」的实验路线）
+              // v1.8.4：重写 — 直接 fetch 调 API，绕过 LLM.fileToCanon 屎山
               setState('AI 转范式并入库中…');
-              await LLM.fileToCanon(text,
-                (done, total, note) => {
-                  setState(`AI 转范式… 片段 ${done}/${total}${note ? ' · ' + note : ''}`);
-                  bar.style.width = Math.round(done / total * 95) + '%';
-                  TC.set(done, total, `已入库 ${gotTotal} 题`);
-                },
-                (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
-                acc => { TC.delta(acc); },
-                onPiece);
+
+              // 答案表检测
+              const ansSpan = LLM.findAnswerTableSpan(text);
+              let answerTable = ansSpan.text.trim();
+              if (answerTable.length > 40000) answerTable = answerTable.slice(0, 40000);
+
+              // 分片
+              const CHUNK = 4000;
+              const chunks = [];
+              let buf = [], size = 0;
+              const flush = () => { const t = buf.join('\n').trim(); if (t) chunks.push(t); buf = []; size = 0; };
+              for (const line of text.split('\n')) {
+                buf.push(line); size += line.length + 1;
+                if (size < CHUNK) continue;
+                const t = line.trim();
+                if (!t || /^\d{1,3}\s*[.、．]/.test(t) || /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) || /^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^【/.test(t) || /^#{1,2}\s/.test(t) || size >= CHUNK * 1.6) flush();
+              }
+              flush();
+              if (!chunks.length) throw new Error('文档切片失败');
+
+              // Prompt
+              const CANON_PROMPT = `你是题库格式转换专家。把【原卷文档】转换为「范式」格式。
+
+范式格式：
+1. 章标题：# 第1章 xxx
+2. 节标题：## 1.1 xxx
+3. 题型标记+题号：【单选】1. 题干（简答/计算等按【填空】）
+4. 选项每行一个：A. 内容（从 A 开始连续）
+5. 答案单独一行：答案：B（多选 答案：ABD；判断 答案：对/错）
+6. 解析单独一行：解析：xxx
+
+红线：
+- 答案只能照抄原卷或答案表，严禁自己推理
+- 题干选项原文照抄，不改写
+- 丢弃页眉页脚水印
+- 只输出范式文本，不要解释或代码块`;
+
+              const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+              const allPieces = [];
+
+              for (let ci = 0; ci < chunks.length; ci++) {
+                setState(`AI 转范式… 片段 ${ci + 1}/${chunks.length}`);
+                bar.style.width = Math.round((ci + 1) / chunks.length * 95) + '%';
+                TC.set(ci, chunks.length, `已入库 ${gotTotal} 题`);
+
+                const userContent = answerTable
+                  ? `【答案表（只能从这里照抄答案）】\n${answerTable}\n\n【原卷文档】\n${chunks[ci]}`
+                  : `【原卷文档】\n${chunks[ci]}`;
+
+                let piece = '';
+                for (let retry = 0; retry < 3; retry++) {
+                  try {
+                    const resp = await fetch(url, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
+                      body: JSON.stringify({
+                        model: cfg.model,
+                        messages: [
+                          { role: 'system', content: CANON_PROMPT },
+                          { role: 'user', content: userContent }
+                        ],
+                        temperature: 0.1,
+                        max_tokens: 8192
+                      })
+                    });
+                    if (!resp.ok) {
+                      const errText = await resp.text().catch(() => '');
+                      throw new Error(`API ${resp.status}: ${errText.slice(0, 100)}`);
+                    }
+                    const data = await resp.json();
+                    piece = (data.choices?.[0]?.message?.content || '').trim()
+                      .replace(/^```(?:text|markdown|md)?\s*/i, '').replace(/```\s*$/, '').trim();
+                    break;
+                  } catch (e) {
+                    console.warn(`[转范式] 片段 ${ci + 1} 重试 ${retry + 1}:`, e.message);
+                    if (retry < 2) await new Promise(r => setTimeout(r, 3000 * (retry + 1)));
+                  }
+                }
+
+                if (piece) {
+                  allPieces.push(piece);
+                  // 立即解析入库
+                  const got = await save.add(piece);
+                  gotTotal += got;
+                  TC.set(ci + 1, chunks.length, `已入库 ${gotTotal} 题`);
+                }
+              }
+
+              gotTotal += await save.flush();
+              const st = save.stats();
+              if (!st.total) {
+                setState('未发现题目');
+                statusEl.textContent = '⚠ AI 转完没解析出题目，建议在「粘贴文本导入」里人工核对';
+                TC.finish(false, '转换完成，但没解析出题目');
+                continue;
+              }
+              setState(`✓ ${st.total} 题${st.noAns ? `（${st.noAns} 题缺答案）` : ''}`);
+              const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
+              statusEl.textContent = `✓ 「${f.name}」AI 转范式并入库 ${st.total} 题 · 用时 ${secs}s`
+                + (st.noAns ? `（缺答案 ${st.noAns}，可稍后「补答案」）` : '');
+              toast(`AI 转范式导入 ${st.total} 题`);
+              TC.finish(true, `已入库 ${st.total} 题${st.noAns ? ` · 缺答案 ${st.noAns}` : ''}`);
             }
             gotTotal += await save.flush(); // 收尾：攒着的片合并再试一次
             const st = save.stats();
