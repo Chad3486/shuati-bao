@@ -3785,7 +3785,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.6'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.7'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5687,15 +5687,12 @@ const App = (() => {
           const timerEl = document.getElementById('solve-timer');
           if (timerEl) timerEl.textContent = `已等待 ${elapsed}s`;
         }, 1000);
-        const savedIds = new Set();
         try {
-          // === 全新解题逻辑：直接调 API，不走 solveMissing ===
+          // === v1.8.7：解题改走 LLM.chat()，复用统一网络层（超时/重试/429 冷却/signal 中断） ===
           const BATCH = 10;
           const PROMPT = `你是答题专家。给下列题目补上正确答案。
-
 请严格按照以下 JSON 格式输出，不要输出任何其他文字：
 {"answers":[{"idx":0,"answer":"C"}]}
-
 规则：
 - idx 是输入里每题的序号（从0开始）
 - 选择题 answer 为选项字母，如 "C" 或 "ACD"
@@ -5704,55 +5701,16 @@ const App = (() => {
 - 只给答案，不要写解析
 - 不确定的题不要猜，宁可不答
 - 必须输出有效的 JSON，不要 markdown 代码块`;
-
           const batches = [];
           for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
+          const total = batches.length;
           let solved = 0, done = 0, lastFailNote = '';
+          const usage = { prompt_tokens: 0, completion_tokens: 0 };
+          let stopReason = '';   // '' | 'paused' | 'cap'
 
-          for (const batch of batches) {
-            if (stop) break;
-            aiStatus.textContent = `AI 解答中：第 ${done + 1}/${batches.length} 批 · 已解出 ${solved} 题`;
-            TC.set(done, batches.length, `已解出 ${solved} 题`);
-            aiBar.style.width = Math.round(done / batches.length * 100) + '%';
-
-            const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: String(q.stem || '').slice(0, 200), options: q.options || undefined }));
-            let raw = '';
-            try {
-              // 直接 fetch，不走 chat() 函数
-              const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
-              aiStatus.textContent = `请求中：第 ${done + 1}/${batches.length} 批…`;
-              const resp = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.apiKey },
-                body: JSON.stringify({
-                  model: cfg.model,
-                  messages: [
-                    { role: 'system', content: PROMPT },
-                    { role: 'user', content: JSON.stringify(body) }
-                  ],
-                  temperature: 0.1,
-                  max_tokens: 4096
-                })
-              });
-              if (!resp.ok) {
-                const errText = await resp.text().catch(() => '');
-                throw new Error(`API ${resp.status}: ${errText.slice(0, 100)}`);
-              }
-              const data = await resp.json();
-              raw = data.choices?.[0]?.message?.content || '';
-              console.log('[解题] API 返回:', raw.slice(0, 200));
-            } catch (e) {
-              console.error('[解题] 请求失败:', e.message);
-              lastFailNote = e.message.slice(0, 80);
-              done++;
-              continue;
-            }
-
-            // 解析返回
-            if (!raw) { lastFailNote = 'API 返回为空'; done++; continue; }
-
-            // 鲁棒 JSON 解析
-            let answers = null;
+          // 从模型返回里抠出 answers 数组（兼容 5 种返回格式，0/1 起始自动识别）
+          const parseAnswers = raw => {
+            if (!raw) return null;
             let obj = null;
             try {
               const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
@@ -5761,70 +5719,113 @@ const App = (() => {
               const s = raw.indexOf('{'), e = raw.lastIndexOf('}');
               if (s >= 0 && e > s) try { obj = JSON.parse(raw.slice(s, e + 1)); } catch {}
             }
-
-            if (obj) {
-              if (Array.isArray(obj.answers)) answers = obj.answers;
-              else if (Array.isArray(obj)) answers = obj;
-              else if (typeof obj === 'object') {
-                const keys = Object.keys(obj);
-                if (keys.length && keys.every(k => /^\d+$/.test(k))) {
-                  const nums = keys.map(Number).sort((a, b) => a - b);
-                  const oneBased = nums[0] === 1 && nums[nums.length - 1] === nums.length;
-                  answers = nums.map(n => ({ idx: oneBased ? n - 1 : n, answer: obj[String(n)] }));
-                }
+            if (!obj) return null;
+            if (Array.isArray(obj.answers)) return obj.answers;
+            if (Array.isArray(obj)) return obj;
+            if (typeof obj === 'object') {
+              const keys = Object.keys(obj);
+              if (keys.length && keys.every(k => /^\d+$/.test(k))) {
+                const nums = keys.map(Number).sort((a, b) => a - b);
+                const oneBased = nums[0] === 1 && nums[nums.length - 1] === nums.length;
+                return nums.map(n => ({ idx: oneBased ? n - 1 : n, answer: obj[String(n)] }));
               }
             }
+            return null;
+          };
 
-            if (answers) {
-              for (const a of answers) {
-                const q = batch[+a.idx];
-                if (!q || q.answer) continue;
-                let ans = String(a.answer || '').trim();
-                if (!ans) continue;
-                if (q.type === 'judge') {
-                  if (/^(对|正确|√|A|1)$/i.test(ans)) ans = 'A';
-                  else if (/^(错|错误|×|B|0)$/i.test(ans)) ans = 'B';
-                  else continue;
-                } else if (q.options) {
-                  ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
-                  if (!ans || [...ans].some(c => !q.options[c])) continue;
-                } else {
-                  ans = ans.replace(/[。；;]\s*$/, '').trim();
-                  if (!ans || /^(略|见解析|无)$/.test(ans)) continue;
-                }
-                q.answer = ans;
-                q.aiAnswer = true;
-                solved++;
-                saveQ(q);
-              }
-            } else {
-              lastFailNote = 'JSON 解析失败: ' + raw.replace(/\s+/g, ' ').slice(0, 60);
+          // 单批：一次请求 → 解析 → 立即入库（解出的先落库，暂停/中断不丢）
+          const solveBatch = async batch => {
+            const body = batch.map((q, i) => ({ idx: i, type: q.type, stem: String(q.stem || '').slice(0, 200), options: q.options || undefined }));
+            const raw = await LLM.chat(
+              [{ role: 'system', content: PROMPT }, { role: 'user', content: JSON.stringify(body) }],
+              { signal: aborter ? aborter.signal : null, _solveMode: true }
+            );
+            const u = LLM.getLastUsage();
+            if (u) {
+              usage.prompt_tokens += u.prompt_tokens || 0;
+              usage.completion_tokens += u.completion_tokens || 0;
             }
+            const answers = parseAnswers(raw);
+            if (!answers) {
+              lastFailNote = 'JSON 解析失败: ' + String(raw).replace(/\s+/g, ' ').slice(0, 60);
+              return 0;
+            }
+            for (const a of answers) {
+              const q = batch[+a.idx];
+              if (!q || q.answer) continue;
+              let ans = String(a.answer || '').trim();
+              if (!ans) continue;
+              if (q.type === 'judge') {
+                if (/^(对|正确|√|A|1)$/i.test(ans)) ans = 'A';
+                else if (/^(错|错误|×|B|0)$/i.test(ans)) ans = 'B';
+                else continue;
+              } else if (q.options) {
+                ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
+                if (!ans || [...ans].some(c => !q.options[c])) continue;
+              } else {
+                ans = ans.replace(/[。；;]\s*$/, '').trim();
+                if (!ans || /^(略|见解析|无)$/.test(ans)) continue;
+              }
+              q.answer = ans;
+              q.aiAnswer = true;
+              solved++;
+              saveQ(q);
+            }
+            return solved;
+          };
 
-            done++;
-            aiStatus.textContent = `AI 解答中：第 ${done}/${batches.length} 批 · 已解出 ${solved} 题`;
-            TC.set(done, batches.length, `已解出 ${solved} 题`);
-          }
+          // 并发池：按设置里的「并发数」多路同时跑，暂停/费用上限立即收手
+          const conc = Math.max(1, Math.min(4, parseInt(cfg.concurrency, 10) || 4));
+          const updateProgress = () => {
+            aiBar.style.width = (total ? Math.round(done / total * 100) : 0) + '%';
+            aiStatus.textContent = stopReason === 'paused'
+              ? `已暂停：已解出 ${solved} 题（已存库，点按钮可续跑）`
+              : `AI 解答中：${done}/${total} 批 · 已解出 ${solved} 题`;
+            TC.set(done, total, `已解出 ${solved} 题`);
+          };
+          let cursor = 0;
+          const worker = async () => {
+            while (!stop && !stopReason) {
+              const i = cursor++;
+              if (i >= total) return;
+              try {
+                await solveBatch(batches[i]);
+              } catch (e) {
+                if (e.aborted || (aborter && aborter.signal.aborted)) { stopReason = 'paused'; return; }
+                lastFailNote = String(e.message || e).slice(0, 80);
+              }
+              done++;
+              if (cfg.capYuan > 0 && LLM.costOf(usage, cfg) >= cfg.capYuan && !stopReason) stopReason = 'cap';
+              updateProgress();
+            }
+          };
+          updateProgress();
+          await Promise.all(Array.from({ length: Math.min(conc, total) }, () => worker()));
+          if (stop && !stopReason) stopReason = 'paused';
 
           aiBar.style.width = '100%';
           const left = todo.filter(q => !q.answer).length;
+          const usedCost = LLM.costOf(usage, cfg).toFixed(3);
+          const fin = stopReason === 'paused'
+            ? `已暂停 · 已解出 ${solved} 题${left ? ` · 剩 ${left} 题` : ''}`
+            : stopReason === 'cap'
+              ? `触达费用上限 ¥${cfg.capYuan} · 已解出 ${solved} 题${left ? ` · 剩 ${left} 题` : ''}`
+              : solved > 0
+                ? `完成 · 解出 ${solved} 题${left ? ` · 剩 ${left} 题未解出` : ''}`
+                : '解出 0 题';
+          TC.finish(solved > 0, fin);
           if (solved > 0) {
+            aiStatus.innerHTML = `✓ ${fin}<br><span style="font-size:12px;color:#aab2c5">本次实耗约 ¥${usedCost}（输入 ${usage.prompt_tokens} + 输出 ${usage.completion_tokens} tok）</span>`;
             toast(`AI 解出 ${solved} 题答案，请核对${left ? `，剩 ${left} 题未解出` : ''}`);
-            TC.finish(true, `完成 · 解出 ${solved} 题`);
             render();
           } else {
             aiStatus.innerHTML = '⚠ 没解出任何答案<br>'
               + `<span style="font-size:12px;color:#aab2c5">原因：${escapeHtml(lastFailNote || '未知')}</span><br>`
               + '<span style="font-size:12px">请检查 API 配置是否正确</span>';
-            TC.finish(false, '解出 0 题');
           }
-          const fin = ret.paused
-            ? `已暂停 · 已解出 ${ret.solved} 题`
-            : `完成 · 解出 ${ret.solved} 题${left ? ` · 剩 ${left} 题未解出` : ''}`;
-          TC.finish(!ret.paused && ret.solved > 0, fin);
         } catch (e) {
-          aiStatus.textContent = '⚠ ' + e.message.slice(0, 140);
-          TC.finish(false, '中断：' + e.message.slice(0, 60) + '（已解出的已存库）');
+          aiStatus.textContent = '⚠ ' + String(e.message || e).slice(0, 140);
+          TC.finish(false, '中断：' + String(e.message || e).slice(0, 60) + '（已解出的已存库）');
           toast('解答中断（已解出的已存库，可重试）');
         } finally {
           aborter = null;
@@ -6929,7 +6930,8 @@ const App = (() => {
   /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录） */
   async function recordSession(s) {
     if (!s || s._recorded || s.recite) return;
-    const done = s.exam ? s.graded : s.finished;
+    // v1.8.7: 学习模式从答题卡页“提交题库”结束练习(_submitted)也要落记录
+    const done = s.exam ? s.graded : (s.finished || s._submitted);
     if (!done) return;
     const r = s.result();
     if (!r.answered && !s.exam) return;   // 学习模式一题没答就不记
