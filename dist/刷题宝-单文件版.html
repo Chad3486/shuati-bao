@@ -3808,7 +3808,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.5'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.6'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -3825,6 +3825,7 @@ const App = (() => {
     'recycle': pageRecycle,
     'quiz-setup': pageQuizSetup,
     'quiz': pageQuiz,
+    'quiz-sheet': pageQuizSheet,
     'quiz-result': pageQuizResult,
     'wrong': pageWrong,
     'star': pageStar,
@@ -4232,6 +4233,23 @@ const App = (() => {
     const r = session.grade();
     DB.metaSet('lastSession', null);
     toast(auto ? '时间到，已自动交卷' : `已交卷 · ${r.acc} 分`);
+    navigate('#/quiz-result');
+  }
+
+  /** 提交当前题库（答题卡页按钮）：考试模式=交卷判分；学习/背题模式=结束本次练习直接出成绩单 */
+  function submitSession() {
+    if (!session) return navigate('#/quiz-setup');
+    if (session.inExam) return submitExam(false);
+    const p = session.progress;
+    const left = session.total - p.done;
+    const msg = left
+      ? `确定提交本次题库？已答 ${p.done} 题，还有 ${left} 题未作答（未答不计入统计）。`
+      : `确定提交本次题库？已全部作答（${p.done} 题）。`;
+    if (!confirmDialog(msg)) return;
+    clearExamTimer();
+    session._submitted = true; // 防止提交后返回答题页继续作答
+    DB.metaSet('lastSession', null);
+    toast(`已提交 · 已答 ${p.done} 题`);
     navigate('#/quiz-result');
   }
 
@@ -6154,6 +6172,7 @@ const App = (() => {
     if (session.inExam && session.deadline && Date.now() >= session.deadline) return submitExam(true);
     if (session.inExam && session.graded) return navigate('#/quiz-result');
     if (!session.inExam && session.finished) return navigate('#/quiz-result');
+    if (!session.inExam && session._submitted) return navigate('#/quiz-result'); // 答题卡页已提交本次题库
 
     const q = session.current;
     topbar(`${session.pos} / ${session.total}`, session.inExam ? null : '#/quiz-setup');
@@ -6181,7 +6200,6 @@ const App = (() => {
       </div>
       <div class="quiz-bar"><div class="quiz-bar-fill" style="width:${donePct}%"></div></div>
       ${inExam ? `<div class="exam-banner">📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分</div>` : ''}
-      <div class="card" id="sheet-card" style="display:none"></div>
       <div class="card" id="edit-card" style="display:none"></div>
       ${!recite && !q.answer ? `<div class="card" style="border-left:4px solid var(--bad)">
         <div class="small" style="color:var(--bad)">本题暂无标准答案 —— 点右上角 ✎ 填入答案与解析后即可作答判分（不填也能直接翻下一题）</div>
@@ -6231,55 +6249,13 @@ const App = (() => {
           : inExam
             ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
                <button class="btn primary" id="submit-exam-btn">交卷</button>`
-            : '<button class="btn ghost" id="next-btn" style="display:none">下一题</button>'}
+            : `<button class="btn ghost" id="next-btn">${session.answered.has(q.id) ? '下一题' : (session.index < session.total - 1 ? '跳过 ›' : '结束练习')}</button>`}
       </div>`;
 
     const judgeArea = document.getElementById('judge-area');
     const nextBtn = document.getElementById('next-btn');
     const answered = session.answered.get(q.id);
-    const sheetCard = document.getElementById('sheet-card');
     const sheetBtn = document.getElementById('sheet-btn');
-    let sheetOpen = false;
-
-    /* ---- 答题卡：题号总览 + 状态着色 + 点题号跳题 ---- */
-    function renderSheet() {
-      const p = session.progress;
-      const cells = session.list.map((item, i) => {
-        const a = session.answered.get(item.id);
-        const cls = ['sheet-cell'];
-        let pick = '';
-        if (inExam) {
-          const ea = session.examAnswers.get(item.id);
-          if (ea) { cls.push('filled'); pick = String(ea); }   // 考试中只标「已答」，不泄露对错
-        } else if (a) {
-          cls.push(a.correct ? 'done' : 'wrong');
-          pick = String(a.userAnswer ?? '');
-        }
-        if (i === session.index) cls.push('cur');
-        if (starSet.has(item.id)) cls.push('star');
-        // 格子里带上「你选了什么」，一眼看清；填空答案太长就只留配色
-        if (item.type === 'fill') pick = '';
-        else { pick = pick.replace(/\|\|\|/g, '/'); if (pick.length > 3) pick = pick.slice(0, 3) + '…'; }
-        return `<button class="${cls.join(' ')}" data-i="${i}" title="${pick ? '已答：' + escapeHtml(pick) : '未答'}">${i + 1}${pick ? `<span class="cell-pick">${escapeHtml(pick)}</span>` : ''}</button>`;
-      }).join('');
-      sheetCard.innerHTML = `
-        <div class="card-title">答题卡 · 已答 ${p.done}/${p.total}${!inExam && p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : ''}</div>
-        <div class="sheet-grid">${cells}</div>
-        <div class="sheet-legend">
-          <span><i></i>未答</span>
-          ${inExam ? '<span><i class="filled"></i>已答</span>' : '<span><i class="done"></i>答对</span><span><i class="wrong"></i>答错</span>'}
-          <span><i class="cur"></i>当前题</span>
-          <span>★ 收藏</span>
-        </div>
-        <div class="muted small" style="margin-top:8px">${inExam ? '格子下方小字是你已选答案；点题号直接跳到该题，答案可随时修改' : '格子下方小字是你选的答案；点题号直接跳到该题，已答过的题可随时回看答案与解析'}</div>`;
-      sheetCard.querySelectorAll('.sheet-cell').forEach(b => {
-        b.onclick = () => {
-          session.jump(+b.dataset.i);
-          saveProgress();
-          render();
-        };
-      });
-    }
 
     /* ---- 顶部进度条 + 已答文字：作答后实时更新 ---- */
     function updateBar() {
@@ -6318,8 +6294,6 @@ const App = (() => {
         document.querySelectorAll('.fill-input').forEach(i => i.disabled = true);
         const fs = document.getElementById('fill-submit'); if (fs) fs.style.display = 'none';
       }
-      // 答题卡开着时实时更新对错着色
-      if (sheetOpen) renderSheet();
       updateBar();
     }
 
@@ -6335,7 +6309,6 @@ const App = (() => {
       const banner = document.querySelector('.exam-banner');
       if (banner) banner.textContent = `📝 考试中 · 已答 ${session.progress.done}/${session.total} · 作答时不显示对错，交卷后统一评分`;
       updateBar();
-      if (sheetOpen) renderSheet();
     };
 
     if (!recite && q.type === 'fill') {
@@ -6396,17 +6369,8 @@ const App = (() => {
     if (examSubmitBtn) examSubmitBtn.onclick = () => submitExam(false);
     if (inExam && session.deadline) startExamTimer();
 
-    // 答题卡开关
-    if (sheetBtn) sheetBtn.onclick = () => {
-      sheetOpen = !sheetOpen;
-      if (sheetOpen) {
-        renderSheet();
-        sheetCard.style.display = '';
-        sheetCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else {
-        sheetCard.style.display = 'none';
-      }
-    };
+    // 答题卡：跳转到独立答题卡页（总览 + 提交题库）
+    if (sheetBtn) sheetBtn.onclick = () => navigate('#/quiz-sheet');
 
     // 背题模式开关：直接看答案、不用作答（仅学习类会话）
     const reciteBtn = document.getElementById('recite-btn');
@@ -6425,7 +6389,6 @@ const App = (() => {
       starBtn.textContent = added ? '★' : '☆';
       starBtn.classList.toggle('on', added);
       if (added) starSet.add(q.id); else starSet.delete(q.id);
-      if (sheetOpen) renderSheet();
       toast(added ? '已收藏' : '已取消收藏');
     };
 
@@ -6501,9 +6464,8 @@ const App = (() => {
       touchX = null;
       // 快速横向滑动 60px+ 且横向位移明显大于纵向
       if (dt < 600 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        if (dx < 0) { // 左滑 → 下一题（考试模式可自由翻题，无需先作答）
-          if (!recite && !inExam && !session.answered.get(session.current.id) && session.current.answer) return toast('请先作答再翻下一题');
-          if (nextBtn && nextBtn.style.display !== 'none') nextBtn.click();
+        if (dx < 0) { // 左滑 → 下一题（学习/考试均可自由翻题，未答视为跳过）
+          if (nextBtn) nextBtn.click();
         } else if (session.index > 0) { // 右滑 → 上一题
           document.getElementById('skip-btn').click();
         }
@@ -6517,6 +6479,61 @@ const App = (() => {
     let s = escapeHtml(q.stem);
     if (q.type === 'fill') s = s.replace(/_{2,}/g, '<span class="blank">（　　）</span>');
     return s;
+  }
+
+  /* ================= 页面：答题卡（独立页：总览 + 跳题 + 提交题库） ================= */
+  async function pageQuizSheet() {
+    if (!session) return navigate('#/quiz-setup');
+    const inExam = session.inExam;
+    const recite = !inExam && !!session.recite;
+    const p = session.progress;
+    const starSet = new Set(await DB.starIds());
+    topbar('答题卡', '#/quiz');
+
+    const cells = session.list.map((item, i) => {
+      const a = session.answered.get(item.id);
+      const cls = ['sheet-cell'];
+      let pick = '';
+      if (inExam) {
+        const ea = session.examAnswers.get(item.id);
+        if (ea) { cls.push('filled'); pick = String(ea); }   // 考试中只标「已答」，不泄露对错
+      } else if (a) {
+        cls.push(a.correct ? 'done' : 'wrong');
+        pick = String(a.userAnswer ?? '');
+      }
+      if (i === session.index) cls.push('cur');
+      if (starSet.has(item.id)) cls.push('star');
+      // 格子里带上「你选了什么」，一眼看清；填空答案太长就只留配色
+      if (item.type === 'fill') pick = '';
+      else { pick = pick.replace(/\|\|\|/g, '/'); if (pick.length > 3) pick = pick.slice(0, 3) + '…'; }
+      return `<button class="${cls.join(' ')}" data-i="${i}" title="${pick ? '已答：' + escapeHtml(pick) : '未答'}">${i + 1}${pick ? `<span class="cell-pick">${escapeHtml(pick)}</span>` : ''}</button>`;
+    }).join('');
+
+    const statLine = `已答 ${p.done} / ${p.total} 题` + (!inExam && p.done ? ` · 对 ${p.correct} · 错 ${p.wrong}` : '');
+    $view().innerHTML = `
+      <div class="card">
+        <div class="card-title">答题卡 · ${statLine}</div>
+        <div class="sheet-grid" style="margin-top:0">${cells}</div>
+        <div class="sheet-legend">
+          <span><i></i>未答</span>
+          ${inExam ? '<span><i class="filled"></i>已答</span>' : '<span><i class="done"></i>答对</span><span><i class="wrong"></i>答错</span>'}
+          <span><i class="cur"></i>当前题</span>
+          <span>★ 收藏</span>
+        </div>
+        <div class="muted small" style="margin-top:8px">${inExam ? '格子下方小字是你已选答案；点题号回到该题，答案可随时修改' : '格子下方小字是你选的答案；点题号回到该题，已答过的题可随时回看答案与解析'}</div>
+      </div>
+      <button class="btn ghost big" onclick="App.navigate('#/quiz')">‹ 返回继续${recite ? '背题' : '答题'}</button>
+      <button class="btn primary big" id="sheet-submit-btn">✓ 提交题库（结束本次${inExam ? '考试并交卷' : '练习'}）</button>
+      <div class="muted small" style="text-align:center;margin-top:8px">提交后立即出成绩单与逐题解析；未答的题${inExam ? '按错计' : '不计入统计'}</div>`;
+
+    document.querySelectorAll('#view .sheet-cell').forEach(b => {
+      b.onclick = () => {
+        session.jump(+b.dataset.i);
+        saveProgress();
+        navigate('#/quiz');
+      };
+    });
+    document.getElementById('sheet-submit-btn').onclick = () => submitSession();
   }
 
   /* ================= 页面：结果（练习 / 考试成绩单） ================= */

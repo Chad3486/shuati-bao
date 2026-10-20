@@ -9,7 +9,7 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 36
-        versionName "1.8.5"
+        versionName "1.8.6"
     }
     // 固定 debug 签名：把 debug.keystore 提交到仓库，
     // GitHub Actions 不同次构建都用同一个 keystore 签名，
