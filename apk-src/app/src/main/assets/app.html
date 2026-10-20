@@ -3812,7 +3812,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.8'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.9'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -7319,16 +7319,6 @@ const App = (() => {
       <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
   }
 
-  /* ---- 常用模型预设：选中即带出接口地址与参考单价（¥/百万 tok，费用预估用） ---- */
-  const MODEL_PRESETS = [
-    { id: 'deepseek-chat', label: 'DeepSeek V3 · deepseek-chat（输入¥2/输出¥8）', baseUrl: 'https://api.deepseek.com/v1', priceIn: 2, priceOut: 8 },
-    { id: 'deepseek-reasoner', label: 'DeepSeek R1 · deepseek-reasoner（输入¥4/输出¥16）', baseUrl: 'https://api.deepseek.com/v1', priceIn: 4, priceOut: 16 },
-    { id: 'glm-4-flash', label: '智谱 GLM-4-Flash（免费）', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', priceIn: 0, priceOut: 0 },
-    { id: 'glm-4-plus', label: '智谱 GLM-4-Plus', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', priceIn: 5, priceOut: 5 },
-    { id: 'qwen-plus', label: '通义千问 qwen-plus（输入¥0.8/输出¥2）', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', priceIn: 0.8, priceOut: 2 },
-    { id: 'gpt-4o-mini', label: 'GPT-4o mini（≈输入¥1/输出¥4）', baseUrl: 'https://api.openai.com/v1', priceIn: 1, priceOut: 4 }
-  ];
-
   async function pageSettings() {
     topbar('设置');
     const cfg = await LLM.getConfig();
@@ -7351,14 +7341,17 @@ const App = (() => {
           <input id="set-key" type="password" value="${escapeHtml(cfg.apiKey)}" placeholder="sk-...">
         </label>
         <div class="muted small">⚠ Key 明文保存在本机浏览器（IndexedDB），不上传服务器；请勿在共用设备上保存，泄露需到服务商处作废重换</div>
-        <label class="field"><span>模型（选择后自动带出接口地址与参考单价，不用手填）</span>
-          <select id="set-model-sel">
-            ${MODEL_PRESETS.map(p => `<option value="${p.id}" ${cfg.model === p.id ? 'selected' : ''}>${p.label}</option>`).join('')}
-            <option value="__custom" ${MODEL_PRESETS.some(p => p.id === cfg.model) ? '' : 'selected'}>自定义（手填模型名）</option>
-          </select>
+        <label class="field"><span>模型（填好上方接口地址和 Key 后，点「获取列表」自动拉取，不用手填）</span>
+          <div style="display:flex;gap:8px">
+            <select id="set-model-sel" style="flex:1">
+              <option value="${escapeHtml(cfg.model)}" selected>${escapeHtml(cfg.model || '（未设置）')}</option>
+              <option value="__custom">自定义（手填模型名）</option>
+            </select>
+            <button class="btn ghost" id="fetch-models" type="button" style="flex:0 0 auto;white-space:nowrap">↻ 获取列表</button>
+          </div>
         </label>
-        <label class="field" id="set-model-custom-wrap" style="display:${MODEL_PRESETS.some(p => p.id === cfg.model) ? 'none' : ''}"><span>自定义模型名</span>
-          <input id="set-model" value="${MODEL_PRESETS.some(p => p.id === cfg.model) ? '' : escapeHtml(cfg.model)}" placeholder="任意 OpenAI 兼容模型名">
+        <label class="field" id="set-model-custom-wrap" style="display:none"><span>自定义模型名</span>
+          <input id="set-model" placeholder="任意 OpenAI 兼容模型名">
         </label>
         <label class="field"><span>视觉模型（图片识别用，留空 = 跟随主模型）</span>
           <input id="set-vmodel" value="${escapeHtml(cfg.visionModel || '')}" placeholder="如 glm-4v / qwen-vl-plus / gpt-4o-mini，需支持图片输入">
@@ -7373,7 +7366,7 @@ const App = (() => {
         <label class="field"><span>单次费用上限（¥，0 = 不限，实耗达到即自动暂停）</span>
           <input id="set-cap" type="number" min="0" step="0.1" value="${cfg.capYuan != null ? cfg.capYuan : 0}">
         </label>
-        <div class="muted small">单价按所选模型自动带出（参考价，改价以服务商官网为准）；选「自定义」时沿用上次保存的单价</div>
+        <div class="muted small">费用预估沿用已保存的单价（参考价）；上方列表来自接口 /models，选不到的模型选「自定义」手填</div>
         <div class="btn-row">
           <button class="btn ghost" id="test-btn">测试连接</button>
           <button class="btn primary" id="save-btn">保存</button>
@@ -7452,15 +7445,36 @@ const App = (() => {
     };
 
 
-    /* 模型下拉：切换预设时自动带出接口地址与参考单价；「自定义」才手填模型名 */
-    let curPrice = { priceIn: cfg.priceIn != null ? cfg.priceIn : 2, priceOut: cfg.priceOut != null ? cfg.priceOut : 8 };
+    /* 模型下拉：点「获取列表」按接口地址 + Key 拉取 /models，真实模型自动填充；拉不到可手填 */
+    const curPrice = { priceIn: cfg.priceIn != null ? cfg.priceIn : 2, priceOut: cfg.priceOut != null ? cfg.priceOut : 8 };
     const selModel = document.getElementById('set-model-sel');
     selModel.onchange = () => {
-      const p = MODEL_PRESETS.find(x => x.id === selModel.value);
-      document.getElementById('set-model-custom-wrap').style.display = p ? 'none' : '';
-      if (p) {
-        document.getElementById('set-url').value = p.baseUrl;
-        curPrice = { priceIn: p.priceIn, priceOut: p.priceOut };
+      document.getElementById('set-model-custom-wrap').style.display = selModel.value === '__custom' ? '' : 'none';
+    };
+    document.getElementById('fetch-models').onclick = async () => {
+      const base = document.getElementById('set-url').value.trim().replace(/\/+$/, '');
+      const key = document.getElementById('set-key').value.trim();
+      if (!base) return toast('先填接口地址再拉取');
+      const btn = document.getElementById('fetch-models');
+      btn.textContent = '拉取中…'; btn.disabled = true;
+      try {
+        const headers = key ? { Authorization: 'Bearer ' + key } : {};
+        let resp = await fetch(base + '/models', { headers });
+        if (resp.status === 404) resp = await fetch(base + '/v1/models', { headers }); // 地址没带 /v1 时兜底
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const ids = (data.data || data.models || []).map(m => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean).sort();
+        if (!ids.length) throw new Error('接口返回空列表');
+        const cur = selModel.value === '__custom' ? (document.getElementById('set-model').value.trim() || cfg.model) : selModel.value;
+        selModel.innerHTML = ids.map(id => `<option value="${escapeHtml(id)}" ${id === cur ? 'selected' : ''}>${escapeHtml(id)}</option>`).join('')
+          + `<option value="__custom" ${ids.includes(cur) ? '' : 'selected'}>自定义（手填模型名）</option>`;
+        document.getElementById('set-model-custom-wrap').style.display = ids.includes(cur) ? 'none' : '';
+        if (!ids.includes(cur)) document.getElementById('set-model').value = cur || '';
+        toast(`✓ 拉到 ${ids.length} 个模型，直接选一个保存即可`);
+      } catch (e) {
+        toast('拉取失败：' + e.message + '（检查地址/Key，或选「自定义」手填）', 4000);
+      } finally {
+        btn.textContent = '↻ 获取列表'; btn.disabled = false;
       }
     };
 
