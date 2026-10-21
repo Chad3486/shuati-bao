@@ -214,6 +214,25 @@ body {
 }
 .hero-label { opacity: .85; font-size: 13px; position: relative; }
 
+/* 首页快捷磁贴：横排四宫格 + SVG 图标（紧凑，少占高度） */
+.quick-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px;
+}
+.quick-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 2px 8px; border: none; cursor: pointer; font-family: inherit;
+  background: var(--card); border-radius: 12px;
+  font-size: 11px; font-weight: 600; color: var(--text, #1c2333);
+  box-shadow: 0 2px 8px rgba(30, 50, 120, .06);
+  transition: transform .12s ease, box-shadow .15s ease;
+}
+.quick-tile:active { transform: scale(.94); box-shadow: 0 1px 4px rgba(30, 50, 120, .08); }
+.quick-ico {
+  width: 32px; height: 32px; border-radius: 9px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.quick-ico svg { width: 18px; height: 18px; display: block; }
+
 .bank-list { margin-top: 16px; }
 .bank-card {
   display: flex; align-items: center; background: var(--card);
@@ -3838,7 +3857,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.13'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.14'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4318,9 +4337,32 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
-      <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
-      ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
+      <div class="quick-grid">
+        <button class="quick-tile" onclick="App.navigate('#/import')">
+          <span class="quick-ico" style="background:rgba(59,130,246,.14);color:#2f6bff">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          </span>
+          <span>导入题库</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/canon')">
+          <span class="quick-ico" style="background:rgba(139,92,246,.14);color:#7c3aed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 11h6"/><path d="M9 15h4"/></svg>
+          </span>
+          <span>粘贴导入</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/search')">
+          <span class="quick-ico" style="background:rgba(16,163,127,.14);color:#0e9f6e">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          </span>
+          <span>搜题</span>
+        </button>
+        <button class="quick-tile" onclick="App.wrongRedo()">
+          <span class="quick-ico" style="background:rgba(239,68,68,.14);color:#e05656">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>
+          </span>
+          <span>错题重做</span>
+        </button>
+      </div>
       ${banks.length > LIMIT ? `
       <div class="list-tools">
         <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
