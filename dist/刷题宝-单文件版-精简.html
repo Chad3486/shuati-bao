@@ -3643,7 +3643,11 @@ class QuizSession {
   static judge(q, userAnswer) {
     if (q.type === 'fill') return QuizSession.checkFill(userAnswer, q.answer);
     const norm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-    return norm(userAnswer) === norm(q.answer);
+    const u = norm(userAnswer), s = norm(q.answer);
+    // 归一化后为空：历史数据里判断题答案可能存的是「对/错」「正确/错误」这类中文。
+    // 不能因为两边都归成空串就判对（那等于判断题永远正确），退回原文严格比对。
+    if (!u || !s) return String(userAnswer).trim() === String(q.answer).trim();
+    return u === s;
   }
 
   /* ---- 提交答案（学习模式：立即判分并写记录） ---- */
@@ -3785,7 +3789,9 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.7'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  // 版本号单一来源：build-single.mjs 打包时用 apk-src/app/build.gradle 的 versionName 覆盖这里
+  // （CI 会用 tag 注入 VERSION_NAME；这里只是本地直接开 index.html 时的兜底值，勿手改）
+  const VERSION = '1.8.16';
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -7139,10 +7145,10 @@ const App = (() => {
           <span class="muted small">删掉的题库先放这里</span>
           <span class="me-chev">›</span>
         </button>
-        <button class="me-entry" onclick="window.open('https://github.com/Chad3486/shuati-bao/releases','_blank')">
+        <button class="me-entry" onclick="App.checkUpdate()">
           <span class="me-ico" style="background:#3d8f5f">⟳</span>
           <span class="me-label">检查更新</span>
-          <span class="muted small">GitHub Releases</span>
+          <span class="muted small">对比 GitHub 最新版本</span>
           <span class="me-chev">›</span>
         </button>
       </div>
@@ -7314,6 +7320,40 @@ const App = (() => {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  /* ================= 检查更新（v1.8.17：真的比版本，不再只是跳链接） ================= */
+  const RELEASES_API = 'https://api.github.com/repos/Chad3486/shuati-bao/releases/latest';
+  const RELEASES_PAGE = 'https://github.com/Chad3486/shuati-bao/releases';
+
+  function cmpVersion(a, b) {
+    const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d > 0 ? 1 : -1;
+    }
+    return 0;
+  }
+
+  async function checkUpdate() {
+    let rel;
+    try {
+      const r = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      rel = await r.json();
+    } catch (e) {
+      // 断网 / API 限流 / 被墙：退化成打开 Releases 页，按钮不能变成死键
+      toast('读取版本信息失败，打开 Releases 页面');
+      window.open(RELEASES_PAGE, '_blank');
+      return;
+    }
+    const latest = String(rel.tag_name || '').replace(/^v/, '');
+    if (!latest) return void window.open(RELEASES_PAGE, '_blank');
+    if (cmpVersion(latest, VERSION) <= 0) return void toast(`已是最新版本 v${VERSION}`);
+    const apk = (rel.assets || []).find(a => /\.apk$/i.test(a.name || ''));
+    const target = apk ? apk.browser_download_url : (rel.html_url || RELEASES_PAGE);
+    if (confirmDialog(`发现新版本 v${latest}（当前 v${VERSION}）\n\n是否下载安装？`)) window.open(target, '_blank');
+  }
+
   /* ================= 启动 ================= */
   async function init() {
     try {
@@ -7343,7 +7383,7 @@ const App = (() => {
     }
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, toast };
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, checkUpdate, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

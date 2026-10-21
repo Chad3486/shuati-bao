@@ -57,6 +57,10 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // v1.8.17：关掉多窗口。否则页面里的 window.open(url, '_blank')（「检查更新」、下载 APK）
+        // 会被 WebView 当成新窗口请求——没人实现 onCreateWindow，于是点下去没反应（死按钮）；
+        // 关掉后走同窗口导航，由 shouldOverrideUrlLoading 交给系统浏览器打开。
+        s.setSupportMultipleWindows(false);
 
         // JS ↔ Java 桥接：前端保存文件到系统 Download 目录（Blob/Object URL 在 WebView 不触发下载）
         wv.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");

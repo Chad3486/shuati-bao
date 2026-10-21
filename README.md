@@ -69,10 +69,10 @@ C. 全控器件
 ## 下载安装
 
 ### 方式一：Release（推荐）
-到 [Releases](../../releases) 页面下载最新版 `shuati-bao-v*.apk`，传到安卓手机安装（需允许"未知来源"）。
+到 [Releases](../../releases) 页面下载最新版 `shuati-bao-v1.8.x.apk`（**文件名与版本号一致**，例如 `shuati-bao-v1.8.17.apk`），传到安卓手机安装（需允许"未知来源"）。
 
 ### 方式二：Actions 构建
-Actions → 最新绿色 ✓ 运行 → Artifacts 下载（需登录 GitHub，保留 90 天）。
+推 `v*` tag 会自动构建并发 Release；平时只想要个 APK，就在 Actions → **Build ShuatiBao APK** → Run workflow（产物名 `shuati-bao-dev-<commit>.apk`）。Artifacts 下载需登录 GitHub。
 
 > 要求 Android 5.0+（minSdk 21）。
 
@@ -86,8 +86,8 @@ Actions → 最新绿色 ✓ 运行 → Artifacts 下载（需登录 GitHub，�
 本仓库已配好 GitHub Actions，无需本地环境：
 
 1. Fork 或直接使用本仓库
-2. Actions → **Build ShuatiBao APK** → Run workflow
-3. 等约 3~5 分钟 → Artifacts 下载 APK
+2. **打版本发版**：`git tag v1.8.17 && git push origin v1.8.17`——CI 会自动从 tag 取版本号、重建单文件版、跑冒烟测试、构建 APK 并发 Release
+3. 只想临时要个包不发版：Actions → **Build ShuatiBao APK** → Run workflow
 
 本地构建（需要 JDK 17 + Android SDK + Gradle 8.4+）：
 
@@ -96,12 +96,13 @@ gradle -p apk-src :app:assembleDebug
 # 产物：apk-src/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-改了网页代码后先重建单文件再构建 APK：
+改了网页代码后重建单文件版（本地需要，CI 也会自动跑一遍）：
 
 ```bash
 node build-single.mjs
-cp "dist/刷题宝-单文件版.html" apk-src/app/src/main/assets/app.html
 ```
+
+> 版本号不需要手改：`build-single.mjs` 会从 `apk-src/app/build.gradle` 读 `versionName` 注入到 `js/app.js`，CI 则用 tag 覆盖。App 内显示的版本号不会再和 APK 脱钩。
 
 ## 技术栈
 
@@ -135,6 +136,15 @@ cp "dist/刷题宝-单文件版.html" apk-src/app/src/main/assets/app.html
 - 题库重要的话记得定期「导出备份」JSON
 
 ## 更新日志
+
+### v1.8.17
+- **版本号单一来源**：`versionName` / `versionCode` 由 tag 自动注入，App 内的版本号由打包脚本注入——不再三处手改，也修掉了「App「我的」页显示 v1.8.7、实际装的是 v1.8.16」的漂移
+- **CI 加护栏**：构建前先跑 `node --check` + `scripts/smoke-lite.test.js` + 新增的 `scripts/quiz.test.js`（39 条断言），过不了就不出包
+- **发版只构建一次**：原来推 main 构建一次、打 tag 再构建一次；现在只由 tag 触发（手动 dispatch 仍可出临时包），产物名直接带版本号 `shuati-bao-v1.8.17.apk`
+- **CI 自动重建单文件版**：不再依赖本地记得跑 `build-single.mjs`，避免 APK 里装的是旧页面
+- **「检查更新」真的能比版本了**：拉 GitHub 最新 Release 与当前版本比对，有新版直接给 APK 下载链接；断网 / 限流时退化为打开 Releases 页
+- **修 APK 里「检查更新」点不动**：WebView 关掉多窗口（`setSupportMultipleWindows(false)`），`window.open` 不再被宿主吞掉，交给系统浏览器打开
+- **修判断题可能永远判对**：判分归一化后若两边都是空串（答案存的是中文「对/错」），退回原文严格比对
 
 ### v1.8.16
 - **修复「乱序没有效果」**：根因是从首页题库卡片直接点开练 / 统计页章节直练走的旧路径不带随机参数。现在顺序偏好全局记住（练习设置页选「随机/顺序」后一直生效），**默认随机**

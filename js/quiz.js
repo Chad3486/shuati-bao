@@ -69,7 +69,11 @@ class QuizSession {
   static judge(q, userAnswer) {
     if (q.type === 'fill') return QuizSession.checkFill(userAnswer, q.answer);
     const norm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
-    return norm(userAnswer) === norm(q.answer);
+    const u = norm(userAnswer), s = norm(q.answer);
+    // 归一化后为空：历史数据里判断题答案可能存的是「对/错」「正确/错误」这类中文。
+    // 不能因为两边都归成空串就判对（那等于判断题永远正确），退回原文严格比对。
+    if (!u || !s) return String(userAnswer).trim() === String(q.answer).trim();
+    return u === s;
   }
 
   /* ---- 提交答案（学习模式：立即判分并写记录） ---- */
