@@ -3654,7 +3654,11 @@ class QuizSession {
   constructor(questions, opts = {}) {
     this.all = questions;
     this.opts = opts;
-    this.list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    let list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    // v1.8.15 选项乱序：随机模式 = 题序 + 选项序一起打乱。
+    // 只改会话内副本（题库原数据不动），答案字母同步换算；异常一律回退原题
+    if (opts.shuffle) list = list.map(q => this._shuffleOptions(q));
+    this.list = list;
     this.index = 0;
     this.answered = new Map(); // qid -> {userAnswer, correct, q, answer, explanation}
     this.startTime = Date.now();
@@ -3673,6 +3677,46 @@ class QuizSession {
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
     return arr;
+  }
+
+  /* ---- 选项乱序（v1.8.15）----
+     规则：仅单选/多选、选项 ≥3 个且有答案；「以上都对 / 上述都不对」类联动选项不打乱（语义会破）；
+     返回浅拷贝题（options 新对象 + 换算后的 answer + _optPerm 旧字母→新字母映射），题库原数据不动；
+     任何不确定（答案字母对不上选项等）都原样返回，保证答案永不因乱序而出错 */
+  _shuffleOptions(q) {
+    if (q.type !== 'single' && q.type !== 'multi') return q;
+    if (!q.options || !q.answer) return q;
+    const keys = Object.keys(q.options).sort();
+    if (keys.length < 3) return q;                       // 对/错、A/B 两个选项打乱无意义
+    const texts = keys.map(k => String(q.options[k] ?? ''));
+    if (texts.some(t => /以上|上述|都不?对|都不?是|都正确|都错误|全部正确|全部错误/.test(t))) return q;
+    const ansLetters = String(q.answer).toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !keys.includes(c))) return q;
+
+    const order = this._shuffle([...keys.keys()]);       // order[j] = 新位置 j 的内容来自旧下标
+    const mapping = new Map();                           // 旧字母 → 新字母
+    keys.forEach((oldK, i) => mapping.set(oldK, keys[order[i]]));
+    const copy = QuizSession.permuteQuestion(q, mapping);
+    if (!copy) return q;                                 // 换算失败兜底：原题原样
+    return copy;
+  }
+
+  /* 按 旧字母→新字母 映射生成题目副本（restore 续练复用）；校验失败返回 null。
+     注意：options 新对象必须按新字母 A,B,C… 顺序插入——渲染层用 Object.keys 的插入顺序显示 */
+  static permuteQuestion(q, mapping) {
+    const keys = Object.keys(q.options || {}).sort();
+    if (!keys.length || keys.some(k => !mapping.has(k))) return null;
+    const news = keys.map(k => mapping.get(k));
+    if (new Set(news).size !== keys.length) return null; // 必须是双射
+    const newOptions = {};
+    [...news].sort().forEach(nk => {
+      const oldK = keys.find(k => mapping.get(k) === nk);
+      newOptions[nk] = q.options[oldK];
+    });
+    const ansLetters = String(q.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !mapping.has(c))) return null;
+    const newAnswer = [...ansLetters].map(c => mapping.get(c)).sort().join('');
+    return { ...q, options: newOptions, answer: newAnswer, _optPerm: Object.fromEntries(mapping) };
   }
 
   get current() { return this.list[this.index]; }
@@ -3797,15 +3841,20 @@ class QuizSession {
       deadline: this.deadline || 0,
       graded: this.graded,
       recite: !!this.recite,
-      examAnswers: [...this.examAnswers.entries()]
+      examAnswers: [...this.examAnswers.entries()],
+      // 选项乱序映射（v1.8.15）：qid -> {旧字母:新字母}，恢复时原样套回，已答字母才不会错位
+      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm])
     };
   }
   /* ---- 反序列化：查库重建 ---- */
   static async restore(data) {
+    const permMap = new Map(data.optPerm || []);
     const qs = [];
     for (const id of data.ids) {
       const q = await DB.questionGet(id);
-      if (q) qs.push(q);
+      if (!q) continue;
+      // 套回上次会话的选项乱序（保证已答字母不错位）；套不上就原题，判分仍正确
+      qs.push(permMap.has(id) ? (QuizSession.permuteQuestion(q, new Map(Object.entries(permMap.get(id)))) || q) : q);
     }
     const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
@@ -3857,7 +3906,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.14'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.15'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4086,6 +4135,18 @@ const App = (() => {
   }
 
   function confirmDialog(msg) { return window.confirm(msg); }
+
+  /* v1.8.15 防误覆盖：还有没做完的练习时，开新练习前先确认一次，
+     防止手滑开新练习把上次的答题进度顶掉（已交卷/没答过/已答满的不拦） */
+  async function guardUnfinishedSession() {
+    try {
+      const data = await DB.metaGet('lastSession');
+      if (!data || !Array.isArray(data.ids) || data.graded) return true;
+      const answered = (data.answered || []).length + (data.examAnswers || []).length;
+      if (!answered || answered >= data.ids.length) return true;
+      return confirmDialog(`上次有没做完的练习（已答 ${answered}/${data.ids.length} 题）。\n开始新练习会丢掉这份进度，确定继续？`);
+    } catch (e) { return true; }
+  }
 
   /* ---- 文件小工具（浏览器 / APK 通用） ---- */
   function blobToBase64(blob) {
@@ -4432,6 +4493,7 @@ const App = (() => {
   }
 
   async function startBank(id) {
+    if (!await guardUnfinishedSession()) return;
     session = await QuizBuilder.fromBanks([id], { filterType: 'answered' });
     if (!session.total) {
       const qs = await DB.questionsByBank(id);
@@ -5584,9 +5646,12 @@ const App = (() => {
       // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
       const list = qs.filter(q => sel.has(q.id));
       const noAnsCount = list.filter(q => !q.answer).length;
-      session = new QuizSession(list, { shuffle: false });
-      if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
-      navigate('#/quiz');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(list, { shuffle: false });
+        if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
+        navigate('#/quiz');
+      });
     };
 
     // 导出 / 复制范式：题库 → 范式文本（导出 .docx 在 Word 里改完，回「范式导入」载入即可导回）
@@ -6080,6 +6145,7 @@ const App = (() => {
           <button data-v="order" class="on">顺序</button>
           <button data-v="shuffle">随机</button>
         </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
       </div>
       <button class="btn primary big" id="start-quiz"></button>
       <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
@@ -6306,6 +6372,7 @@ const App = (() => {
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
       const n = countAvail();
       const mins = curMinutes(n);
+      if (!await guardUnfinishedSession()) return;
       session = await QuizBuilder.fromBanks(ids, {
         shuffle,
         filterType: curFilter(),
@@ -6324,6 +6391,7 @@ const App = (() => {
   }
 
   async function wrongRedo() {
+    if (!await guardUnfinishedSession()) return;
     session = await QuizBuilder.wrongRedo();
     if (!session.total) return toast('没有错题');
     navigate('#/quiz');
@@ -6332,6 +6400,7 @@ const App = (() => {
   async function starRedo() {
     const qs = (await DB.starQuestions()).filter(q => q.answer);
     if (!qs.length) return toast('收藏的题都缺答案');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(qs, { shuffle: true, mode: 'star' });
     navigate('#/quiz');
   }
@@ -6411,6 +6480,7 @@ const App = (() => {
           <button data-v="shuffle" class="on">随机</button>
           <button data-v="order">顺序</button>
         </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
       </div>
       <button class="btn primary big" id="rv-start"></button>
 
@@ -6557,8 +6627,11 @@ const App = (() => {
     startBtn.onclick = () => {
       const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
       if (!qs.length) return toast('该范围没有可练的题');
-      session = new QuizSession(qs, { shuffle, exam, minutes: curMinutes(qs.length), mode: isWrong ? 'wrong' : 'star' });
-      navigate('#/quiz');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(qs, { shuffle, exam, minutes: curMinutes(qs.length), mode: isWrong ? 'wrong' : 'star' });
+        navigate('#/quiz');
+      });
     };
     renderPick(); refresh();
     rvSheet.style.display = '';   // 默认拉起：进入页面直接弹选择题库
@@ -7159,6 +7232,7 @@ const App = (() => {
     if (!session) return navigate('#/quiz-setup');
     const list = session.wrongList().map(x => x.q);
     if (!list.length) return toast('没有错题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(list, { shuffle: true });
     navigate('#/quiz');
   }
@@ -7357,6 +7431,7 @@ const App = (() => {
 
   async function startSearchPractice() {
     if (!searchPool.length) return toast('没有可练的题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession([...searchPool], { shuffle: true, mode: 'search' });
     navigate('#/quiz');
   }
@@ -7574,6 +7649,7 @@ const App = (() => {
   /** 统计页点章节 → 直接开练这一章（学习模式，只练有答案的题） */
   async function practiceSection(bankId, secIdx) {
     const key = bankId + ':' + (secIdx || '');
+    if (!await guardUnfinishedSession()) return;
     session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]) });
     if (!session.total) return toast('该章节没有带答案的题可练');
     navigate('#/quiz');
