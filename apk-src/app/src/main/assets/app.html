@@ -1261,7 +1261,13 @@ const Extractor = (() => {
      R1 子小问（1）（2）（3）并入父题；R2 答案区停切；R3 短答案行不算题
      S1 题型小节感知：「一、单选题」等行设置当前节，题号回到1时隐式开新节
      每题带 key=节序号-题号（跨节去重用，修复各节同号互相覆盖）---- */
-  function splitQuestions(text) {
+  function splitQuestions(text, customSrc) {
+    // 自定义切题正则（v1.8.13）：设置后只按该行首模式切题，第一个括号捕获题号（无捕获则顺序编号）
+    const customRe = (() => {
+      if (!customSrc) return null;
+      try { const r = new RegExp(customSrc); return r.test('') ? null : r; } catch { return null; }
+    })();
+    let autoNo = 0;
     const lines = text.split('\n');
     const mainRe = /^\s*(\d{1,3})\s*[.、．)）]\s*/;
     const subRe = /^[（(]\s*(\d{1,3})\s*[)）]\s*/;
@@ -1343,6 +1349,26 @@ const Extractor = (() => {
       }
       if (isAnswerLine(line)) { if (cur) { items.push(cur); cur = null; } continue; }
       if (isAnswerEntry(line)) { if (cur) { items.push(cur); cur = null; } continue; }
+
+      /* 自定义正则模式：命中 = 开新题，其余行归入当前题 */
+      if (customRe) {
+        const cm = trimmed.length > 3 ? line.match(customRe) : null;
+        if (cm) {
+          let no = ++autoNo;
+          if (cm[1] && /^\d{1,4}$/.test(cm[1].trim())) { no = parseInt(cm[1], 10); autoNo = no; }
+          if (no === 1 && lastQNo > 1) {
+            secIdx++; curType = null; chapPart++;
+            sections.push({ secIdx, title: curChapter ? (curChapter + ' · 第' + chapPart + '组') : null, type: null });
+          }
+          lastQNo = no;
+          if (cur) items.push(cur);
+          cur = { no, secIdx, type: curType, key: secIdx + '-' + no, text: [line.replace(customRe, '').trim() || line] };
+        } else if (cur) {
+          cur.text.push(line);
+          if (cur.text.join('\n').length > 4000) { items.push(cur); cur = null; }
+        }
+        continue;
+      }
 
       const m = line.match(mainRe);
       const sm = line.match(subRe);
@@ -2235,12 +2261,12 @@ const LLM = (() => {
   }
 
   /* ---- 整体解析 · 纯本地：正则切题 + 逐题解析 + 答案表匹配（0 次 API 调用、无需 API Key） ---- */
-  async function parseDocument(fullText, onProgress) {
+  async function parseDocument(fullText, onProgress, customSrc) {
     const text = Extractor.cleanText(fullText);
     const answerTable = findAnswerTable(text);
 
-    // 1) 确定性切题
-    const split = Extractor.splitQuestions(text);
+    // 1) 确定性切题（可选自定义正则）
+    const split = Extractor.splitQuestions(text, customSrc);
 
     // 2) 本地正则解析（毫秒级、零费用）——透传节题型/节键
     const questions = [];
@@ -3812,7 +3838,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.12'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.13'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4655,6 +4681,10 @@ const App = (() => {
           </div>
         </label>
         <div class="muted small" id="engine-hint"></div>
+        <label class="field" style="margin-top:10px"><span>自定义切题正则（高级 · 可留空）</span>
+          <input type="text" id="custom-re" placeholder="行首匹配；第一个括号捕获题号，如 ^第\s*(\d+)\s*题">
+        </label>
+        <div class="muted small" id="custom-re-hint">留空 = 内置规则（1. 2.、(1) (2)）。设置后「本地正则」引擎只按这个行首模式切题（对文字版 DOCX/TXT/MD 生效），保存后重新导入生效。</div>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
@@ -4690,6 +4720,21 @@ const App = (() => {
       engineHint.textContent = HINTS[b.dataset.v];
       await DB.metaSet('importEngine', b.dataset.v);
     };
+
+    /* 自定义切题正则（v1.8.13）：持久化 + 语法校验（空行可匹配的一律拒绝） */
+    const customReInput = document.getElementById('custom-re');
+    const customReHint = document.getElementById('custom-re-hint');
+    DB.metaGet('importRegex').then(v => { customReInput.value = v || ''; });
+    customReInput.addEventListener('change', async () => {
+      const v = customReInput.value.trim();
+      if (!v) { await DB.metaSet('importRegex', ''); customReHint.textContent = '✓ 已清除，恢复内置切题规则'; return; }
+      try {
+        const r = new RegExp(v);
+        if (r.test('')) { customReHint.textContent = '⚠ 这个正则能匹配空内容，会乱切；请加 ^ 锚定行首（如 ^第\\s*(\\d+)\\s*题）'; return; }
+      } catch (e) { customReHint.textContent = '⚠ 正则语法错误：' + e.message; return; }
+      await DB.metaSet('importRegex', v);
+      customReHint.textContent = '✓ 已保存，重新导入时本地正则引擎按此模式切题';
+    });
   }
 
   async function handleFiles(files) {
@@ -4967,16 +5012,20 @@ const App = (() => {
           }
           continue;
         }
-        // ---- 无 API Key：本地解析保底（零调用、免费） ----
+        // ---- 无 API Key：本地解析保底（零调用、免费；支持自定义切题正则） ----
         setState('本地解析…');
+        const customSrc = ((await DB.metaGet('importRegex')) || '').trim();
         const res = await LLM.parseDocument(text, (done, total, got) => {
           const elapsed = Math.round((Date.now() - t0) / 1000);
           statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
           bar.style.width = Math.round(done / total * 95) + '%';
-        });
+        }, customSrc);
         if (!res.questions.length) {
           setState('未发现题目');
-          statusEl.textContent = '⚠ 本地解析没切出题，且未配置 API Key（AI 转范式不可用）。到「设置」配好 Key 后重新导入，或到「粘贴文本导入（高级）」人工核对原文';
+          const hasImg = (docImgs.get(i) || []).length > 0;
+          statusEl.textContent = hasImg
+            ? '⚠ 本地解析没切出题：这份文件以图片为主，本地正则认不了图片。识别图片试卷需在「设置」配好 API Key、引擎选「自动 / 仅 AI」走 AI 视觉；文字部分可复制到「粘贴文本导入（高级）」'
+            : '⚠ 本地解析没切出题，且未配置 API Key。可在导入页填「自定义切题正则」后重试；或到「设置」配 Key 走 AI 转范式；或到「粘贴文本导入（高级）」人工核对原文';
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库
@@ -5942,16 +5991,8 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">范围（题库）</div>
-        <div class="list-tools">
-          <input id="setup-search" class="search-input" placeholder="搜索题库名称…">
-          <div class="chips" id="pick-tools">
-            <button class="chip" data-act="all">全选</button>
-            <button class="chip" data-act="none">清空</button>
-            <button class="chip" data-act="ans">只选有答案的库</button>
-          </div>
-        </div>
-        <div class="bank-pick" id="bank-pick"></div>
-        <button class="btn ghost" id="pick-more" style="display:none;margin-top:8px"></button>
+        <button class="btn ghost big" id="bank-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（默认全选，可搜索）</div>
       </div>
 
       <div class="card">
@@ -6012,10 +6053,37 @@ const App = (() => {
           </div>
           <div id="sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
         </div>
+      </div>
+
+      <div id="bank-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="bank-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:76vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="btn primary" id="bank-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div style="padding:0 16px 8px">
+            <input id="setup-search" class="search-input" style="width:100%" placeholder="搜索题库名称…">
+            <div class="chips" id="pick-tools" style="margin-top:8px">
+              <button class="chip" data-act="all">全选</button>
+              <button class="chip" data-act="none">清空</button>
+              <button class="chip" data-act="ans">只选有答案的库</button>
+            </div>
+          </div>
+          <div class="bank-pick" id="bank-pick" style="overflow-y:auto;padding:0 16px;flex:1;-webkit-overflow-scrolling:touch"></div>
+          <div style="padding:8px 16px calc(12px + env(safe-area-inset-bottom))">
+            <button class="btn ghost" id="pick-more" style="display:none;width:100%"></button>
+          </div>
+        </div>
       </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
     const pickMoreBtn = document.getElementById('pick-more');
+    /* 题库选择弹层：点摘要按钮拉起，遮罩/完成关闭（v1.8.13） */
+    const bankSheet = document.getElementById('bank-sheet');
+    document.getElementById('bank-open').onclick = () => { bankSheet.style.display = ''; };
+    document.getElementById('bank-mask').onclick = () => { bankSheet.style.display = 'none'; };
+    document.getElementById('bank-sheet-done').onclick = () => { bankSheet.style.display = 'none'; };
     const secArea = document.getElementById('sec-area');
     const secOpenBtn = document.getElementById('sec-open');
     const secSheet = document.getElementById('sec-sheet');
@@ -6038,6 +6106,9 @@ const App = (() => {
       });
       pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
       pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+      document.getElementById('bank-open').textContent = sel.size === banks.length
+        ? `📂 全部 ${banks.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${banks.length} 个题库（点此修改） ›`;
     }
 
     /* ---- 章节勾选（按库分组，chip 点选；不选 = 全部章节） ---- */
@@ -6241,12 +6312,29 @@ const App = (() => {
     const list = banks.filter(b => cnt.has(b.id));
     const sel = new Set(list.map(b => b.id));
     let filterType = 'all', exam = false, timeMode = 'auto', shuffle = true;
+    /* 章节筛选（v1.8.13）：selSecs 空 = 全部章节；分组默认折叠 */
+    const selSecs = new Set();
+    const secExp = new Set();
+    const secMeta = new Map();          // "bankId:secIdx" -> { bankId, secIdx, n }
+    for (const q of pool) {
+      const s = String(q.secIdx ?? '');
+      const k = q.bankId + ':' + s;
+      const m = secMeta.get(k) || { bankId: q.bankId, secIdx: s, n: 0 };
+      m.n++; secMeta.set(k, m);
+    }
+    const secTitle = new Map();
+    for (const b of banks) for (const s of (b.sections || [])) secTitle.set(b.id + ':' + String(s.secIdx), s.title);
 
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">范围（题库）</div>
         <button class="btn ghost big" id="rv-open" style="width:100%"></button>
         <div class="muted small" style="margin-top:8px">点上面弹出题库选择（全部展开，无需折叠）</div>
+      </div>
+      <div class="card">
+        <div class="card-title">范围（章节）</div>
+        <button class="btn ghost big" id="rv-sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择（分组默认折叠）</div>
       </div>
       <div class="card">
         <div class="card-title">题型</div>
@@ -6295,6 +6383,18 @@ const App = (() => {
           </div>
           <div id="rv-pick" class="bank-pick" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
         </div>
+      </div>
+
+      <div id="rv-sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="rv-sec-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="rv-sec-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
       </div>`;
 
     const pickEl = document.getElementById('rv-pick');
@@ -6305,6 +6405,7 @@ const App = (() => {
     const matchType = q => filterType === 'all' ? true
       : filterType === 'choice' ? (q.type === 'single' || q.type === 'multi' || q.type === 'judge')
       : q.type === 'fill';
+    const matchSec = q => !selSecs.size || selSecs.has(q.bankId + ':' + String(q.secIdx ?? ''));
 
     function renderPick() {
       pickEl.innerHTML = list.map(b => `
@@ -6319,7 +6420,7 @@ const App = (() => {
         ? `📂 全部 ${list.length} 个题库（点此修改） ›`
         : `📂 已选 ${sel.size}/${list.length} 个题库（点此修改） ›`;
     }
-    function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q)).length; }
+    function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q)).length; }
     function curMinutes(n) {
       if (!exam || timeMode === 'none') return 0;
       if (timeMode === 'custom') return Math.max(1, parseInt(document.getElementById('rv-min').value, 10) || 60);
@@ -6336,6 +6437,58 @@ const App = (() => {
     rvOpenBtn.onclick = () => { rvSheet.style.display = ''; };
     document.getElementById('rv-mask').onclick = () => { rvSheet.style.display = 'none'; };
     document.getElementById('rv-done').onclick = () => { rvSheet.style.display = 'none'; };
+
+    /* ---- 章节选择弹层（v1.8.13）：按库分组、默认折叠，点库头展开；清空 = 全部章节 ---- */
+    const rvSecArea = document.getElementById('rv-sec-area');
+    const rvSecOpenBtn = document.getElementById('rv-sec-open');
+    const rvSecSheet = document.getElementById('rv-sec-sheet');
+    function renderRvSecs() {
+      const parts = [];
+      for (const b of list) {
+        if (!sel.has(b.id)) continue;
+        const secs = [...secMeta.values()].filter(m => m.bankId === b.id);
+        if (!secs.length) continue;
+        const picked = secs.filter(m => selSecs.has(b.id + ':' + m.secIdx)).length;
+        const folded = !secExp.has(b.id);
+        parts.push(`
+          <div class="sec-pick">
+            <div class="sec-pick-head">
+              <button class="sec-toggle" data-rvfold="${b.id}" title="${folded ? '展开本章节' : '折叠本章节'}">${folded ? '▸' : '▾'}</button>
+              <b>${escapeHtml(bankName.get(b.id))}</b>
+              <span class="muted small">${picked ? `已选 ${picked}/${secs.length}` : `${secs.length} 章`}</span>
+              <button class="chip" data-rvbank="${b.id}">全选/清空</button>
+            </div>
+            ${folded ? '' : `<div class="chips">
+              ${secs.map(m => {
+                const key = b.id + ':' + m.secIdx;
+                return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-rvsec="${key}" title="${escapeHtml(secTitle.get(key) || '')}">${escapeHtml(secTitle.get(key) || (m.secIdx === '' ? '未分节' : `第 ${m.secIdx} 章`))}（${m.n}）</button>`;
+              }).join('')}
+            </div>`}
+          </div>`);
+      }
+      rvSecArea.innerHTML = parts.join('') || '<div class="muted small" style="padding:12px 0">当前题库没有章节信息，章节筛选不可用</div>';
+      rvSecArea.querySelectorAll('button[data-rvfold]').forEach(btn => {
+        btn.onclick = () => { const bid = btn.dataset.rvfold; secExp.has(bid) ? secExp.delete(bid) : secExp.add(bid); renderRvSecs(); };
+      });
+      rvSecArea.querySelectorAll('button[data-rvbank]').forEach(btn => {
+        btn.onclick = () => {
+          const bid = btn.dataset.rvbank;
+          const keys = [...secMeta.values()].filter(m => m.bankId === bid).map(m => bid + ':' + m.secIdx);
+          const all = keys.every(k => selSecs.has(k));
+          keys.forEach(k => all ? selSecs.delete(k) : selSecs.add(k));
+          renderRvSecs(); refresh();
+        };
+      });
+      rvSecArea.querySelectorAll('button[data-rvsec]').forEach(btn => {
+        btn.onclick = () => { const k = btn.dataset.rvsec; selSecs.has(k) ? selSecs.delete(k) : selSecs.add(k); renderRvSecs(); refresh(); };
+      });
+      rvSecOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+    }
+    rvSecOpenBtn.onclick = () => { renderRvSecs(); rvSecSheet.style.display = ''; };
+    document.getElementById('rv-sec-mask').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-done').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-clear').onclick = () => { selSecs.clear(); renderRvSecs(); refresh(); };
+    rvSecOpenBtn.textContent = '📂 全部章节（点此选择） ›';
     [[document.getElementById('rv-type'), v => filterType = v],
      [document.getElementById('rv-time'), v => { timeMode = v; document.getElementById('rv-min-wrap').style.display = v === 'custom' ? '' : 'none'; }]]
       .forEach(([seg, set]) => {
@@ -6360,7 +6513,7 @@ const App = (() => {
       b.classList.add('on'); shuffle = b.dataset.v === 'shuffle';
     };
     startBtn.onclick = () => {
-      const qs = pool.filter(q => sel.has(q.bankId) && matchType(q));
+      const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
       if (!qs.length) return toast('该范围没有可练的题');
       session = new QuizSession(qs, { shuffle, exam, minutes: curMinutes(qs.length), mode: isWrong ? 'wrong' : 'star' });
       navigate('#/quiz');
@@ -7324,6 +7477,19 @@ const App = (() => {
             <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
             <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
         </div>` : '<div class="muted">暂无答题记录</div>'}
+      </div>
+      <div class="card">
+        <div class="card-title">近 ${days.length} 日正确率</div>
+        ${days.length ? `<div class="chart">
+          ${days.map(([d, v]) => {
+            const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
+            return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
+              <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
+              <span class="col-label"><span class="lb-full">${a}%</span><span class="lb-mini">${a}%</span></span></div>`;
+          }).join('')}
+        </div>
+        <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`
+        : '<div class="muted">暂无答题记录</div>'}
       </div>`;
 
     if (!rows.length) return;
@@ -7397,14 +7563,36 @@ const App = (() => {
           <span class="muted small">删掉的题库先放这里</span>
           <span class="me-chev">›</span>
         </button>
-        <button class="me-entry" onclick="window.open('https://github.com/Chad3486/shuati-bao/releases','_blank')">
+        <button class="me-entry" id="check-update">
           <span class="me-ico" style="background:#3d8f5f">⟳</span>
           <span class="me-label">检查更新</span>
-          <span class="muted small">GitHub Releases</span>
+          <span class="muted small">对比 GitHub 最新版</span>
           <span class="me-chev">›</span>
         </button>
       </div>
       <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
+
+    /* 检查更新：拉 GitHub 最新 Release 对比版本号，有新版直接打开 APK 下载直链 */
+    document.getElementById('check-update').onclick = async () => {
+      toast('正在检查更新…');
+      try {
+        const r = await fetch('https://api.github.com/repos/Chad3486/shuati-bao/releases/latest');
+        const d = await r.json();
+        const latest = String(d.tag_name || '').replace(/^v/, '');
+        if (!latest) throw new Error('no tag');
+        if (latest === VERSION) return toast(`已是最新版本 v${VERSION}`);
+        if (latest > VERSION) {
+          const apk = (d.assets || []).find(a => /apk$/i.test(a.name));
+          toast(`发现新版本 v${latest}，正在打开下载…`);
+          window.open(apk ? apk.browser_download_url : d.html_url, '_blank');
+        } else {
+          toast(`当前 v${VERSION} 比线上 v${latest} 还新`);
+        }
+      } catch (e) {
+        toast('检查失败（无网络？），去浏览器打开 GitHub Releases');
+        window.open('https://github.com/Chad3486/shuati-bao/releases', '_blank');
+      }
+    };
   }
 
   async function pageSettings() {
