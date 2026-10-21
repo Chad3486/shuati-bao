@@ -3812,7 +3812,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.10'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.11'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4646,7 +4646,15 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完：<b>AI 直接把原卷转成范式并入库</b>，原卷里的答案、解析原样带走，不用再手动补。需在「设置」配置 API Key；<b>没配 Key 时自动降级本地解析</b>（免费、快，但排版乱的文档可能切不准）。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完，答案、解析原样带走，不用再手动补。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <label class="field" style="margin-top:6px"><span>解析引擎</span>
+          <div class="seg" id="seg-engine">
+            <button data-v="auto" class="on">自动</button>
+            <button data-v="local">本地正则（免AI）</button>
+            <button data-v="ai">仅 AI</button>
+          </div>
+        </label>
+        <div class="muted small" id="engine-hint"></div>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
@@ -4661,6 +4669,27 @@ const App = (() => {
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
     input.onchange = () => { lastPickedFiles = [...input.files]; handleFiles(lastPickedFiles); };
+
+    /* 解析引擎选择：本地正则 = 老桌面版的秒级正则引擎，零 API、免费；持久化保存 */
+    const HINTS = {
+      auto: '自动 = 配了 Key 走 AI 转范式（乱排版更稳），没配 Key 走本地正则（秒级、零费用）',
+      local: '本地正则：不用 API Key、不花钱、毫秒级；排版乱的文档可能切不准，建议导入后抽查',
+      ai: '仅 AI：每次导入都走 AI 转范式（需在「设置」配好 Key），没 Key 的文件会跳过'
+    };
+    const segEngine = document.getElementById('seg-engine');
+    const engineHint = document.getElementById('engine-hint');
+    DB.metaGet('importEngine').then(saved => {
+      const v = saved || 'auto';
+      segEngine.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+      engineHint.textContent = HINTS[v];
+    });
+    segEngine.onclick = async (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      segEngine.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      engineHint.textContent = HINTS[b.dataset.v];
+      await DB.metaSet('importEngine', b.dataset.v);
+    };
   }
 
   async function handleFiles(files) {
@@ -4769,8 +4798,15 @@ const App = (() => {
       try {
         // v1.8 快速通道 = AI 转范式直通：配了 API Key → AI 直接把原卷转成范式、逐片入库，
         // 答案/解析原样带走，导入即用；没配 Key → 本地解析保底。不再本地先行、不再两条路绕
+        // v1.8.11：引擎可选（自动 / 本地正则免AI / 仅AI），本地正则成为一等公民
         const cfg = await LLM.getConfig();
-        if (cfg.apiKey) {
+        const engine = (await DB.metaGet('importEngine')) || 'auto';
+        if (engine === 'ai' && !cfg.apiKey) {
+          setState('跳过（无 Key）');
+          statusEl.textContent = '⚠ 已选「仅 AI」但没配 API Key，本题库跳过；把引擎改成「自动 / 本地正则」或到「设置」配好 Key 再导';
+          continue;
+        }
+        if (engine === 'ai' || (engine === 'auto' && cfg.apiKey)) {
           setState('AI 转范式…');
           // v1.7.1：全局任务中心接管进度与通知栏（换页/锁屏回来自动可见）；逐批入库不等整份
           const dImgs = docImgs.get(i) || [];
