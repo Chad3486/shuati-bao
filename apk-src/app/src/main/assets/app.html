@@ -3812,7 +3812,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.9'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.10'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5920,11 +5920,8 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">范围（章节）</div>
-        <div class="muted small" id="sec-sum">不选 = 全部章节</div>
-        <div class="chips" id="sec-tools" style="margin-top:8px">
-          <button class="chip" data-act="none">清空（=全部章节）</button>
-        </div>
-        <div id="sec-area"></div>
+        <button class="btn ghost big" id="sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择</div>
       </div>
 
       <div class="card">
@@ -5967,12 +5964,25 @@ const App = (() => {
       </div>
       <button class="btn primary big" id="start-quiz"></button>
       <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
-      ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}`;
+      ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}
+
+      <div id="sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="sec-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
     const pickMoreBtn = document.getElementById('pick-more');
     const secArea = document.getElementById('sec-area');
-    const secSum = document.getElementById('sec-sum');
+    const secOpenBtn = document.getElementById('sec-open');
+    const secSheet = document.getElementById('sec-sheet');
     const startBtn = document.getElementById('start-quiz');
 
     /* ---- 题库勾选（搜索 + 折叠，题库多也不用翻到底） ---- */
@@ -6025,7 +6035,7 @@ const App = (() => {
           </div>`);
       }
       secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
-      secSum.textContent = selSecs.size ? `已选 ${selSecs.size} 个章节（不选 = 全部章节）` : '不选 = 全部章节';
+      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
       // 整库折叠/展开
       secArea.querySelectorAll('button[data-fold]').forEach(btn => {
         btn.onclick = () => {
@@ -6112,8 +6122,11 @@ const App = (() => {
       else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
       renderBanks(); renderSecs(); refresh();
     };
-    document.getElementById('sec-tools').onclick = (e) => {
-      const b = e.target.closest('button[data-act]'); if (!b) return;
+    /* ---- 章节选择：点击默认拉起底部弹层，不在页面里铺开 ---- */
+    secOpenBtn.onclick = () => { secSheet.style.display = ''; };
+    document.getElementById('sec-mask').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-done').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-clear').onclick = () => {
       selSecs.clear(); renderSecs(); refresh();
     };
     const segType = document.getElementById('seg-type');
