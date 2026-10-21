@@ -3812,7 +3812,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.11'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.12'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5935,7 +5935,7 @@ const App = (() => {
     // ---- 选择状态 ----
     const sel = new Set(banks.map(b => b.id));  // 选中的题库
     const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
-    const secCollapsed = new Set();             // 章节区：被折叠起来的题库 id（整库收起）
+    const secExpanded = new Set();              // 章节区：默认整库折叠，点库头才展开（v1.8.12）
     let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
     const LIMIT = 6;
 
@@ -6051,7 +6051,7 @@ const App = (() => {
         if (!list.length && !hasNoSec) continue;
         const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
         const totalSec = list.length + (hasNoSec ? 1 : 0);
-        const folded = secCollapsed.has(b.id);
+        const folded = !secExpanded.has(b.id);
         parts.push(`
           <div class="sec-pick">
             <div class="sec-pick-head">
@@ -6076,7 +6076,7 @@ const App = (() => {
       secArea.querySelectorAll('button[data-fold]').forEach(btn => {
         btn.onclick = () => {
           const bid = btn.dataset.fold;
-          secCollapsed.has(bid) ? secCollapsed.delete(bid) : secCollapsed.add(bid);
+          secExpanded.has(bid) ? secExpanded.delete(bid) : secExpanded.add(bid);
           renderSecs();
         };
       });
@@ -6245,11 +6245,8 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">范围（题库）</div>
-        <div class="chips" id="rv-tools">
-          <button class="chip" data-act="all">全选</button>
-          <button class="chip" data-act="none">清空</button>
-        </div>
-        <div class="bank-pick" id="rv-pick" style="margin-top:8px"></div>
+        <button class="btn ghost big" id="rv-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（全部展开，无需折叠）</div>
       </div>
       <div class="card">
         <div class="card-title">题型</div>
@@ -6285,10 +6282,25 @@ const App = (() => {
           <button data-v="order">顺序</button>
         </div>
       </div>
-      <button class="btn primary big" id="rv-start"></button>`;
+      <button class="btn primary big" id="rv-start"></button>
+
+      <div id="rv-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="chip" id="rv-tools-all">全选</button>
+            <button class="chip" id="rv-tools-none">清空</button>
+            <button class="btn primary" id="rv-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-pick" class="bank-pick" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>`;
 
     const pickEl = document.getElementById('rv-pick');
     const startBtn = document.getElementById('rv-start');
+    const rvOpenBtn = document.getElementById('rv-open');
+    const rvSheet = document.getElementById('rv-sheet');
 
     const matchType = q => filterType === 'all' ? true
       : filterType === 'choice' ? (q.type === 'single' || q.type === 'multi' || q.type === 'judge')
@@ -6303,6 +6315,9 @@ const App = (() => {
       pickEl.querySelectorAll('input').forEach(i => {
         i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
       });
+      rvOpenBtn.textContent = sel.size === list.length
+        ? `📂 全部 ${list.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${list.length} 个题库（点此修改） ›`;
     }
     function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q)).length; }
     function curMinutes(n) {
@@ -6315,11 +6330,12 @@ const App = (() => {
       startBtn.textContent = n ? `开始${isWrong ? '重做' : '重练'}（${n} 题）` : '该范围没有可练的题';
       startBtn.style.opacity = n ? '' : '.5';
     }
-    document.getElementById('rv-tools').onclick = e => {
-      const b = e.target.closest('button[data-act]'); if (!b) return;
-      if (b.dataset.act === 'all') list.forEach(x => sel.add(x.id)); else sel.clear();
-      renderPick(); refresh();
-    };
+    /* 题库选择：进入页面默认拉起底部弹层，全部展开、无折叠；主页留摘要按钮可再次打开 */
+    document.getElementById('rv-tools-all').onclick = () => { list.forEach(x => sel.add(x.id)); renderPick(); refresh(); };
+    document.getElementById('rv-tools-none').onclick = () => { sel.clear(); renderPick(); refresh(); };
+    rvOpenBtn.onclick = () => { rvSheet.style.display = ''; };
+    document.getElementById('rv-mask').onclick = () => { rvSheet.style.display = 'none'; };
+    document.getElementById('rv-done').onclick = () => { rvSheet.style.display = 'none'; };
     [[document.getElementById('rv-type'), v => filterType = v],
      [document.getElementById('rv-time'), v => { timeMode = v; document.getElementById('rv-min-wrap').style.display = v === 'custom' ? '' : 'none'; }]]
       .forEach(([seg, set]) => {
@@ -6350,9 +6366,8 @@ const App = (() => {
       navigate('#/quiz');
     };
     renderPick(); refresh();
+    rvSheet.style.display = '';   // 默认拉起：进入页面直接弹选择题库
   }
-
-  /* ================= 页面：答题 ================= */
   async function pageQuiz() {
     if (!session) return navigate('#/quiz-setup');
     // 考试中：超时自动交卷；已交卷：直接看成绩单
@@ -6966,28 +6981,50 @@ const App = (() => {
     });
   }
 
-  /* ---- 错题/收藏列表：按题库分组渲染（题库名小标题 + 该库题数） ---- */
+  /* ---- 错题/收藏列表：按题库分组，默认折叠，点库头展开/收起（v1.8.12） ---- */
   function reviewGrouped(qs, bankName, starred) {
     const order = new Map([...bankName.keys()].map((id, i) => [id, i]));
     const arr = qs.slice().sort((a, b) => (order.has(a.bankId) ? order.get(a.bankId) : 1e9) - (order.has(b.bankId) ? order.get(b.bankId) : 1e9));
-    const cnt = new Map();
-    for (const q of arr) cnt.set(q.bankId, (cnt.get(q.bankId) || 0) + 1);
-    let lastBank = null;
-    return arr.map(q => {
-      const head = q.bankId !== lastBank ? (lastBank = q.bankId,
-        `<div class="muted small" style="margin:14px 4px 8px;font-weight:600">📁 ${escapeHtml(bankName.get(q.bankId) || '未知题库')} · ${cnt.get(q.bankId)} 题</div>`) : '';
-      return head + `
-        <div class="card wrong-card">
-          <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
-            <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-            ${starred ? `<button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>` : ''}
-          </div>
-          <div class="stem sm">${renderStem(q)}</div>
-          ${q.answer
-            ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
-            : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
-          ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-        </div>`;
+    const groups = [];
+    for (const q of arr) {
+      let g = groups[groups.length - 1];
+      if (!g || g.id !== q.bankId) { g = { id: q.bankId, items: [] }; groups.push(g); }
+      g.items.push(q);
+    }
+    return groups.map(g => `
+      <div class="rev-group">
+        <button class="rev-group-head" data-rev-fold="${g.id}" style="display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;padding:12px 4px;cursor:pointer;text-align:left">
+          <span class="rev-arrow" style="color:var(--muted,#888);font-size:12px;flex:0 0 auto">▸</span>
+          <span class="muted small" style="font-weight:600">📁 ${escapeHtml(bankName.get(g.id) || '未知题库')} · ${g.items.length} 题</span>
+        </button>
+        <div id="rev-body-${g.id}" style="display:none">
+          ${g.items.map(q => `
+            <div class="card wrong-card">
+              <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+                <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+                ${starred ? `<button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>` : ''}
+              </div>
+              <div class="stem sm">${renderStem(q)}</div>
+              ${q.answer
+                ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
+                : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
+              ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  /* 分组折叠绑定：点库头切换展开/收起 */
+  function bindReviewFolds() {
+    $view().querySelectorAll('[data-rev-fold]').forEach(btn => {
+      btn.onclick = () => {
+        const body = document.getElementById('rev-body-' + btn.dataset.revFold);
+        if (!body) return;
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : '';
+        const arrow = btn.querySelector('.rev-arrow');
+        if (arrow) arrow.textContent = open ? '▸' : '▾';
+      };
     });
   }
 
@@ -7002,6 +7039,7 @@ const App = (() => {
       </div>`
       : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
     bindNavSeg('#/wrong');
+    bindReviewFolds();
   }
 
   /* ---- 收藏夹：跨题库集中看收藏题、取消收藏、一键收藏练习 ---- */
@@ -7019,6 +7057,7 @@ const App = (() => {
       </div>`
       : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
     bindNavSeg('#/star');
+    bindReviewFolds();
     $view().querySelectorAll('[data-unstar]').forEach(btn => {
       btn.onclick = async () => {
         await DB.starToggle(btn.dataset.unstar);
