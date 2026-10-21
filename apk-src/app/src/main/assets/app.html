@@ -7035,7 +7035,7 @@ const App = (() => {
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
       <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">重做错题（${qs.length} · 按题库选）</button>
       <div class="wrong-list">
-        ${reviewGrouped(qs, bankName, false).join('')}
+        ${reviewGrouped(qs, bankName, false)}
       </div>`
       : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
     bindNavSeg('#/wrong');
@@ -7053,7 +7053,7 @@ const App = (() => {
         ? `<button class="btn primary big" onclick="App.navigate('#/star-setup')">收藏练习（${ready} · 按题库选）</button>`
         : `<div class="muted small" style="margin-bottom:12px">收藏的题都缺答案，先在题库里补答案才能练习</div>`}
       <div class="wrong-list">
-        ${reviewGrouped(qs, bankName, true).join('')}
+        ${reviewGrouped(qs, bankName, true)}
       </div>`
       : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
     bindNavSeg('#/star');
