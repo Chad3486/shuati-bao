@@ -3814,7 +3814,7 @@ const QuizBuilder = {
 const App = (() => {
   // 版本号单一来源：build-single.mjs 打包时用 apk-src/app/build.gradle 的 versionName 覆盖这里
   // （CI 会用 tag 注入 VERSION_NAME；这里只是本地直接开 index.html 时的兜底值，勿手改）
-  const VERSION = '1.8.16';
+  const VERSION = '1.8.17';
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
