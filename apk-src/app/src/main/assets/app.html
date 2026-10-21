@@ -3906,7 +3906,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.15'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.16'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4136,17 +4136,60 @@ const App = (() => {
 
   function confirmDialog(msg) { return window.confirm(msg); }
 
-  /* v1.8.15 防误覆盖：还有没做完的练习时，开新练习前先确认一次，
-     防止手滑开新练习把上次的答题进度顶掉（已交卷/没答过/已答满的不拦） */
-  async function guardUnfinishedSession() {
+  /* v1.8.16 兜底：旧进度被新练习顶掉前，自动存一条「练习（未完成）」进练习记录，永不真丢 */
+  async function archivePartialSession(data) {
     try {
-      const data = await DB.metaGet('lastSession');
-      if (!data || !Array.isArray(data.ids) || data.graded) return true;
-      const answered = (data.answered || []).length + (data.examAnswers || []).length;
-      if (!answered || answered >= data.ids.length) return true;
-      return confirmDialog(`上次有没做完的练习（已答 ${answered}/${data.ids.length} 题）。\n开始新练习会丢掉这份进度，确定继续？`);
+      const s = await QuizSession.restore(data);
+      if (!s || !s.total) return;
+      const rows = s.list.map(q => {
+        const a = s.answered.get(q.id);
+        if (a) return { qid: q.id, ua: a.userAnswer, status: a.correct ? 'ok' : 'bad' };
+        const ua = s.examAnswers.has(q.id) ? s.examAnswers.get(q.id) : null;
+        if (ua != null && String(ua).trim() && q.answer) return { qid: q.id, ua, status: QuizSession.judge(q, ua) ? 'ok' : 'bad' };
+        return { qid: q.id, ua: ua || null, status: 'none' };
+      });
+      const answeredN = rows.filter(x => x.status !== 'none').length;
+      if (!answeredN) return;
+      const correctN = rows.filter(x => x.status === 'ok').length;
+      const wrongN = rows.filter(x => x.status === 'bad').length;
+      await historyPush({
+        id: DB.uid(), at: s.startTime || Date.now(), partial: true, exam: !!s.exam,
+        label: s.exam ? '考试（未交卷·自动保存）' : '练习（未完成·自动保存）',
+        total: s.total, answered: answeredN, correct: correctN, wrong: wrongN,
+        unanswered: s.total - answeredN,
+        acc: s.exam ? Math.round(correctN / s.total * 100) : Math.round(correctN / answeredN * 100),
+        timeUsed: Math.max(0, Math.round((Date.now() - (s.startTime || Date.now())) / 1000)),
+        rows
+      });
+      toast('上一份未完成进度已自动存入练习记录');
+    } catch (e) { /* 存档失败不拦新练习 */ }
+  }
+
+  /* v1.8.15 防误覆盖：还有没做完的练习时，开新练习前先确认一次，
+     防止手滑开新练习把上次的答题进度顶掉（已交卷/没答过的不拦） */
+  async function guardUnfinishedSession() {
+    let data = null;
+    try { data = await DB.metaGet('lastSession'); } catch (e) { return true; }
+    if (!data || !Array.isArray(data.ids) || data.graded) return true;
+    const answered = (data.answered || []).length + (data.examAnswers || []).length;
+    if (!answered) return true;
+    if (answered < data.ids.length) {
+      const go = confirmDialog(`上次有没做完的练习（已答 ${answered}/${data.ids.length} 题）。\n开始新练习会丢掉这份进度，确定继续？`);
+      if (!go) return false;
+    }
+    try { await archivePartialSession(data); } catch (e) { /* 静默 */ }
+    return true;
+  }
+
+  /* v1.8.16 顺序偏好：练习设置页选过「随机/顺序」后记住，题库直开 / 章节直练也按它来。
+     默认随机（乱序含选项）；设置页切换时写入 DB meta 'prefShuffle' */
+  async function prefShuffle() {
+    try {
+      const v = await DB.metaGet('prefShuffle');
+      return v === null || v === undefined ? true : !!v;
     } catch (e) { return true; }
   }
+  async function savePrefShuffle(on) { try { await DB.metaSet('prefShuffle', !!on); } catch (e) { /* 静默 */ } }
 
   /* ---- 文件小工具（浏览器 / APK 通用） ---- */
   function blobToBase64(blob) {
@@ -4494,7 +4537,7 @@ const App = (() => {
 
   async function startBank(id) {
     if (!await guardUnfinishedSession()) return;
-    session = await QuizBuilder.fromBanks([id], { filterType: 'answered' });
+    session = await QuizBuilder.fromBanks([id], { filterType: 'answered', shuffle: await prefShuffle() });
     if (!session.total) {
       const qs = await DB.questionsByBank(id);
       if (qs.length) return toast(`${qs.length} 题均缺答案，请先「补答案」`);
@@ -6346,6 +6389,9 @@ const App = (() => {
     };
     const segType = document.getElementById('seg-type');
     const segOrder = document.getElementById('seg-order');
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      segOrder.querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+    });
     const segMode = document.getElementById('seg-mode');
     const segTime = document.getElementById('seg-time');
     [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
@@ -6353,6 +6399,7 @@ const App = (() => {
         const b = e.target.closest('button'); if (!b) return;
         seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
+        if (seg === segOrder) savePrefShuffle(b.dataset.v === 'shuffle');   // 记住顺序偏好（题库直开也生效）
         if (seg === segMode) {
           exam = b.dataset.v === 'exam';
           document.getElementById('exam-opts').style.display = exam ? '' : 'none';
@@ -6623,7 +6670,12 @@ const App = (() => {
       const b = e.target.closest('button[data-v]'); if (!b) return;
       document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.remove('on'));
       b.classList.add('on'); shuffle = b.dataset.v === 'shuffle';
+      savePrefShuffle(shuffle);   // 记住顺序偏好（题库直开也生效）
     };
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+      shuffle = v;
+    });
     startBtn.onclick = () => {
       const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
       if (!qs.length) return toast('该范围没有可练的题');
@@ -7650,7 +7702,7 @@ const App = (() => {
   async function practiceSection(bankId, secIdx) {
     const key = bankId + ':' + (secIdx || '');
     if (!await guardUnfinishedSession()) return;
-    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]) });
+    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]), shuffle: await prefShuffle() });
     if (!session.total) return toast('该章节没有带答案的题可练');
     navigate('#/quiz');
   }
