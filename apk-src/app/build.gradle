@@ -9,9 +9,13 @@ android {
         minSdk 21
         targetSdk 34
         // 版本号唯一来源：CI 从 tag 注入 VERSION_NAME / VERSION_CODE（见 .github/workflows/build-apk.yml），
-        // 本地直接 gradle 构建时退回下面的默认值。发布前不需要再手改这两行。
-        versionCode (System.getenv('VERSION_CODE') ?: '108017').toInteger()
-        versionName (System.getenv('VERSION_NAME') ?: '1.8.17')
+        // 本地直接 gradle 构建时退回下面的默认值。先算好局部变量再传，避免 Groovy 命令表达式歧义。
+        def envVerName = System.getenv('VERSION_NAME')
+        def envVerCode = System.getenv('VERSION_CODE')
+        def finalVerName = envVerName ? envVerName : '1.8.17'
+        def finalVerCode = (envVerCode ? envVerCode : '108017').toInteger()
+        versionCode finalVerCode
+        versionName finalVerName
     }
     // 固定 debug 签名：把 debug.keystore 提交到仓库，
     // GitHub Actions 不同次构建都用同一个 keystore 签名，
