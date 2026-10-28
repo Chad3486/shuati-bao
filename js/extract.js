@@ -11,9 +11,18 @@ const Extractor = (() => {
     ta.innerHTML = html
       .replace(/<img[^>]*>/gi, '\n[图片]\n')
       .replace(/<br\s*\/?>/gi, '\n')
+      // v1.8.17：表格同一行的单元格用 \t 连接。原来逐格成行，会把「题号|答案」速查表
+      // 拆成一列数字一列字母，字母行还会被 detectNoiseLines 当重复短行删掉 → 速查表全丢
+      .replace(/<\/(p|div|h[1-6])>\s*<\/t[dh]>\s*<t[dh][^>]*>\s*<(p|div|h[1-6])[^>]*>/gi, '\t')
       .replace(/<\/(p|div|h[1-6]|li|tr|table|blockquote|section)>/gi, '\n')
       .replace(/<[^>]+>/g, '');
-    return ta.value.replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n');
+    // 表格行里若整行都是选项标记（A. xxx\tB. yyy 选项表）→ 拆回逐行，避免选项被并成一行
+    const joined = ta.value.replace(/\n[ \t]+/g, '\n');
+    return joined.replace(/^[^\n]*\t[^\n]*$/gm, m => {
+      const cells = m.split('\t').map(s => s.trim()).filter(Boolean);
+      const optLike = cells.length >= 2 && cells.every(c => /^[A-HＡ-Ｈａ-ｈ]\s*[.、．:：)）]/.test(c));
+      return optLike ? cells.join('\n') : m;
+    }).replace(/\n{3,}/g, '\n\n');
   }
 
   /* ---- 图片压缩：手机照片动辄 5-10MB，直接 base64 会撑爆请求 ----
@@ -154,7 +163,7 @@ const Extractor = (() => {
     const isOpt = s => /^\s*[A-H]\s*[.、．:：)）]/.test(s);
     const isSec = s => /^\s*[一二三四五六七八九十][、.]/.test(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
-    const isAnsHead = s => /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案)/.test(s);
+    const isAnsHead = s => /^(参考答案|标准答案|答案速查|速查表|答案表|答案汇总|答案与解析|试题答案|附录|附表)/.test(s);
     // 独立题型标题行（无中文序号，如「单选题」单独成行）——是结构行，不能并进上一行
     const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
     // 答案行（「答案：D    解析：…」）——必须独立，并入选项行会污染选项内容
@@ -222,9 +231,11 @@ const Extractor = (() => {
     const subRe = /^[（(]\s*(\d{1,3})\s*[)）]\s*/;
     const ansPairRe = /(\d{1,3})\s*[.、．:：)]?\s*[A-H]\b/g;
     const ansHeadRe = /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案|参考答案与解析)/;
-    // S1：题型小节行（≤15字、不以数字开头）
+    // S1：题型小节行（不以数字开头）
     const secType = s => {
-      if (s.length > 15 || /^\s*\d/.test(s)) return null;
+      // v1.8.17：长度上限 15 → 40。旧版把「二、多选题（第 126—154 题，共 29 题）」
+      // 这类带题号范围的小节标题当长行跳过 → 多选节被并入上一节、题型全错（连带答案校验全拒）
+      if (s.length > 40 || /^\s*\d/.test(s)) return null;
       if (/单选|只选/.test(s) && /题/.test(s)) return 'single';
       if (/多选/.test(s)) return 'multi';
       if (/判断/.test(s)) return 'judge';

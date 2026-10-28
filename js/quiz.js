@@ -68,7 +68,23 @@ class QuizSession {
   /* ---- 判分（学习模式与考试交卷共用） ---- */
   static judge(q, userAnswer) {
     if (q.type === 'fill') return QuizSession.checkFill(userAnswer, q.answer);
-    const norm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+    /* v1.8.17：标准答案容错归一。旧版 replace(/[^A-Z]/g,'') 会把历史导入的
+       「A（A. 可接受的危险）」洗成「AA」，用户选 A 永远判错 → 正确率虚低。
+       现取答案开头第一段选项字母（自动跳过「答案：」前缀、括注原文、解析尾巴） */
+    const norm = s => {
+      const t = String(s || '').toUpperCase();
+      // 判断题存的是文字答案（对/错/T/F）时归一成 A/B
+      if (q.type === 'judge' && !/[A-B]/.test(t)) {
+        if (/^(对|正确|√|✓|是|T|Y)/.test(t)) return 'A';
+        if (/^(错|错误|×|✗|否|F|N)/.test(t)) return 'B';
+      }
+      let m = t.match(/^[^A-H]*([A-H]{1,5})/);
+      if (m) return m[1].split('').sort().join('');
+      // 括注全包裹型（「（A）（C）」）：去掉括号块后再取
+      const stripped = t.replace(/[（(][^（）()]*[）)]/g, ' ');
+      m = stripped.match(/[A-H]{1,5}/);
+      return m ? m[0].split('').sort().join('') : '';
+    };
     return norm(userAnswer) === norm(q.answer);
   }
 

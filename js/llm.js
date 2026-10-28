@@ -233,12 +233,15 @@ const LLM = (() => {
     const isStruct = t => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
       /^[一二三四五六七八九十]+\s*[、.．]/.test(t) ||
       /^(单项选择题|单选题|多项选择题|多选题|判断题|填空题|选择题)\s*[：:]?\s*$/.test(t);
-    // 逐行答案条目：题号 + (答案：)? + 字母/对错，尾部仅允许 解析括号 / 少量标点
-    const entryRe = /^\d{1,3}\s*[.、．:：)）]?\s*(?:答案\s*[:：]?\s*)?([A-Ha-hＡ-Ｈａ-ｈ]{1,4}|对|错|√|×|正确|错误)(?![A-Za-z0-9])/;
+    // 逐行答案条目：题号 + (答案：)? + 字母/对错，尾部仅允许 解析括号 / 括注原文 / 少量标点
+    const entryRe = /^\d{1,3}\s*[.、．:：)）]?\s*(?:答案\s*[:：]?\s*)?([A-Ha-hＡ-Ｈａ-ｈ]{1,5}|对|错|√|×|正确|错误)(?![A-Za-z0-9])/;
     const tailOk = rest => {
       const r = rest.trim();
       if (!r) return true;
       if (/^[（(【\[]\s*(答案解析|解析|解释|说明)/.test(r)) return true;
+      // v1.8.17：括注选项原文「（A. 可接受的危险）」或「（A. 原文）解析：…」
+      if (/^[（(]\s*[A-Ha-hＡ-Ｈａ-ｈ]\s*[.、．:：]?\s*[\u4e00-\u9fff（(]/.test(r)) return true;
+      if (/^[（(][^（）()]{1,200}[）)](?:[，。；、,.]?\s*(?:解析|备注)\s*[:：][\s\S]*)?$/.test(r)) return true;
       if (/^[）)】,，。;；、\s]{0,2}$/.test(r)) return true;
       return false;
     };
@@ -293,6 +296,26 @@ const LLM = (() => {
     const t = fullToHalf(String(s || '')).replace(/[\s,，、]/g, '');
     return /^[A-Ha-h]+$/.test(t) ? t.toUpperCase() : null;
   }
+  /* ---- 宽松答案字母提取：容忍「A（A. 可接受的危险）」「答案：B」「B、安全预评价合同」
+     等带括注原文/前缀的写法（AI 从原文照抄时常见），供 AI 对位校验使用；
+     deep=true 时再做全文残留字母兜底（仅限已知是选项题的场景，避免误伤填空文本答案） ---- */
+  function looseLetters(s, deep) {
+    let t = fullToHalf(String(s || '')).replace(/[\s,，、]/g, '');
+    if (!t) return null;
+    t = t.replace(/[（(]\s*(存疑|争议|待定|不确定|仅供参考)\s*[)）]\s*$/, '');
+    // ① 开头即字母段（后跟括注/方括号）→ 取该段字母
+    let m = t.match(/^([A-Ha-h]{1,5})\s*[.、．]?\s*(?=[（(【\[])/);
+    if (m) return m[1].toUpperCase();
+    // ② 纯字母直接返回
+    if (/^[A-Ha-h]+$/.test(t)) return t.toUpperCase();
+    // ③ 去掉全部括注块后再试
+    const stripped = t.replace(/[（(][^（）()]*[）)]/g, '').replace(/^[：:]/, '').trim();
+    if (/^[A-Ha-h]{1,5}$/.test(stripped)) return stripped.toUpperCase();
+    if (!deep) return null;
+    // ④ 前缀残留兜底：「参考答案：C」「答C」等（仅选项题场景调用）
+    m = stripped.match(/(?:^|[^A-Za-z0-9])([A-Ha-h]{1,5})(?![A-Za-z0-9])/);
+    return m ? m[1].toUpperCase() : null;
+  }
   function secTypeOfTitle(s) {
     if (/单选|只选/.test(s) && /题/.test(s)) return 'single';
     if (/多选/.test(s)) return 'multi';
@@ -306,8 +329,10 @@ const LLM = (() => {
     const pats = [
       /[（(]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[)）]\s*$/,
       /[【\[]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[】\]]\s*$/,
-      /[,，。;；]\s*(?:答案解析|解析|解释|说明)\s*[:：]\s*([\s\S]*)$/,
-      /^(?:答案解析|解析)\s*[:：]\s*([\s\S]*)$/
+      // v1.8.17：分隔符放宽到「）。，。、；：」及行首——「A（A. 原文）解析：…」「D、xxx。解析：…」
+      // 旧版要求解析前必须有逗号/句号，「）解析：」直连的整句解析全被并进答案文本
+      /(?:^|[,，。;；:：、)）\]】\.．])\s*(?:答案解析|解析|解释|说明|备注)\s*[:：]\s*([\s\S]*)$/,
+      /^(?:答案解析|解析|备注)\s*[:：]\s*([\s\S]*)$/
     ];
     for (const re of pats) {
       const m = body.match(re);
@@ -331,6 +356,14 @@ const LLM = (() => {
     if (wrap) t = wrap[1].trim();
     const letters = normLetters(t);
     if (letters) return { answer: letters, kind: 'letter', raw: t, note };
+    // v1.8.17：带括注原文的选项答案「A（A. 可接受的危险）」「ABCD（A. …；B. …）」——
+    // 旧版当文本丢弃 → 整套答案对不上题（classify 为 text，valid 拒收，填入率 0）
+    if (secType !== 'fill') {
+      const ap = t.match(/^([A-Ha-hＡ-Ｈａ-ｈ]{1,5})\s*[.、．]?\s*(?=[（(【\[])/);
+      if (ap) { const l = normLetters(ap[1]); if (l) return { answer: l, kind: 'letter', raw: t, note }; }
+      const stripped = t.replace(/[（(][^（）()]*[）)]/g, ' ').trim();
+      if (stripped !== t) { const l = normLetters(stripped); if (l) return { answer: l, kind: 'letter', raw: t, note }; }
+    }
     if (/^(对|正确|√|✓|是)$/.test(t)) return { answer: 'A', kind: 'judge', raw: t, note };
     if (/^(错|错误|×|✗|否)$/.test(t)) return { answer: 'B', kind: 'judge', raw: t, note };
     if (secType === 'judge' && /^(T|Y|TRUE)$/i.test(t)) return { answer: 'A', kind: 'judge', raw: t, note };
@@ -342,7 +375,7 @@ const LLM = (() => {
 
   /* ---- 密集答案行：「1.C 2.A 3.B」「1.对 2.错」→ 多条目 ---- */
   function tryDenseLine(t) {
-    const re = /(\d{1,3})\s*[.、．:：)）]?\s*([A-H]{1,4}|对|错|√|×)(?![A-Za-z0-9])/g;
+    const re = /(\d{1,3})\s*[.、．:：)）]?\s*([A-H]{1,5}|对|错|√|×)(?![A-Za-z0-9])/g;
     const pairs = [...t.matchAll(re)];
     if (pairs.length < 2) return null;
     const rest = t.replace(re, '').replace(/[\s,，、.。;；:：（()）]/g, '');
@@ -361,23 +394,37 @@ const LLM = (() => {
     const entries = [];   // 带题号条目 { no, chapter, section, secType, answer, kind, raw, explanation }
     const ordered = [];   // 全部答案按出现顺序（无题号文件的序列兜底）
     let chapter = null, section = null, secType = null;
+    let inAppendix = false;   // v1.8.17：附录/速查表区——条目不带章节上下文（速查表会把全文题号重列一遍，带上章节会与正文条目冲突）
+    let lastEntry = null;     // 最近一条目（供「解析：/备注：」续行挂靠）
 
     const pushEntry = (no, cls, explanation) => {
       // 答案文件里的「（存疑）」等标注并进解析，练习时能看到提示
       let exp = explanation || null;
       if (cls.note) exp = exp ? `${exp}（答案文件标注：${cls.note}）` : `（答案文件标注：${cls.note}）`;
-      const e = { no, chapter, section, secType, answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp };
+      const e = { no, chapter: inAppendix ? null : chapter, section: inAppendix ? null : section, secType: inAppendix ? null : secType, answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp };
       if (no != null) entries.push(e);
       ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp });
+      lastEntry = e;
     };
 
     for (const raw of lines) {
       const t = raw.trim();
       if (!t) continue;
+      // v1.8.17：附录/速查表区标记（速查表内的条目不带章节上下文，避免和正文条目双候选对不上）
+      if (/^(附录|附表|速查表|答案速查|参考答案表|答案汇总表)/.test(t)) { inAppendix = true; continue; }
       // 章 / 节 / 题型标题（与题目文件同名结构对齐）
-      if (/^第\s*[一二三四五六七八九十\d]+\s*章/.test(t)) { chapter = t.slice(0, 40); section = null; secType = null; continue; }
+      if (/^第\s*[一二三四五六七八九十\d]+\s*章/.test(t)) { chapter = t.slice(0, 40); section = null; secType = null; inAppendix = false; continue; }
       if (/^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^(单项选择题|单选题|多项选择题|多选题|判断题|填空题|选择题)\s*[：:]?\s*$/.test(t)) {
         section = t.slice(0, 20); secType = secTypeOfTitle(t); continue;
+      }
+      // v1.8.17：「解析：…」「备注：…」独立续行 → 挂到上一条目（旧版直接丢弃，解析全丢）
+      if (lastEntry && /^(?:答案解析|解析|解释|备注)\s*[:：]/.test(t)) {
+        const tail = t.replace(/^(?:答案解析|解析|解释|备注)\s*[:：]\s*/, '').trim();
+        if (tail) {
+          const label = /^备注/.test(t) ? '备注：' + tail : tail;
+          lastEntry.explanation = (lastEntry.explanation ? lastEntry.explanation + ' ' : '') + label;
+        }
+        continue;
       }
       // 题号前缀（三选一）+ 可选「答案：」
       let no = null, rest = null;
@@ -387,7 +434,9 @@ const LLM = (() => {
       if (no == null && (m = t.match(/^题号\s*[:：]?\s*(\d{1,3})\s*/))) { no = +m[1]; rest = t.slice(m[0].length); }
       if (no == null && (m = t.match(/^(\d{1,3})\s+(?=[A-Ha-hＡ-Ｈａ-ｈ对错√×])/))) { no = +m[1]; rest = t.slice(m[0].length); }
       if (no != null) {
-        const mA = rest.match(/^答案\s*[:：]?\s*/);
+        // v1.8.17：「答案」后必须有冒号或紧跟字母/判断词——旧版可选冒号，
+        // 说明文字「2. 答案以原文档标注的…」被误当答案条目（污染序列对位）
+        const mA = rest.match(/^答案\s*(?:[:：]\s*|(?=[A-Ha-hＡ-Ｈａ-ｈ对错√×]))\s*/);
         const hasMarker = !!mA;
         if (mA) rest = rest.slice(mA[0].length);
         const { answerPart, explanation } = splitExplanation(rest);
@@ -397,13 +446,18 @@ const LLM = (() => {
       }
       // 密集答案行
       const dense = tryDenseLine(t);
-      if (dense) { for (const d of dense) pushEntry(d.no, d, null); continue; }
+      if (dense) {
+        // v1.8.17：速查表兜底——未见「附录」标记但题号大幅回落（如已到 154 又从 1 重列）→ 按附录处理
+        if (!inAppendix && entries.length >= 10 && dense[0].no < (entries[entries.length - 1].no || 0) - 10) inAppendix = true;
+        for (const d of dense) pushEntry(d.no, d, null);
+        continue;
+      }
       // 无题号答案行（序列模式）
       const m2 = t.match(/^(?:答案|答)\s*[:：]\s*([\s\S]+)$/);
       if (m2) {
         const { answerPart, explanation } = splitExplanation(m2[1]);
         const cls = classifyAnswerToken(answerPart, secType);
-        if (cls) ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: explanation || null });
+        if (cls) { ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: explanation || null }); lastEntry = null; }
       }
     }
     return { entries, ordered, hasNos: entries.length >= 3 };
@@ -577,8 +631,9 @@ const LLM = (() => {
         let ans = String(a.answer ?? '').trim();
         if (!ans || ans === 'null') continue;
         if (q.options && q.type !== 'fill') {
-          // 选项题：同结构化匹配的严格校验
-          const letters = normLetters(ans);
+          // 选项题：同结构化匹配的严格校验（v1.8.17：宽松提取字母——AI 从原文照抄
+          // 「A（A. 可接受的危险）」时旧版 normLetters 直接拒收，导致 AI 对位也补不全）
+          const letters = looseLetters(ans, true) || normLetters(ans);
           if (!letters) continue;                                       // 选项题不收文本答案
           if ([...letters].some(c => !q.options[c])) continue;           // 字母不在选项里
           if ((q.type === 'single' || q.type === 'judge') && letters.length !== 1) continue; // 单选/判断必须单字母
@@ -1155,7 +1210,7 @@ const LLM = (() => {
             }
             if (!pairs && raw) {
               // ⑤ 非结构化兜底：从返回文本里抓「1. C」「1、C」「1：C」「1) C」式答案行
-              const m = [...String(raw).matchAll(/(\d{1,3})\s*[、.．:：)]\s*([A-D]{1,4}\b|对|错|正确|错误|√|×)/g)];
+              const m = [...String(raw).matchAll(/(\d{1,3})\s*[、.．:：)]\s*([A-H]{1,5}\b|对|错|正确|错误|√|×)/g)];
               if (m.length >= Math.max(1, Math.ceil(batch.length / 2))) {
                 pairs = m.map(x => ({ idx: +x[1] - 1, answer: x[2] }));
               }
@@ -1171,8 +1226,11 @@ const LLM = (() => {
                   else if (/^(错|错误|×|✗|否|F|FALSE|B|0)$/i.test(ans)) ans = 'B';
                   else continue;
                 } else if (q.options) {
-                  ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
+                  // v1.8.17：宽松提取字母。旧版 replace(/[^A-Z]/g,'') 会把「A（A. 原文）」
+                  // 洗成「AA」存库 → 判分永远错（正确率被污染的根源之一）
+                  ans = looseLetters(ans, true) || '';
                   if (!ans || [...ans].some(c => !q.options[c])) continue;
+                  if (q.type === 'single' && ans.length !== 1) continue;  // 单选必须是单字母，宁缺毋错
                 } else {
                   ans = ans.replace(/[。；;]\s*$/, '').trim();
                   if (!ans || /^(略|见解析|无|不知道|无法确定)$/.test(ans)) continue;
@@ -1226,5 +1284,5 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
+  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, findAnswerTable, findAnswerTableSpan, looseLetters, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
 })();

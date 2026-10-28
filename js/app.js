@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.7'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.17'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -1246,7 +1246,7 @@ const App = (() => {
     BG.stop(); // 导入流程结束：撤保活通知（无 AI 任务时为空操作）
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
       ${lastPickedFiles.length ? '<button class="btn ghost big" id="to-canon-btn">解析不满意？改用 AI 转范式导入</button>' : ''}
-      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；.doc 需另存为 .docx</div>`;
+      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；✎ 面板还能改题型、选项和解析；.doc 需另存为 .docx</div>`;
     // 本地解析不理想时：把同一批文件交给 AI 重排成范式文本，转到「范式导入」页核对后导入（答案零对齐）
     const toCanonBtn = document.getElementById('to-canon-btn');
     if (toCanonBtn) toCanonBtn.onclick = async () => {
@@ -1745,7 +1745,7 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">方式一 · 上传答案文件自动补答案（推荐，免费）</div>
-        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
+        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」「答案：A（A. 原文）解析：…」、答案速查表（Word 表格）、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
         <input type="file" id="ans-file-input" multiple accept=".docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
@@ -2590,52 +2590,117 @@ const App = (() => {
     const editBtn = document.getElementById('edit-btn');
     let editOpen = false;
     function renderEditPanel() {
-      const isFill = q.type === 'fill';
-      editCard.innerHTML = `
+      /* v1.8.17：修改本题 —— 支持改题型（单选/多选/判断/填空）、选项、答案、解析 */
+      const TYPES = [['single', '单选'], ['multi', '多选'], ['judge', '判断'], ['fill', '填空']];
+      // 面板状态（切换题型时保留已输入内容）
+      const st = {
+        type: q.type || 'single',
+        sel: new Set((q.answer || '').toUpperCase().match(/[A-H]/g) || []),
+        ansText: String(q.answer ?? '').replace(/\|\|\|/g, '/'),
+        optsText: q.options && q.type !== 'judge' ? Object.entries(q.options).map(([k, v]) => `${k}. ${v}`).join('\n') : '',
+        exp: q.explanation || ''
+      };
+      const parseOpts = text => {
+        const opts = {};
+        let auto = 0;
+        for (const line of String(text || '').split('\n')) {
+          const t = line.trim(); if (!t) continue;
+          const m = t.match(/^([A-Ha-h])\s*[.、．:：)）]?\s*(.*)$/);
+          if (m) opts[m[1].toUpperCase()] = m[2].trim();
+          else opts[String.fromCharCode(65 + (auto++))] = t;   // 无字母前缀 → 自动编号
+        }
+        return opts;
+      };
+      const renderPanel = () => {
+        const isFill = st.type === 'fill';
+        const isJudge = st.type === 'judge';
+        const oKeys = isJudge ? ['A', 'B'] : (isFill ? [] : Object.keys(parseOpts(st.optsText)));
+        editCard.innerHTML = `
         <div class="card-title">修改本题（第 ${q.no ?? '?'} 题）</div>
+        <div class="field"><span>题型</span>
+          <div class="seg" id="edit-types" style="flex-wrap:wrap">
+            ${TYPES.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:64px;padding:8px 14px">${n}</button>`).join('')}
+          </div>
+        </div>
         <div class="field"><span>答案${isFill ? '（多空用 / 分隔）' : ''}</span>
           ${isFill
-            ? `<input type="text" id="edit-ans" value="${escapeHtml(String(q.answer ?? '').replace(/\|\|\|/g, '/'))}" placeholder="标准答案">`
+            ? `<input type="text" id="edit-ans" value="${escapeHtml(st.ansText)}" placeholder="标准答案">`
             : `<div class="seg" id="edit-letters" style="flex-wrap:wrap">
-                ${optKeys.map(k => `<button data-k="${k}" class="${q.answer && q.answer.toUpperCase().includes(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:52px;padding:8px 14px">${k}</button>`).join('')}
+                ${oKeys.length ? oKeys.map(k => `<button data-k="${k}" class="${st.sel.has(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:52px;padding:8px 14px">${isJudge ? (k === 'A' ? '正确' : '错误') : k}</button>`).join('') : '<span class="muted small">请先在下方填写选项</span>'}
               </div>`}
         </div>
+        ${!isFill && !isJudge ? `
+        <div class="field"><span>选项（每行一个，A. 文本）</span>
+          <textarea id="edit-opts" rows="4" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.optsText)}</textarea>
+        </div>` : isJudge ? '<div class="muted small">判断题：选项固定为「正确 / 错误」</div>' : ''}
         <div class="field"><span>解析</span>
-          <textarea id="edit-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(q.explanation || '')}</textarea>
+          <textarea id="edit-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.exp)}</textarea>
         </div>
         <div class="btn-row">
           <button class="btn ghost" id="edit-cancel">取消</button>
           <button class="btn primary" id="edit-save">保存修改</button>
         </div>`;
-      // 字母选择
-      const letters = editCard.querySelector('#edit-letters');
-      if (letters) {
-        letters.onclick = e => {
-          const b = e.target.closest('button[data-k]'); if (!b) return;
-          if (q.type === 'multi') b.classList.toggle('on');
-          else { letters.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); }
+        // 题型切换：先收起当前输入再重渲染
+        editCard.querySelector('#edit-types').onclick = e => {
+          const b = e.target.closest('button[data-t]'); if (!b || b.dataset.t === st.type) return;
+          const newType = b.dataset.t;
+          const ansEl = editCard.querySelector('#edit-ans');
+          const optsEl = editCard.querySelector('#edit-opts');
+          const expEl = editCard.querySelector('#edit-exp');
+          if (ansEl) st.ansText = ansEl.value;
+          if (optsEl) st.optsText = optsEl.value;
+          if (expEl) st.exp = expEl.value;
+          if (newType === 'fill') { st.type = 'fill'; }                    // 字母选择丢弃，用文字答案
+          else if (newType === 'judge') {
+            st.type = 'judge';
+            st.sel = new Set([...st.sel].filter(k => k === 'A' || k === 'B'));   // 判断题只留 A/B
+          } else {
+            st.type = newType;
+            if (!st.optsText.trim()) st.optsText = 'A. \nB. \nC. \nD. ';
+            // 选项集合可能变了，超出的字母自动去掉
+            const ok = new Set(Object.keys(parseOpts(st.optsText)));
+            st.sel = new Set([...st.sel].filter(k => ok.has(k)));
+          }
+          renderPanel();
         };
-      }
-      editCard.querySelector('#edit-cancel').onclick = () => { editOpen = false; editCard.style.display = 'none'; };
-      editCard.querySelector('#edit-save').onclick = async () => {
-        let newAns;
-        if (isFill) {
-          newAns = document.getElementById('edit-ans').value.trim().split('/').map(s => s.trim()).filter(Boolean).join('|||');
-          if (!newAns) return toast('答案不能为空');
-        } else {
-          newAns = [...letters.querySelectorAll('button.on')].map(b => b.dataset.k).sort().join('');
-          if (!newAns) return toast('请选择答案字母');
+        // 字母选择
+        const letters = editCard.querySelector('#edit-letters');
+        if (letters) {
+          letters.onclick = e => {
+            const b = e.target.closest('button[data-k]'); if (!b) return;
+            if (st.type === 'multi') b.classList.toggle('on'), b.classList.contains('on') ? st.sel.add(b.dataset.k) : st.sel.delete(b.dataset.k);
+            else { letters.querySelectorAll('button').forEach(x => { x.classList.remove('on'); }); b.classList.add('on'); st.sel.clear(); st.sel.add(b.dataset.k); }
+          };
         }
-        const newExp = document.getElementById('edit-exp').value.trim();
-        q.answer = newAns;
-        q.explanation = newExp || null;
-        await DB.questionPut(q);
-        // 本题若已答过，清除作答状态让用户按新答案重做
-        session.answered.delete(q.id);
-        editOpen = false;
-        toast('已修改');
-        render();
+        editCard.querySelector('#edit-cancel').onclick = () => { editOpen = false; editCard.style.display = 'none'; };
+        editCard.querySelector('#edit-save').onclick = async () => {
+          const expEl = editCard.querySelector('#edit-exp');
+          const newExp = expEl ? expEl.value.trim() : '';
+          if (st.type === 'fill') {
+            const ansEl = editCard.querySelector('#edit-ans');
+            const newAns = (ansEl ? ansEl.value : '').trim().split('/').map(s => s.trim()).filter(Boolean).join('|||');
+            if (!newAns) return toast('答案不能为空');
+            q.type = 'fill'; q.options = null; q.answer = newAns;
+          } else {
+            const optsEl = editCard.querySelector('#edit-opts');
+            const opts = st.type === 'judge' ? { 'A': '正确', 'B': '错误' } : parseOpts(optsEl ? optsEl.value : st.optsText);
+            const keys = Object.keys(opts);
+            if (st.type !== 'judge' && keys.length < 2) return toast('选项至少需要 2 个（每行一个：A. 文本）');
+            const sel = [...st.sel].filter(k => opts[k]).sort().join('');
+            if (!sel) return toast('请选择答案字母');
+            if ((st.type === 'single' || st.type === 'judge') && sel.length !== 1) return toast(st.type === 'single' ? '单选题只能选一个答案' : '判断题只能选一个答案');
+            q.type = st.type; q.options = opts; q.answer = sel;
+          }
+          q.explanation = newExp || null;
+          await DB.questionPut(q);
+          // 本题若已答过，清除作答状态让用户按新答案重做
+          session.answered.delete(q.id);
+          editOpen = false;
+          toast('已修改');
+          render();
+        };
       };
+      renderPanel();
     }
     if (editBtn) editBtn.onclick = () => {
       editOpen = !editOpen;
