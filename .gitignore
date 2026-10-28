@@ -1,4 +1,6 @@
-# 测试与临时文件（导入测试用的 docx、tesseract 链接副本）
+# 单文件产物：由 build-single.mjs 生成（CI 构建时重建，APK 用的是 assets/app.html）
+# 不再入库 —— 此前 dist/*.html 与 assets/app.html 是同一份内容存两遍，每次构建重写，白涨 git 历史
+/dist/
 dist/*.docx
 dist/tesseract
 
