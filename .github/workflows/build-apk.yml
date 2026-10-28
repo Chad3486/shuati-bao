@@ -119,15 +119,9 @@ jobs:
               if (k == tag) { v=a[3]; gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }
             }' README.md)
           if [ -n "$SUMMARY" ]; then
-            printf '发布 %s
-
-%s
-' "$TAG" "$SUMMARY" > release_notes.md
+            { echo "发布 $TAG"; echo; echo "$SUMMARY"; } > release_notes.md
           else
-            printf '发布 %s
-
-（README 更新日志里没找到 %s 这一行，请补上）
-' "$TAG" "$TAG" > release_notes.md
+            { echo "发布 $TAG"; echo; echo "（README 更新日志里没找到 $TAG 这一行，请补上）"; } > release_notes.md
           fi
           echo "=== release_notes.md ==="; cat release_notes.md
 
