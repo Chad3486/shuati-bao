@@ -5,7 +5,7 @@
 ## 下载安装
 
 - **APK（推荐）**：到 [Releases](../../releases) 下载最新 `shuati-bao-v<版本号>.apk`（v1.8.17 起附件名带版本号，更早版本叫 `default.apk`），传到手机安装（需允许未知来源），要求 Android 5.0+。
-- **网页版**：直接用浏览器打开仓库里的 `dist/刷题宝-单文件版.html`，与 APK 同一份代码，数据同样存本地。
+- **网页版**：本地跑 `node build-single.mjs` 生成 `dist/刷题宝-单文件版.html`，用浏览器打开即可，与 APK 同一份代码，数据同样存本地（产物不进仓库，避免同一份文件存两遍）。
 - **自己构建**：见下方「从源码构建」。
 
 ## 导入题库
@@ -67,7 +67,7 @@ build-single.mjs 会把同一个版本号写进 App 内显示的 VERSION。
 
 ```
 ├── index.html / css / js   # 网页版源码
-├── dist/                   # 单文件打包产物
+├── dist/                   # 单文件打包产物（build-single.mjs 生成，不入库）
 ├── apk-src/                # Android WebView 壳工程
 ├── build-single.mjs        # 单文件打包脚本
 └── .github/workflows/      # CI 构建 APK
