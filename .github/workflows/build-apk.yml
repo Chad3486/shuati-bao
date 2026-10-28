@@ -1,11 +1,18 @@
 name: Build ShuatiBao APK
 
+# 触发规则（v1.8.18 整改后）：
+#   1) push main / 手动触发  -> 只构建校验；仅手动触发时上传 Artifact（供下载安装）
+#   2) push tag v*           -> 构建 + 硬校验 + 发 Release
+#
+# 为什么不再用 paths: 过滤 —— paths 对 tag 推送同样生效。
+# 打 tag 的提交若只改了 README/scripts/dist 就会被跳过，
+# 结果就是「tag 有了、Release 却没有」（旧版就丢过包）。宁可多跑一次构建。
+
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
-    paths: [ 'apk-src/**', 'js/**', 'css/**', 'libs/**', 'index.html', 'build-single.mjs' ]
 
 permissions:
   contents: write
@@ -19,6 +26,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史做「tag 是否在 main 上」校验
+
+      # 防误发：任意分支打个 v* 就能发正式版的历史到此为止
+      - name: Guard tag is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag ${GITHUB_REF_NAME} 不在 main 上，拒绝发版"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} 在 main 上，继续"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -31,7 +52,7 @@ jobs:
           gradle-version: '8.4'
 
       # 版本号唯一来源 = tag。发版只靠 tag，不再手改 versionCode/versionName。
-      # versionCode = 主*10000 + 次*100 + 修订，保证单调递增且与 tag 对得上。
+      # versionCode = 主*10000 + 次*100 + 修订（次/修订必须 <= 99，否则会进位碰撞）
       - name: Resolve version
         id: ver
         run: |
@@ -41,12 +62,16 @@ jobs:
             V=$(grep -oE "fallbackName = '[0-9.]+'" apk-src/app/build.gradle | grep -oE "[0-9]+[.][0-9]+[.][0-9]+" | head -1)
           fi
           if ! echo "$V" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+$'; then
-            echo "版本号格式不合法: $V"; exit 1
+            echo "::error::版本号格式不合法: $V"; exit 1
           fi
           MAJ=${V%%.*}
           REST=${V#*.}
           MIN=${REST%%.*}
           PAT=${REST#*.}
+          if [ "$MIN" -gt 99 ] || [ "$PAT" -gt 99 ]; then
+            echo "::error::次版本号/修订号必须 <= 99（当前 $MIN/$PAT），否则 versionCode 会与其它版本碰撞"
+            exit 1
+          fi
           CODE=$((MAJ * 10000 + MIN * 100 + PAT))
           echo "VERSION_NAME=$V" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
@@ -58,7 +83,7 @@ jobs:
         run: |
           node build-single.mjs
           if ! grep -q "const VERSION = '${VERSION_NAME}';" apk-src/app/src/main/assets/app.html; then
-            echo "内嵌 app.html 版本号与 ${VERSION_NAME} 不一致，中止"
+            echo "::error::内嵌 app.html 版本号与 ${VERSION_NAME} 不一致，中止"
             exit 1
           fi
 
@@ -72,26 +97,39 @@ jobs:
       - name: Verify APK version consistency
         run: python3 scripts/verify-apk.py
 
+      # 只在「打 tag 发版」或「手动触发下载」时上传，避免每次推 main 都堆一个 Artifact
       - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
           name: shuati-bao-apk
           path: shuati-bao-v*.apk
           retention-days: 30
 
-      # 以下步骤仅打 tag 时执行（推 main 和手动触发只构建、不发版）
+      # ---- 以下仅打 tag 时执行 ----
+      # Release 说明自动取 README「更新日志」表格里对应 tag 的那一行
       - name: Extract release notes
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF_NAME}"
-          BODY="发布 ${TAG}"
-          if grep -qE "^#+ .*${TAG}" README.md; then
-            BODY="$(awk -v tag="${TAG}" '
-              index($0, tag) && /^#+ / {p=1; next}
-              p && /^#+ / {exit}
-              p {print}
-            ' README.md)"
+          SUMMARY=$(awk -v tag="$TAG" '
+            substr($0,1,1)=="|" {
+              n=split($0, a, "|")
+              if (n < 3) next
+              k=a[2]; gsub(/^[ \t]+|[ \t]+$/, "", k)
+              if (k == tag) { v=a[3]; gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }
+            }' README.md)
+          if [ -n "$SUMMARY" ]; then
+            printf '发布 %s
+
+%s
+' "$TAG" "$SUMMARY" > release_notes.md
+          else
+            printf '发布 %s
+
+（README 更新日志里没找到 %s 这一行，请补上）
+' "$TAG" "$TAG" > release_notes.md
           fi
-          printf '%s\n' "${BODY}" > release_notes.md
+          echo "=== release_notes.md ==="; cat release_notes.md
 
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
