@@ -124,6 +124,119 @@ C. IGBT
     return [...new Set(out.split(''))].sort().join('') || null;
   }
 
+  /* ---- 答案字母提取（v1.8.19）----
+     旧写法 lettersOf 会扫整个答案文本里的 A–H，答案行只要带解析就会被污染：
+       「答案：C（A项错误）」 -> AC，单选还被自动升成多选
+       「答案：AC（B错）」   -> ABC，用户选 AC 永远判错
+     现在先用选项集把「答案部分」和「解析部分」切开，只在答案部分取字母。 */
+  const ANSWER_HINT_RE = /^\s*(?:参考答案|正确答案|答案|答)\s*(?:[:：]|是)\s*/;
+  const EXPLAIN_START_RE = /[（(]\s*(?:解析|答案解析|分析|说明|理由|点拨|点评|注解|注)\s*[:：]|(?:答案解析|解析|分析|说明|理由|点拨|点评)\s*[:：]/;
+
+  function answerLettersOf(raw, optKeys) {
+    const keys = optKeys || null;
+    let s = String(raw == null ? '' : raw);
+    s = s.replace(ANSWER_HINT_RE, '').trim();
+    if (!s) return null;
+
+    // 1) 剥离解析尾巴：优先认带冒号的「解析：/分析：」，否则认第一个「（…）」（中文选项正文里基本不出现半角括号）
+    const em = s.match(EXPLAIN_START_RE);
+    let head = em && em.index > 0 ? s.slice(0, em.index) : s;
+    const p = head.indexOf('（');
+    if (p > 0) head = head.slice(0, p);
+    head = head.trim();
+
+    // 2) 只认「答案段」前部的连续字母序列（允许 A、B / A,B / A;B / A B 等分隔）
+    const LETTER_RUN = /[A-HＡ-Ｈ]/;
+    const isLetter = ch => LETTER_RUN.test(ch);
+    const isSep = ch => /[\s、,，;；.．/／|｜·+＋和及]/.test(ch);
+    let out = '';
+    let i = 0;
+    while (i < head.length && !isLetter(head[i])) i++;          // 跳过「选项」等前缀文字
+    for (; i < head.length; i++) {
+      const ch = head[i];
+      const c = FULL_LETTER[ch] || ch.toUpperCase();
+      if (c >= 'A' && c <= 'H') { out += c; continue; }
+      if (isSep(ch)) continue;
+      break;                                                     // 遇到别的字就停，后面的内容算解析
+    }
+    if (!out) return null;
+    let letters = [...new Set(out.split(''))].sort().join('');
+
+    // 3) 选项集约束：先剔掉超出选项范围的字母（如「见E选项」里的 E）
+    if (keys && keys.length) {
+      const inRange = [...letters].filter(c => keys.includes(c));
+      if (inRange.length) letters = inRange.join('');
+      else return { letters: null, outOfRange: letters };
+    }
+    return { letters, outOfRange: null };
+  }
+
+  /* ---- 文末集中答案区（v1.8.19）----
+     「参考答案\n1.A 2.C 3.B」这种卷末答案表，旧逻辑会把整行当成新题的题干，
+     所有题都缺答案而且一声不响。新做法：解析前先把答案表区域置空，再回填答案。
+     为避免把正文里的「参考答案：A」误当成答案表，必须同时满足：
+       1) 表头行是文末最后一个「参考答案/答案表」行；
+       2) 表头之后的非空行全部能解析成「题号+答案」；
+       3) 答案表之后直到文末再无其他内容。 */
+  const TAIL_HDR_RE = /^\s*(?:参考答案|正确答案|答案速查表|答案表|答案与解析|答案)\s*(?:[:：]\s*([\s\S]*))?\s*$/;
+  // 题号前面不能还是数字（避免把 3.5kV / 1.8.19 当题号）；其余情况一律允许
+  // 题号+答案：题号允许被上一段吃掉的情况（如「1.对2.错」中间没有分隔符），
+  // 因此不在正则里写前置守卫，而是在扫描时检查「题号前一个字符不是数字」（排除 3.5kV 这类小数）
+  const TAIL_PAIR_RE = /(\d{1,4})\s*[.、．)）]\s*([A-HＡ-Ｈ]{1,8}|对|错|正确|错误|√|×|✓|✗)/g;
+
+  /* 把一行里的「题号+答案」全部抠出；同时校验这行除了答案对没有其它内容 */
+  function scanAnswerPairs(t) {
+    const s = String(t);
+    const pairs = [];
+    let rest = '', last = 0, m;
+    TAIL_PAIR_RE.lastIndex = 0;
+    while ((m = TAIL_PAIR_RE.exec(s)) !== null) {
+      const idx = m.index;
+      if (idx > 0 && /[0-9]/.test(s[idx - 1])) continue;   // 是小数的一部分，不是题号
+      // 答案必须紧跟分隔点（A. / B、 / 对），中间不能夹别的字
+      rest += s.slice(last, idx);
+      last = idx + m[0].length;
+      pairs.push([+m[1], m[2]]);
+    }
+    rest += s.slice(last);
+    const pure = rest.replace(/[\s;；,，、|｜.．:：·]/g, '') === '';
+    return { pairs, pure };
+  }
+
+  function collectTrailingAnswers(lines) {
+    // 1) 找文末最后一个表头行
+    let head = -1, inline = '';
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = String(lines[i] || '').match(TAIL_HDR_RE);
+      if (m) { head = i; inline = (m[1] || '').trim(); break; }
+    }
+    if (head < 0) return null;
+
+    const pairs = [];
+    let endLine = head;
+
+    // 2) 表头行内联的答案（「参考答案：1.A；2.B」）
+    if (inline) {
+      const r = scanAnswerPairs(inline);
+      if (!r.pairs.length || !r.pure) return null;   // 不是答案表，就当普通文字（如某题的「参考答案：A」）
+      pairs.push(...r.pairs);
+    }
+
+    // 3) 表头之后的行
+    for (let i = head + 1; i < lines.length; i++) {
+      const t = String(lines[i] || '').trim();
+      if (!t) continue;
+      const r = scanAnswerPairs(t);
+      if (!r.pairs.length || !r.pure) {
+        return null;   // 答案表后还有正文 -> 这不是文末答案表，放弃（宁可不动）
+      }
+      pairs.push(...r.pairs);
+      endLine = i;
+    }
+    if (!pairs.length) return null;
+    return { head, endLine, pairs };
+  }
+
   /* 节标题 → 默认题型（「## 判断题」这类写法） */
   function detectSecType(title) {
     const t = String(title || '').replace(/\s/g, '');
@@ -195,6 +308,12 @@ C. IGBT
   /* 主解析：范式文本 → 题目数组（带行号级错误/警告） */
   function parse(text, opts = {}) {
     const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    // v1.8.19：先抠出文末集中答案表，并把那几行挖空——
+    // 这样它压根不会参与解析，不会凭空多出「题号为 1、题干是 A 2.B」的假题。
+    const tailAns = collectTrailingAnswers(lines);
+    if (tailAns) {
+      for (let i = tailAns.head; i <= tailAns.endLine; i++) lines[i] = '';
+    }
     const questions = [], errors = [], warns = [], sections = [];
     let secIdx = -1, secType = null;
     let cur = null, nextNo = 1, blankBefore = false;
@@ -217,7 +336,8 @@ C. IGBT
     function pushStemBody(t) {
       const s = String(t == null ? '' : t).trim();
       if (!s) return;
-      const im = s.match(/[（(]\s*(?:参考答案|正确答案|答案)\s*[:：]\s*([^）)]{1,60}?)\s*[）)]\s*[。.；;，,]?\s*$/);
+      // v1.8.19：不再要求括号在行尾（「题干（答案：B）？」以前匹配不到）
+      const im = s.match(/[（(]\s*(?:参考答案|正确答案|答案)\s*(?:[:：]|是)\s*([^）)]{1,60}?)\s*[）)]/);
       if (im && cur && cur.answerRaw == null) {
         cur.answerRaw = im[1].trim();
         const cleaned = s.slice(0, im.index).trim();
@@ -242,8 +362,10 @@ C. IGBT
         if (optObj) {
           const vals = Object.values(optObj).map(v => v.replace(/\s/g, ''));
           if (optKeys.length === 2 && JUDGE_YES.test(vals[0]) && JUDGE_NO.test(vals[1])) type = 'judge';
-          else if (lettersOf(q.answerRaw) && lettersOf(q.answerRaw).length > 1) type = 'multi';
-          else type = 'single';
+          else {
+            const r0 = answerLettersOf(q.answerRaw, optKeys);
+            type = (r0 && r0.letters && r0.letters.length > 1) ? 'multi' : 'single';
+          }
         } else if (q.answerRaw && (JUDGE_YES.test(q.answerRaw.trim()) || JUDGE_NO.test(q.answerRaw.trim()))) {
           type = 'judge';
         } else {
@@ -290,15 +412,14 @@ C. IGBT
         const v = String(q.answerRaw || '').replace(/[｜|]{2,}/g, '|||').trim();
         answer = v || null;
       } else {
-        const letters = lettersOf(q.answerRaw);
+        const r = answerLettersOf(q.answerRaw, optKeys);
+        const letters = r && r.letters;
         if (letters) {
-          const bad = [...letters].filter(c => !optObj[c]);
-          if (bad.length) {
-            err(q.line, `第 ${q.no} 题：答案「${letters}」不在选项内（选项只有 ${optKeys.join('/')}），已忽略该答案`);
-          } else {
-            answer = letters;
-            if (type === 'single' && letters.length > 1) type = 'multi'; // 答案多个字母 → 按多选
-          }
+          answer = letters;
+          if (type === 'single' && letters.length > 1) type = 'multi'; // 答案多个字母 → 按多选
+        } else if (r && r.outOfRange) {
+          // 带解析的答案会抠出「见E选项」这类超纲字母，按缺答案处理但别静默
+          warn(q.line, `第 ${q.no} 题：答案里的字母（${r.outOfRange}）都不在选项 ${optKeys.join('/')} 内，已按缺答案处理`);
         }
       }
 
@@ -463,7 +584,8 @@ C. IGBT
       }
 
       // ⑤ 答案行
-      const am = rest.match(/^\s*(?:参考答案|正确答案|答案|答)\s*[:：]\s*([\s\S]*)$/);
+      // v1.8.19：允许「答案是C」这种不带冒号的写法
+      const am = rest.match(/^\s*(?:参考答案|正确答案|答案|答)\s*(?:[:：]|是)\s*([\s\S]*)$/);
       if (am) {
         if (!cur) warn(ln, '答案出现在题目之外，已忽略');
         else if (cur.answerRaw != null) warn(ln, `第 ${cur.no} 题出现多个答案行，以第一个为准`);
@@ -502,6 +624,36 @@ C. IGBT
       }
     }
     flush();
+
+    /* ---- v1.8.19 文末答案表回填（题目已解析完，此时才知道每题选项集） ---- */
+    if (tailAns) {
+      const byNo = new Map();
+      for (const q of questions) if (!byNo.has(q.no)) byNo.set(q.no, q);
+      let filled = 0, skipped = 0;
+      for (const [no, raw] of tailAns.pairs) {
+        const q = byNo.get(no);
+        if (!q || q.answer) { skipped++; continue; }
+        const optKeys = q.options ? Object.keys(q.options).sort() : null;
+        let val = null;
+        if (q.type === 'judge') {
+          const v = String(raw).trim();
+          if (JUDGE_YES.test(v)) val = 'A';
+          else if (JUDGE_NO.test(v)) val = 'B';
+          else {
+            const r = answerLettersOf(v, ['A', 'B']);
+            if (r && r.letters && /^[AB]$/.test(r.letters)) val = r.letters;
+          }
+        } else {
+          const r = answerLettersOf(raw, optKeys);
+          val = r && r.letters;
+        }
+        if (!val) { skipped++; continue; }
+        q.answer = val;
+        if (q.type === 'single' && val.length > 1) q.type = 'multi';
+        filled++;
+      }
+      if (filled) warn(tailAns.head + 1, `已从文末答案表回填 ${filled} 题的答案${skipped ? `（${skipped} 条对应不上，已跳过）` : ''}`);
+    }
 
     const byType = { single: 0, multi: 0, judge: 0, fill: 0 };
     for (const q of questions) byType[q.type]++;
