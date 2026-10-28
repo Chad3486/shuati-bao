@@ -29,13 +29,14 @@ jobs:
         run: gradle -p apk-src :app:assembleDebug --no-daemon
 
       - name: Rename APK
-        run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk 刷题宝.apk
+        # 附件名带版本号（tag 名）；用 ASCII 名，规避中文文件名被 GitHub 规整成 default.apk
+        run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk "shuati-bao-${GITHUB_REF_NAME}.apk"
 
       # Artifact 仅作临时产物，保留期拉到 GitHub 上限（400 天）
       - uses: actions/upload-artifact@v4
         with:
           name: shuati-bao-apk
-          path: 刷题宝.apk
+          path: shuati-bao-*.apk
           retention-days: 400
 
       # ── 以下步骤仅打 tag 时执行（推 main 和手动触发只构建、不发版）──
@@ -62,5 +63,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: 刷题宝.apk
+          files: shuati-bao-*.apk
           body_path: release_notes.md
