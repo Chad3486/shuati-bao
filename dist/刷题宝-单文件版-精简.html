@@ -214,6 +214,25 @@ body {
 }
 .hero-label { opacity: .85; font-size: 13px; position: relative; }
 
+/* 首页快捷磁贴：横排四宫格 + SVG 图标（紧凑，少占高度） */
+.quick-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px;
+}
+.quick-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 2px 8px; border: none; cursor: pointer; font-family: inherit;
+  background: var(--card); border-radius: 12px;
+  font-size: 11px; font-weight: 600; color: var(--text, #1c2333);
+  box-shadow: 0 2px 8px rgba(30, 50, 120, .06);
+  transition: transform .12s ease, box-shadow .15s ease;
+}
+.quick-tile:active { transform: scale(.94); box-shadow: 0 1px 4px rgba(30, 50, 120, .08); }
+.quick-ico {
+  width: 32px; height: 32px; border-radius: 9px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.quick-ico svg { width: 18px; height: 18px; display: block; }
+
 .bank-list { margin-top: 16px; }
 .bank-card {
   display: flex; align-items: center; background: var(--card);
@@ -507,6 +526,11 @@ body {
   font-size: 14px; font-family: inherit; background: var(--card); color: var(--text); width: 100%;
 }
 .field input:focus { outline: none; border-color: var(--primary); }
+
+.field select {
+  border: 1.5px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px;
+  font-size: 14px; font-family: inherit; background: var(--card); color: var(--text); width: 100%;
+}
 .field textarea {
   border: 1.5px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px;
   font-size: 14px; font-family: inherit; background: var(--card); color: var(--text);
@@ -1014,6 +1038,7 @@ const DB = (() => {
   return api;
 })();
 
+
 </script>
   <script>
 /* ========== 文件文本提取层（Word / 文本 / 图片） ========== */
@@ -1029,9 +1054,18 @@ const Extractor = (() => {
     ta.innerHTML = html
       .replace(/<img[^>]*>/gi, '\n[图片]\n')
       .replace(/<br\s*\/?>/gi, '\n')
+      // v1.8.17：表格同一行的单元格用 \t 连接。原来逐格成行，会把「题号|答案」速查表
+      // 拆成一列数字一列字母，字母行还会被 detectNoiseLines 当重复短行删掉 → 速查表全丢
+      .replace(/<\/(p|div|h[1-6])>\s*<\/t[dh]>\s*<t[dh][^>]*>\s*<(p|div|h[1-6])[^>]*>/gi, '\t')
       .replace(/<\/(p|div|h[1-6]|li|tr|table|blockquote|section)>/gi, '\n')
       .replace(/<[^>]+>/g, '');
-    return ta.value.replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n');
+    // 表格行里若整行都是选项标记（A. xxx\tB. yyy 选项表）→ 拆回逐行，避免选项被并成一行
+    const joined = ta.value.replace(/\n[ \t]+/g, '\n');
+    return joined.replace(/^[^\n]*\t[^\n]*$/gm, m => {
+      const cells = m.split('\t').map(s => s.trim()).filter(Boolean);
+      const optLike = cells.length >= 2 && cells.every(c => /^[A-HＡ-Ｈａ-ｈ]\s*[.、．:：)）]/.test(c));
+      return optLike ? cells.join('\n') : m;
+    }).replace(/\n{3,}/g, '\n\n');
   }
 
   /* ---- 图片压缩：手机照片动辄 5-10MB，直接 base64 会撑爆请求 ----
@@ -1172,7 +1206,7 @@ const Extractor = (() => {
     const isOpt = s => /^\s*[A-H]\s*[.、．:：)）]/.test(s);
     const isSec = s => /^\s*[一二三四五六七八九十][、.]/.test(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
-    const isAnsHead = s => /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案)/.test(s);
+    const isAnsHead = s => /^(参考答案|标准答案|答案速查|速查表|答案表|答案汇总|答案与解析|试题答案|附录|附表)/.test(s);
     // 独立题型标题行（无中文序号，如「单选题」单独成行）——是结构行，不能并进上一行
     const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
     // 答案行（「答案：D    解析：…」）——必须独立，并入选项行会污染选项内容
@@ -1234,15 +1268,23 @@ const Extractor = (() => {
      R1 子小问（1）（2）（3）并入父题；R2 答案区停切；R3 短答案行不算题
      S1 题型小节感知：「一、单选题」等行设置当前节，题号回到1时隐式开新节
      每题带 key=节序号-题号（跨节去重用，修复各节同号互相覆盖）---- */
-  function splitQuestions(text) {
+  function splitQuestions(text, customSrc) {
+    // 自定义切题正则（v1.8.13）：设置后只按该行首模式切题，第一个括号捕获题号（无捕获则顺序编号）
+    const customRe = (() => {
+      if (!customSrc) return null;
+      try { const r = new RegExp(customSrc); return r.test('') ? null : r; } catch { return null; }
+    })();
+    let autoNo = 0;
     const lines = text.split('\n');
     const mainRe = /^\s*(\d{1,3})\s*[.、．)）]\s*/;
     const subRe = /^[（(]\s*(\d{1,3})\s*[)）]\s*/;
     const ansPairRe = /(\d{1,3})\s*[.、．:：)]?\s*[A-H]\b/g;
     const ansHeadRe = /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案|参考答案与解析)/;
-    // S1：题型小节行（≤15字、不以数字开头）
+    // S1：题型小节行（不以数字开头）
     const secType = s => {
-      if (s.length > 15 || /^\s*\d/.test(s)) return null;
+      // v1.8.17：长度上限 15 → 40。旧版把「二、多选题（第 126—154 题，共 29 题）」
+      // 这类带题号范围的小节标题当长行跳过 → 多选节被并入上一节、题型全错（连带答案校验全拒）
+      if (s.length > 40 || /^\s*\d/.test(s)) return null;
       if (/单选|只选/.test(s) && /题/.test(s)) return 'single';
       if (/多选/.test(s)) return 'multi';
       if (/判断/.test(s)) return 'judge';
@@ -1316,6 +1358,26 @@ const Extractor = (() => {
       }
       if (isAnswerLine(line)) { if (cur) { items.push(cur); cur = null; } continue; }
       if (isAnswerEntry(line)) { if (cur) { items.push(cur); cur = null; } continue; }
+
+      /* 自定义正则模式：命中 = 开新题，其余行归入当前题 */
+      if (customRe) {
+        const cm = trimmed.length > 3 ? line.match(customRe) : null;
+        if (cm) {
+          let no = ++autoNo;
+          if (cm[1] && /^\d{1,4}$/.test(cm[1].trim())) { no = parseInt(cm[1], 10); autoNo = no; }
+          if (no === 1 && lastQNo > 1) {
+            secIdx++; curType = null; chapPart++;
+            sections.push({ secIdx, title: curChapter ? (curChapter + ' · 第' + chapPart + '组') : null, type: null });
+          }
+          lastQNo = no;
+          if (cur) items.push(cur);
+          cur = { no, secIdx, type: curType, key: secIdx + '-' + no, text: [line.replace(customRe, '').trim() || line] };
+        } else if (cur) {
+          cur.text.push(line);
+          if (cur.text.join('\n').length > 4000) { items.push(cur); cur = null; }
+        }
+        continue;
+      }
 
       const m = line.match(mainRe);
       const sm = line.match(subRe);
@@ -1577,6 +1639,7 @@ const Extractor = (() => {
   return { extract, extractFull, shrinkImage, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
 })();
 
+
 </script>
   <script>
 /* ========== LLM 解析引擎（OpenAI 兼容接口） ========== */
@@ -1814,12 +1877,15 @@ const LLM = (() => {
     const isStruct = t => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(t) ||
       /^[一二三四五六七八九十]+\s*[、.．]/.test(t) ||
       /^(单项选择题|单选题|多项选择题|多选题|判断题|填空题|选择题)\s*[：:]?\s*$/.test(t);
-    // 逐行答案条目：题号 + (答案：)? + 字母/对错，尾部仅允许 解析括号 / 少量标点
-    const entryRe = /^\d{1,3}\s*[.、．:：)）]?\s*(?:答案\s*[:：]?\s*)?([A-Ha-hＡ-Ｈａ-ｈ]{1,4}|对|错|√|×|正确|错误)(?![A-Za-z0-9])/;
+    // 逐行答案条目：题号 + (答案：)? + 字母/对错，尾部仅允许 解析括号 / 括注原文 / 少量标点
+    const entryRe = /^\d{1,3}\s*[.、．:：)）]?\s*(?:答案\s*[:：]?\s*)?([A-Ha-hＡ-Ｈａ-ｈ]{1,5}|对|错|√|×|正确|错误)(?![A-Za-z0-9])/;
     const tailOk = rest => {
       const r = rest.trim();
       if (!r) return true;
       if (/^[（(【\[]\s*(答案解析|解析|解释|说明)/.test(r)) return true;
+      // v1.8.17：括注选项原文「（A. 可接受的危险）」或「（A. 原文）解析：…」
+      if (/^[（(]\s*[A-Ha-hＡ-Ｈａ-ｈ]\s*[.、．:：]?\s*[\u4e00-\u9fff（(]/.test(r)) return true;
+      if (/^[（(][^（）()]{1,200}[）)](?:[，。；、,.]?\s*(?:解析|备注)\s*[:：][\s\S]*)?$/.test(r)) return true;
       if (/^[）)】,，。;；、\s]{0,2}$/.test(r)) return true;
       return false;
     };
@@ -1874,6 +1940,26 @@ const LLM = (() => {
     const t = fullToHalf(String(s || '')).replace(/[\s,，、]/g, '');
     return /^[A-Ha-h]+$/.test(t) ? t.toUpperCase() : null;
   }
+  /* ---- 宽松答案字母提取：容忍「A（A. 可接受的危险）」「答案：B」「B、安全预评价合同」
+     等带括注原文/前缀的写法（AI 从原文照抄时常见），供 AI 对位校验使用；
+     deep=true 时再做全文残留字母兜底（仅限已知是选项题的场景，避免误伤填空文本答案） ---- */
+  function looseLetters(s, deep) {
+    let t = fullToHalf(String(s || '')).replace(/[\s,，、]/g, '');
+    if (!t) return null;
+    t = t.replace(/[（(]\s*(存疑|争议|待定|不确定|仅供参考)\s*[)）]\s*$/, '');
+    // ① 开头即字母段（后跟括注/方括号）→ 取该段字母
+    let m = t.match(/^([A-Ha-h]{1,5})\s*[.、．]?\s*(?=[（(【\[])/);
+    if (m) return m[1].toUpperCase();
+    // ② 纯字母直接返回
+    if (/^[A-Ha-h]+$/.test(t)) return t.toUpperCase();
+    // ③ 去掉全部括注块后再试
+    const stripped = t.replace(/[（(][^（）()]*[）)]/g, '').replace(/^[：:]/, '').trim();
+    if (/^[A-Ha-h]{1,5}$/.test(stripped)) return stripped.toUpperCase();
+    if (!deep) return null;
+    // ④ 前缀残留兜底：「参考答案：C」「答C」等（仅选项题场景调用）
+    m = stripped.match(/(?:^|[^A-Za-z0-9])([A-Ha-h]{1,5})(?![A-Za-z0-9])/);
+    return m ? m[1].toUpperCase() : null;
+  }
   function secTypeOfTitle(s) {
     if (/单选|只选/.test(s) && /题/.test(s)) return 'single';
     if (/多选/.test(s)) return 'multi';
@@ -1887,8 +1973,10 @@ const LLM = (() => {
     const pats = [
       /[（(]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[)）]\s*$/,
       /[【\[]\s*(?:答案解析|解析|解释|说明)\s*[:：]?\s*([\s\S]*?)\s*[】\]]\s*$/,
-      /[,，。;；]\s*(?:答案解析|解析|解释|说明)\s*[:：]\s*([\s\S]*)$/,
-      /^(?:答案解析|解析)\s*[:：]\s*([\s\S]*)$/
+      // v1.8.17：分隔符放宽到「）。，。、；：」及行首——「A（A. 原文）解析：…」「D、xxx。解析：…」
+      // 旧版要求解析前必须有逗号/句号，「）解析：」直连的整句解析全被并进答案文本
+      /(?:^|[,，。;；:：、)）\]】\.．])\s*(?:答案解析|解析|解释|说明|备注)\s*[:：]\s*([\s\S]*)$/,
+      /^(?:答案解析|解析|备注)\s*[:：]\s*([\s\S]*)$/
     ];
     for (const re of pats) {
       const m = body.match(re);
@@ -1912,6 +2000,14 @@ const LLM = (() => {
     if (wrap) t = wrap[1].trim();
     const letters = normLetters(t);
     if (letters) return { answer: letters, kind: 'letter', raw: t, note };
+    // v1.8.17：带括注原文的选项答案「A（A. 可接受的危险）」「ABCD（A. …；B. …）」——
+    // 旧版当文本丢弃 → 整套答案对不上题（classify 为 text，valid 拒收，填入率 0）
+    if (secType !== 'fill') {
+      const ap = t.match(/^([A-Ha-hＡ-Ｈａ-ｈ]{1,5})\s*[.、．]?\s*(?=[（(【\[])/);
+      if (ap) { const l = normLetters(ap[1]); if (l) return { answer: l, kind: 'letter', raw: t, note }; }
+      const stripped = t.replace(/[（(][^（）()]*[）)]/g, ' ').trim();
+      if (stripped !== t) { const l = normLetters(stripped); if (l) return { answer: l, kind: 'letter', raw: t, note }; }
+    }
     if (/^(对|正确|√|✓|是)$/.test(t)) return { answer: 'A', kind: 'judge', raw: t, note };
     if (/^(错|错误|×|✗|否)$/.test(t)) return { answer: 'B', kind: 'judge', raw: t, note };
     if (secType === 'judge' && /^(T|Y|TRUE)$/i.test(t)) return { answer: 'A', kind: 'judge', raw: t, note };
@@ -1923,7 +2019,7 @@ const LLM = (() => {
 
   /* ---- 密集答案行：「1.C 2.A 3.B」「1.对 2.错」→ 多条目 ---- */
   function tryDenseLine(t) {
-    const re = /(\d{1,3})\s*[.、．:：)）]?\s*([A-H]{1,4}|对|错|√|×)(?![A-Za-z0-9])/g;
+    const re = /(\d{1,3})\s*[.、．:：)）]?\s*([A-H]{1,5}|对|错|√|×)(?![A-Za-z0-9])/g;
     const pairs = [...t.matchAll(re)];
     if (pairs.length < 2) return null;
     const rest = t.replace(re, '').replace(/[\s,，、.。;；:：（()）]/g, '');
@@ -1942,23 +2038,37 @@ const LLM = (() => {
     const entries = [];   // 带题号条目 { no, chapter, section, secType, answer, kind, raw, explanation }
     const ordered = [];   // 全部答案按出现顺序（无题号文件的序列兜底）
     let chapter = null, section = null, secType = null;
+    let inAppendix = false;   // v1.8.17：附录/速查表区——条目不带章节上下文（速查表会把全文题号重列一遍，带上章节会与正文条目冲突）
+    let lastEntry = null;     // 最近一条目（供「解析：/备注：」续行挂靠）
 
     const pushEntry = (no, cls, explanation) => {
       // 答案文件里的「（存疑）」等标注并进解析，练习时能看到提示
       let exp = explanation || null;
       if (cls.note) exp = exp ? `${exp}（答案文件标注：${cls.note}）` : `（答案文件标注：${cls.note}）`;
-      const e = { no, chapter, section, secType, answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp };
+      const e = { no, chapter: inAppendix ? null : chapter, section: inAppendix ? null : section, secType: inAppendix ? null : secType, answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp };
       if (no != null) entries.push(e);
       ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: exp });
+      lastEntry = e;
     };
 
     for (const raw of lines) {
       const t = raw.trim();
       if (!t) continue;
+      // v1.8.17：附录/速查表区标记（速查表内的条目不带章节上下文，避免和正文条目双候选对不上）
+      if (/^(附录|附表|速查表|答案速查|参考答案表|答案汇总表)/.test(t)) { inAppendix = true; continue; }
       // 章 / 节 / 题型标题（与题目文件同名结构对齐）
-      if (/^第\s*[一二三四五六七八九十\d]+\s*章/.test(t)) { chapter = t.slice(0, 40); section = null; secType = null; continue; }
+      if (/^第\s*[一二三四五六七八九十\d]+\s*章/.test(t)) { chapter = t.slice(0, 40); section = null; secType = null; inAppendix = false; continue; }
       if (/^[一二三四五六七八九十]+\s*[、.．]/.test(t) || /^(单项选择题|单选题|多项选择题|多选题|判断题|填空题|选择题)\s*[：:]?\s*$/.test(t)) {
         section = t.slice(0, 20); secType = secTypeOfTitle(t); continue;
+      }
+      // v1.8.17：「解析：…」「备注：…」独立续行 → 挂到上一条目（旧版直接丢弃，解析全丢）
+      if (lastEntry && /^(?:答案解析|解析|解释|备注)\s*[:：]/.test(t)) {
+        const tail = t.replace(/^(?:答案解析|解析|解释|备注)\s*[:：]\s*/, '').trim();
+        if (tail) {
+          const label = /^备注/.test(t) ? '备注：' + tail : tail;
+          lastEntry.explanation = (lastEntry.explanation ? lastEntry.explanation + ' ' : '') + label;
+        }
+        continue;
       }
       // 题号前缀（三选一）+ 可选「答案：」
       let no = null, rest = null;
@@ -1968,7 +2078,9 @@ const LLM = (() => {
       if (no == null && (m = t.match(/^题号\s*[:：]?\s*(\d{1,3})\s*/))) { no = +m[1]; rest = t.slice(m[0].length); }
       if (no == null && (m = t.match(/^(\d{1,3})\s+(?=[A-Ha-hＡ-Ｈａ-ｈ对错√×])/))) { no = +m[1]; rest = t.slice(m[0].length); }
       if (no != null) {
-        const mA = rest.match(/^答案\s*[:：]?\s*/);
+        // v1.8.17：「答案」后必须有冒号或紧跟字母/判断词——旧版可选冒号，
+        // 说明文字「2. 答案以原文档标注的…」被误当答案条目（污染序列对位）
+        const mA = rest.match(/^答案\s*(?:[:：]\s*|(?=[A-Ha-hＡ-Ｈａ-ｈ对错√×]))\s*/);
         const hasMarker = !!mA;
         if (mA) rest = rest.slice(mA[0].length);
         const { answerPart, explanation } = splitExplanation(rest);
@@ -1978,13 +2090,18 @@ const LLM = (() => {
       }
       // 密集答案行
       const dense = tryDenseLine(t);
-      if (dense) { for (const d of dense) pushEntry(d.no, d, null); continue; }
+      if (dense) {
+        // v1.8.17：速查表兜底——未见「附录」标记但题号大幅回落（如已到 154 又从 1 重列）→ 按附录处理
+        if (!inAppendix && entries.length >= 10 && dense[0].no < (entries[entries.length - 1].no || 0) - 10) inAppendix = true;
+        for (const d of dense) pushEntry(d.no, d, null);
+        continue;
+      }
       // 无题号答案行（序列模式）
       const m2 = t.match(/^(?:答案|答)\s*[:：]\s*([\s\S]+)$/);
       if (m2) {
         const { answerPart, explanation } = splitExplanation(m2[1]);
         const cls = classifyAnswerToken(answerPart, secType);
-        if (cls) ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: explanation || null });
+        if (cls) { ordered.push({ answer: cls.answer, kind: cls.kind, raw: cls.raw, explanation: explanation || null }); lastEntry = null; }
       }
     }
     return { entries, ordered, hasNos: entries.length >= 3 };
@@ -2158,8 +2275,9 @@ const LLM = (() => {
         let ans = String(a.answer ?? '').trim();
         if (!ans || ans === 'null') continue;
         if (q.options && q.type !== 'fill') {
-          // 选项题：同结构化匹配的严格校验
-          const letters = normLetters(ans);
+          // 选项题：同结构化匹配的严格校验（v1.8.17：宽松提取字母——AI 从原文照抄
+          // 「A（A. 可接受的危险）」时旧版 normLetters 直接拒收，导致 AI 对位也补不全）
+          const letters = looseLetters(ans, true) || normLetters(ans);
           if (!letters) continue;                                       // 选项题不收文本答案
           if ([...letters].some(c => !q.options[c])) continue;           // 字母不在选项里
           if ((q.type === 'single' || q.type === 'judge') && letters.length !== 1) continue; // 单选/判断必须单字母
@@ -2208,12 +2326,12 @@ const LLM = (() => {
   }
 
   /* ---- 整体解析 · 纯本地：正则切题 + 逐题解析 + 答案表匹配（0 次 API 调用、无需 API Key） ---- */
-  async function parseDocument(fullText, onProgress) {
+  async function parseDocument(fullText, onProgress, customSrc) {
     const text = Extractor.cleanText(fullText);
     const answerTable = findAnswerTable(text);
 
-    // 1) 确定性切题
-    const split = Extractor.splitQuestions(text);
+    // 1) 确定性切题（可选自定义正则）
+    const split = Extractor.splitQuestions(text, customSrc);
 
     // 2) 本地正则解析（毫秒级、零费用）——透传节题型/节键
     const questions = [];
@@ -2736,7 +2854,7 @@ const LLM = (() => {
             }
             if (!pairs && raw) {
               // ⑤ 非结构化兜底：从返回文本里抓「1. C」「1、C」「1：C」「1) C」式答案行
-              const m = [...String(raw).matchAll(/(\d{1,3})\s*[、.．:：)]\s*([A-D]{1,4}\b|对|错|正确|错误|√|×)/g)];
+              const m = [...String(raw).matchAll(/(\d{1,3})\s*[、.．:：)]\s*([A-H]{1,5}\b|对|错|正确|错误|√|×)/g)];
               if (m.length >= Math.max(1, Math.ceil(batch.length / 2))) {
                 pairs = m.map(x => ({ idx: +x[1] - 1, answer: x[2] }));
               }
@@ -2752,8 +2870,11 @@ const LLM = (() => {
                   else if (/^(错|错误|×|✗|否|F|FALSE|B|0)$/i.test(ans)) ans = 'B';
                   else continue;
                 } else if (q.options) {
-                  ans = ans.toUpperCase().replace(/[^A-Z]/g, '');
+                  // v1.8.17：宽松提取字母。旧版 replace(/[^A-Z]/g,'') 会把「A（A. 原文）」
+                  // 洗成「AA」存库 → 判分永远错（正确率被污染的根源之一）
+                  ans = looseLetters(ans, true) || '';
                   if (!ans || [...ans].some(c => !q.options[c])) continue;
+                  if (q.type === 'single' && ans.length !== 1) continue;  // 单选必须是单字母，宁缺毋错
                 } else {
                   ans = ans.replace(/[。；;]\s*$/, '').trim();
                   if (!ans || /^(略|见解析|无|不知道|无法确定)$/.test(ans)) continue;
@@ -2807,8 +2928,9 @@ const LLM = (() => {
     return raw.trim();
   }
 
-  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
+  return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, findAnswerTable, findAnswerTableSpan, looseLetters, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
 })();
+
 
 </script>
   <script>
@@ -3570,6 +3692,7 @@ C. IGBT
 
   return { SPEC, template, parse, fromQuestions, convert, buildDocx, TYPE_ALIAS, TYPE_LABEL };
 })();
+
 </script>
   <script>
 /* ========== 答题会话逻辑 ========== */
@@ -3582,7 +3705,11 @@ class QuizSession {
   constructor(questions, opts = {}) {
     this.all = questions;
     this.opts = opts;
-    this.list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    let list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    // v1.8.15 选项乱序：随机模式 = 题序 + 选项序一起打乱。
+    // 只改会话内副本（题库原数据不动），答案字母同步换算；异常一律回退原题
+    if (opts.shuffle) list = list.map(q => this._shuffleOptions(q));
+    this.list = list;
     this.index = 0;
     this.answered = new Map(); // qid -> {userAnswer, correct, q, answer, explanation}
     this.startTime = Date.now();
@@ -3601,6 +3728,46 @@ class QuizSession {
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
     return arr;
+  }
+
+  /* ---- 选项乱序（v1.8.15）----
+     规则：仅单选/多选、选项 ≥3 个且有答案；「以上都对 / 上述都不对」类联动选项不打乱（语义会破）；
+     返回浅拷贝题（options 新对象 + 换算后的 answer + _optPerm 旧字母→新字母映射），题库原数据不动；
+     任何不确定（答案字母对不上选项等）都原样返回，保证答案永不因乱序而出错 */
+  _shuffleOptions(q) {
+    if (q.type !== 'single' && q.type !== 'multi') return q;
+    if (!q.options || !q.answer) return q;
+    const keys = Object.keys(q.options).sort();
+    if (keys.length < 3) return q;                       // 对/错、A/B 两个选项打乱无意义
+    const texts = keys.map(k => String(q.options[k] ?? ''));
+    if (texts.some(t => /以上|上述|都不?对|都不?是|都正确|都错误|全部正确|全部错误/.test(t))) return q;
+    const ansLetters = String(q.answer).toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !keys.includes(c))) return q;
+
+    const order = this._shuffle([...keys.keys()]);       // order[j] = 新位置 j 的内容来自旧下标
+    const mapping = new Map();                           // 旧字母 → 新字母
+    keys.forEach((oldK, i) => mapping.set(oldK, keys[order[i]]));
+    const copy = QuizSession.permuteQuestion(q, mapping);
+    if (!copy) return q;                                 // 换算失败兜底：原题原样
+    return copy;
+  }
+
+  /* 按 旧字母→新字母 映射生成题目副本（restore 续练复用）；校验失败返回 null。
+     注意：options 新对象必须按新字母 A,B,C… 顺序插入——渲染层用 Object.keys 的插入顺序显示 */
+  static permuteQuestion(q, mapping) {
+    const keys = Object.keys(q.options || {}).sort();
+    if (!keys.length || keys.some(k => !mapping.has(k))) return null;
+    const news = keys.map(k => mapping.get(k));
+    if (new Set(news).size !== keys.length) return null; // 必须是双射
+    const newOptions = {};
+    [...news].sort().forEach(nk => {
+      const oldK = keys.find(k => mapping.get(k) === nk);
+      newOptions[nk] = q.options[oldK];
+    });
+    const ansLetters = String(q.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !mapping.has(c))) return null;
+    const newAnswer = [...ansLetters].map(c => mapping.get(c)).sort().join('');
+    return { ...q, options: newOptions, answer: newAnswer, _optPerm: Object.fromEntries(mapping) };
   }
 
   get current() { return this.list[this.index]; }
@@ -3642,7 +3809,23 @@ class QuizSession {
   /* ---- 判分（学习模式与考试交卷共用） ---- */
   static judge(q, userAnswer) {
     if (q.type === 'fill') return QuizSession.checkFill(userAnswer, q.answer);
-    const norm = s => String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+    /* v1.8.17：标准答案容错归一。旧版 replace(/[^A-Z]/g,'') 会把历史导入的
+       「A（A. 可接受的危险）」洗成「AA」，用户选 A 永远判错 → 正确率虚低。
+       现取答案开头第一段选项字母（自动跳过「答案：」前缀、括注原文、解析尾巴） */
+    const norm = s => {
+      const t = String(s || '').toUpperCase();
+      // 判断题存的是文字答案（对/错/T/F）时归一成 A/B
+      if (q.type === 'judge' && !/[A-B]/.test(t)) {
+        if (/^(对|正确|√|✓|是|T|Y)/.test(t)) return 'A';
+        if (/^(错|错误|×|✗|否|F|N)/.test(t)) return 'B';
+      }
+      let m = t.match(/^[^A-H]*([A-H]{1,5})/);
+      if (m) return m[1].split('').sort().join('');
+      // 括注全包裹型（「（A）（C）」）：去掉括号块后再取
+      const stripped = t.replace(/[（(][^（）()]*[）)]/g, ' ');
+      m = stripped.match(/[A-H]{1,5}/);
+      return m ? m[0].split('').sort().join('') : '';
+    };
     return norm(userAnswer) === norm(q.answer);
   }
 
@@ -3725,15 +3908,20 @@ class QuizSession {
       deadline: this.deadline || 0,
       graded: this.graded,
       recite: !!this.recite,
-      examAnswers: [...this.examAnswers.entries()]
+      examAnswers: [...this.examAnswers.entries()],
+      // 选项乱序映射（v1.8.15）：qid -> {旧字母:新字母}，恢复时原样套回，已答字母才不会错位
+      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm])
     };
   }
   /* ---- 反序列化：查库重建 ---- */
   static async restore(data) {
+    const permMap = new Map(data.optPerm || []);
     const qs = [];
     for (const id of data.ids) {
       const q = await DB.questionGet(id);
-      if (q) qs.push(q);
+      if (!q) continue;
+      // 套回上次会话的选项乱序（保证已答字母不错位）；套不上就原题，判分仍正确
+      qs.push(permMap.has(id) ? (QuizSession.permuteQuestion(q, new Map(Object.entries(permMap.get(id)))) || q) : q);
     }
     const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
@@ -3781,11 +3969,12 @@ const QuizBuilder = {
     return new QuizSession(questions, opts);
   }
 };
+
 </script>
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.7'; // 与 apk-src/app/build.gradle 的 versionName 保持一致
+  const VERSION = '1.8.18'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -3806,6 +3995,8 @@ const App = (() => {
     'quiz-result': pageQuizResult,
     'wrong': pageWrong,
     'star': pageStar,
+    'wrong-setup': () => pageReviewSetup('wrong'),
+    'star-setup': () => pageReviewSetup('star'),
     'search': pageSearch,
     'history': pageHistory,
     'stats': pageStats,
@@ -3968,7 +4159,7 @@ const App = (() => {
     const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'me'];
     const active = tabs.includes(path) ? path
       : path.startsWith('quiz') ? 'quiz-setup'
-      : path === 'star' ? 'wrong'
+      : path === 'star' || path === 'star-setup' || path === 'wrong-setup' ? 'wrong'
       : path === 'history' ? 'stats'
       : path === 'settings' ? 'me'
       : 'home';
@@ -4012,6 +4203,61 @@ const App = (() => {
   }
 
   function confirmDialog(msg) { return window.confirm(msg); }
+
+  /* v1.8.16 兜底：旧进度被新练习顶掉前，自动存一条「练习（未完成）」进练习记录，永不真丢 */
+  async function archivePartialSession(data) {
+    try {
+      const s = await QuizSession.restore(data);
+      if (!s || !s.total) return;
+      const rows = s.list.map(q => {
+        const a = s.answered.get(q.id);
+        if (a) return { qid: q.id, ua: a.userAnswer, status: a.correct ? 'ok' : 'bad' };
+        const ua = s.examAnswers.has(q.id) ? s.examAnswers.get(q.id) : null;
+        if (ua != null && String(ua).trim() && q.answer) return { qid: q.id, ua, status: QuizSession.judge(q, ua) ? 'ok' : 'bad' };
+        return { qid: q.id, ua: ua || null, status: 'none' };
+      });
+      const answeredN = rows.filter(x => x.status !== 'none').length;
+      if (!answeredN) return;
+      const correctN = rows.filter(x => x.status === 'ok').length;
+      const wrongN = rows.filter(x => x.status === 'bad').length;
+      await historyPush({
+        id: DB.uid(), at: s.startTime || Date.now(), partial: true, exam: !!s.exam,
+        label: s.exam ? '考试（未交卷·自动保存）' : '练习（未完成·自动保存）',
+        total: s.total, answered: answeredN, correct: correctN, wrong: wrongN,
+        unanswered: s.total - answeredN,
+        acc: s.exam ? Math.round(correctN / s.total * 100) : Math.round(correctN / answeredN * 100),
+        timeUsed: Math.max(0, Math.round((Date.now() - (s.startTime || Date.now())) / 1000)),
+        rows
+      });
+      toast('上一份未完成进度已自动存入练习记录');
+    } catch (e) { /* 存档失败不拦新练习 */ }
+  }
+
+  /* v1.8.15 防误覆盖：还有没做完的练习时，开新练习前先确认一次，
+     防止手滑开新练习把上次的答题进度顶掉（已交卷/没答过的不拦） */
+  async function guardUnfinishedSession() {
+    let data = null;
+    try { data = await DB.metaGet('lastSession'); } catch (e) { return true; }
+    if (!data || !Array.isArray(data.ids) || data.graded) return true;
+    const answered = (data.answered || []).length + (data.examAnswers || []).length;
+    if (!answered) return true;
+    if (answered < data.ids.length) {
+      const go = confirmDialog(`上次有没做完的练习（已答 ${answered}/${data.ids.length} 题）。\n开始新练习会丢掉这份进度，确定继续？`);
+      if (!go) return false;
+    }
+    try { await archivePartialSession(data); } catch (e) { /* 静默 */ }
+    return true;
+  }
+
+  /* v1.8.16 顺序偏好：练习设置页选过「随机/顺序」后记住，题库直开 / 章节直练也按它来。
+     默认随机（乱序含选项）；设置页切换时写入 DB meta 'prefShuffle' */
+  async function prefShuffle() {
+    try {
+      const v = await DB.metaGet('prefShuffle');
+      return v === null || v === undefined ? true : !!v;
+    } catch (e) { return true; }
+  }
+  async function savePrefShuffle(on) { try { await DB.metaSet('prefShuffle', !!on); } catch (e) { /* 静默 */ } }
 
   /* ---- 文件小工具（浏览器 / APK 通用） ---- */
   function blobToBase64(blob) {
@@ -4263,9 +4509,32 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
-      <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
-      ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
+      <div class="quick-grid">
+        <button class="quick-tile" onclick="App.navigate('#/import')">
+          <span class="quick-ico" style="background:rgba(59,130,246,.14);color:#2f6bff">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          </span>
+          <span>导入题库</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/canon')">
+          <span class="quick-ico" style="background:rgba(139,92,246,.14);color:#7c3aed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 11h6"/><path d="M9 15h4"/></svg>
+          </span>
+          <span>粘贴导入</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/search')">
+          <span class="quick-ico" style="background:rgba(16,163,127,.14);color:#0e9f6e">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          </span>
+          <span>搜题</span>
+        </button>
+        <button class="quick-tile" onclick="App.wrongRedo()">
+          <span class="quick-ico" style="background:rgba(239,68,68,.14);color:#e05656">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>
+          </span>
+          <span>错题重做</span>
+        </button>
+      </div>
       ${banks.length > LIMIT ? `
       <div class="list-tools">
         <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
@@ -4335,7 +4604,8 @@ const App = (() => {
   }
 
   async function startBank(id) {
-    session = await QuizBuilder.fromBanks([id], { filterType: 'answered' });
+    if (!await guardUnfinishedSession()) return;
+    session = await QuizBuilder.fromBanks([id], { filterType: 'answered', shuffle: await prefShuffle() });
     if (!session.total) {
       const qs = await DB.questionsByBank(id);
       if (qs.length) return toast(`${qs.length} 题均缺答案，请先「补答案」`);
@@ -4617,7 +4887,19 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完：<b>AI 直接把原卷转成范式并入库</b>，原卷里的答案、解析原样带走，不用再手动补。需在「设置」配置 API Key；<b>没配 Key 时自动降级本地解析</b>（免费、快，但排版乱的文档可能切不准）。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完，答案、解析原样带走，不用再手动补。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <label class="field" style="margin-top:6px"><span>解析引擎</span>
+          <div class="seg" id="seg-engine">
+            <button data-v="auto" class="on">自动</button>
+            <button data-v="local">本地正则（免AI）</button>
+            <button data-v="ai">仅 AI</button>
+          </div>
+        </label>
+        <div class="muted small" id="engine-hint"></div>
+        <label class="field" style="margin-top:10px"><span>自定义切题正则（高级 · 可留空）</span>
+          <input type="text" id="custom-re" placeholder="行首匹配；第一个括号捕获题号，如 ^第\s*(\d+)\s*题">
+        </label>
+        <div class="muted small" id="custom-re-hint">留空 = 内置规则（1. 2.、(1) (2)）。设置后「本地正则」引擎只按这个行首模式切题（对文字版 DOCX/TXT/MD 生效），保存后重新导入生效。</div>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
@@ -4632,6 +4914,42 @@ const App = (() => {
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
     input.onchange = () => { lastPickedFiles = [...input.files]; handleFiles(lastPickedFiles); };
+
+    /* 解析引擎选择：本地正则 = 老桌面版的秒级正则引擎，零 API、免费；持久化保存 */
+    const HINTS = {
+      auto: '自动 = 配了 Key 走 AI 转范式（乱排版更稳），没配 Key 走本地正则（秒级、零费用）',
+      local: '本地正则：不用 API Key、不花钱、毫秒级；排版乱的文档可能切不准，建议导入后抽查',
+      ai: '仅 AI：每次导入都走 AI 转范式（需在「设置」配好 Key），没 Key 的文件会跳过'
+    };
+    const segEngine = document.getElementById('seg-engine');
+    const engineHint = document.getElementById('engine-hint');
+    DB.metaGet('importEngine').then(saved => {
+      const v = saved || 'auto';
+      segEngine.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+      engineHint.textContent = HINTS[v];
+    });
+    segEngine.onclick = async (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      segEngine.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      engineHint.textContent = HINTS[b.dataset.v];
+      await DB.metaSet('importEngine', b.dataset.v);
+    };
+
+    /* 自定义切题正则（v1.8.13）：持久化 + 语法校验（空行可匹配的一律拒绝） */
+    const customReInput = document.getElementById('custom-re');
+    const customReHint = document.getElementById('custom-re-hint');
+    DB.metaGet('importRegex').then(v => { customReInput.value = v || ''; });
+    customReInput.addEventListener('change', async () => {
+      const v = customReInput.value.trim();
+      if (!v) { await DB.metaSet('importRegex', ''); customReHint.textContent = '✓ 已清除，恢复内置切题规则'; return; }
+      try {
+        const r = new RegExp(v);
+        if (r.test('')) { customReHint.textContent = '⚠ 这个正则能匹配空内容，会乱切；请加 ^ 锚定行首（如 ^第\\s*(\\d+)\\s*题）'; return; }
+      } catch (e) { customReHint.textContent = '⚠ 正则语法错误：' + e.message; return; }
+      await DB.metaSet('importRegex', v);
+      customReHint.textContent = '✓ 已保存，重新导入时本地正则引擎按此模式切题';
+    });
   }
 
   async function handleFiles(files) {
@@ -4740,8 +5058,15 @@ const App = (() => {
       try {
         // v1.8 快速通道 = AI 转范式直通：配了 API Key → AI 直接把原卷转成范式、逐片入库，
         // 答案/解析原样带走，导入即用；没配 Key → 本地解析保底。不再本地先行、不再两条路绕
+        // v1.8.11：引擎可选（自动 / 本地正则免AI / 仅AI），本地正则成为一等公民
         const cfg = await LLM.getConfig();
-        if (cfg.apiKey) {
+        const engine = (await DB.metaGet('importEngine')) || 'auto';
+        if (engine === 'ai' && !cfg.apiKey) {
+          setState('跳过（无 Key）');
+          statusEl.textContent = '⚠ 已选「仅 AI」但没配 API Key，本题库跳过；把引擎改成「自动 / 本地正则」或到「设置」配好 Key 再导';
+          continue;
+        }
+        if (engine === 'ai' || (engine === 'auto' && cfg.apiKey)) {
           setState('AI 转范式…');
           // v1.7.1：全局任务中心接管进度与通知栏（换页/锁屏回来自动可见）；逐批入库不等整份
           const dImgs = docImgs.get(i) || [];
@@ -4902,16 +5227,20 @@ const App = (() => {
           }
           continue;
         }
-        // ---- 无 API Key：本地解析保底（零调用、免费） ----
+        // ---- 无 API Key：本地解析保底（零调用、免费；支持自定义切题正则） ----
         setState('本地解析…');
+        const customSrc = ((await DB.metaGet('importRegex')) || '').trim();
         const res = await LLM.parseDocument(text, (done, total, got) => {
           const elapsed = Math.round((Date.now() - t0) / 1000);
           statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
           bar.style.width = Math.round(done / total * 95) + '%';
-        });
+        }, customSrc);
         if (!res.questions.length) {
           setState('未发现题目');
-          statusEl.textContent = '⚠ 本地解析没切出题，且未配置 API Key（AI 转范式不可用）。到「设置」配好 Key 后重新导入，或到「粘贴文本导入（高级）」人工核对原文';
+          const hasImg = (docImgs.get(i) || []).length > 0;
+          statusEl.textContent = hasImg
+            ? '⚠ 本地解析没切出题：这份文件以图片为主，本地正则认不了图片。识别图片试卷需在「设置」配好 API Key、引擎选「自动 / 仅 AI」走 AI 视觉；文字部分可复制到「粘贴文本导入（高级）」'
+            : '⚠ 本地解析没切出题，且未配置 API Key。可在导入页填「自定义切题正则」后重试；或到「设置」配 Key 走 AI 转范式；或到「粘贴文本导入（高级）」人工核对原文';
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库
@@ -5031,7 +5360,7 @@ const App = (() => {
     BG.stop(); // 导入流程结束：撤保活通知（无 AI 任务时为空操作）
     resultEl.innerHTML = `<button class="btn primary big" onclick="App.navigate('#/home')">完成，返回题库</button>
       ${lastPickedFiles.length ? '<button class="btn ghost big" id="to-canon-btn">解析不满意？改用 AI 转范式导入</button>' : ''}
-      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；.doc 需另存为 .docx</div>`;
+      <div class="muted small">缺答案的题：可在题库列表点「补答案」，也可在「选题」里勾选缺答案的题，练习时点右上角 ✎ 自己填答案；✎ 面板还能改题型、选项和解析；.doc 需另存为 .docx</div>`;
     // 本地解析不理想时：把同一批文件交给 AI 重排成范式文本，转到「范式导入」页核对后导入（答案零对齐）
     const toCanonBtn = document.getElementById('to-canon-btn');
     if (toCanonBtn) toCanonBtn.onclick = async () => {
@@ -5126,26 +5455,28 @@ const App = (() => {
           <button class="btn ghost" id="sel-all">全选可见</button>
           <button class="btn ghost" id="sel-none">清空选择</button>
         </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="sel-noans">只选有答案</button>
-          <button class="btn ghost" id="sel-unans">只选缺答案</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="ai-review-btn">🤖 逐题核对 AI 答案</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="exp-canon">导出范式 Word</button>
-          <button class="btn ghost" id="copy-canon">复制范式</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
-        </div>
-        <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「Word 转换器」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
-        <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠。AI 补的答案带「AI 解答·需核对」标，点上方「逐题核对 AI 答案」可逐题 采纳 / 修改 / 重跑</div>
+        <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
+        <details style="margin-top:12px">
+          <summary class="muted small" style="cursor:pointer;font-weight:600">更多操作（批量选 / AI 核对 / 导出范式 / 删除）</summary>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="btn ghost" id="sel-noans">只选有答案</button>
+            <button class="btn ghost" id="sel-unans">只选缺答案</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="ai-review-btn">🤖 逐题核对 AI 答案</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="exp-canon">导出范式 Word</button>
+            <button class="btn ghost" id="copy-canon">复制范式</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
+          </div>
+          <div class="muted small" style="margin-top:6px">缺答案的题（虚线框）也能勾选练习，答题时点 ✎ 自己补答案；导出的范式 Word 在 Word / WPS 补答案后，回「范式导入」用 Word 转换器覆盖建库（答案随题，无需对齐）</div>
+        </details>
         <div id="no-grid"></div>
         <div id="ai-review"></div>
-        <button class="btn primary big" id="go-quiz" style="margin-top:12px"></button>
       </div>
       <style>
         .sec-group { margin-top:12px; }
@@ -5426,9 +5757,12 @@ const App = (() => {
       // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
       const list = qs.filter(q => sel.has(q.id));
       const noAnsCount = list.filter(q => !q.answer).length;
-      session = new QuizSession(list, { shuffle: false });
-      if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
-      navigate('#/quiz');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(list, { shuffle: false });
+        if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
+        navigate('#/quiz');
+      });
     };
 
     // 导出 / 复制范式：题库 → 范式文本（导出 .docx 在 Word 里改完，回「范式导入」载入即可导回）
@@ -5530,7 +5864,7 @@ const App = (() => {
 
       <div class="card">
         <div class="card-title">方式一 · 上传答案文件自动补答案（推荐，免费）</div>
-        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
+        <p class="muted small">支持配套答案文档「2、答案：A（解析：…）」「答案：A（A. 原文）解析：…」、答案速查表（Word 表格）、答案表「1.C 2.A 3.B」「题号：1 答案：C」、纯序列「A B C D」。带章节结构的答案按 章/节/题号 精确匹配，解析一并填入；匹配不上的题可用下方 AI 智能对位兜底（AI 只从答案原文照抄，不做题）。</p>
         <button class="btn primary big" id="ans-file-btn">选择答案文件（可多选）</button>
         <input type="file" id="ans-file-input" multiple accept=".docx,.doc,.txt" style="display:none">
         <div class="muted small" id="ans-file-status"></div>
@@ -5868,32 +6202,21 @@ const App = (() => {
     // ---- 选择状态 ----
     const sel = new Set(banks.map(b => b.id));  // 选中的题库
     const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
-    const secCollapsed = new Set();             // 章节区：被折叠起来的题库 id（整库收起）
+    const secExpanded = new Set();              // 章节区：默认整库折叠，点库头才展开（v1.8.12）
     let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
     const LIMIT = 6;
 
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">范围（题库）</div>
-        <div class="list-tools">
-          <input id="setup-search" class="search-input" placeholder="搜索题库名称…">
-          <div class="chips" id="pick-tools">
-            <button class="chip" data-act="all">全选</button>
-            <button class="chip" data-act="none">清空</button>
-            <button class="chip" data-act="ans">只选有答案的库</button>
-          </div>
-        </div>
-        <div class="bank-pick" id="bank-pick"></div>
-        <button class="btn ghost" id="pick-more" style="display:none;margin-top:8px"></button>
+        <button class="btn ghost big" id="bank-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（默认全选，可搜索）</div>
       </div>
 
       <div class="card">
         <div class="card-title">范围（章节）</div>
-        <div class="muted small" id="sec-sum">不选 = 全部章节</div>
-        <div class="chips" id="sec-tools" style="margin-top:8px">
-          <button class="chip" data-act="none">清空（=全部章节）</button>
-        </div>
-        <div id="sec-area"></div>
+        <button class="btn ghost big" id="sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择</div>
       </div>
 
       <div class="card">
@@ -5933,15 +6256,56 @@ const App = (() => {
           <button data-v="order" class="on">顺序</button>
           <button data-v="shuffle">随机</button>
         </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
       </div>
       <button class="btn primary big" id="start-quiz"></button>
-      <button class="btn ghost big" onclick="App.wrongRedo()">错题重做</button>
-      ${starCount ? `<button class="btn ghost big" onclick="App.starRedo()">★ 收藏重练（${starCount}）</button>` : ''}`;
+      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
+      ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}
+
+      <div id="sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="sec-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>
+
+      <div id="bank-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="bank-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:76vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="btn primary" id="bank-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div style="padding:0 16px 8px">
+            <input id="setup-search" class="search-input" style="width:100%" placeholder="搜索题库名称…">
+            <div class="chips" id="pick-tools" style="margin-top:8px">
+              <button class="chip" data-act="all">全选</button>
+              <button class="chip" data-act="none">清空</button>
+              <button class="chip" data-act="ans">只选有答案的库</button>
+            </div>
+          </div>
+          <div class="bank-pick" id="bank-pick" style="overflow-y:auto;padding:0 16px;flex:1;-webkit-overflow-scrolling:touch"></div>
+          <div style="padding:8px 16px calc(12px + env(safe-area-inset-bottom))">
+            <button class="btn ghost" id="pick-more" style="display:none;width:100%"></button>
+          </div>
+        </div>
+      </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
     const pickMoreBtn = document.getElementById('pick-more');
+    /* 题库选择弹层：点摘要按钮拉起，遮罩/完成关闭（v1.8.13） */
+    const bankSheet = document.getElementById('bank-sheet');
+    document.getElementById('bank-open').onclick = () => { bankSheet.style.display = ''; };
+    document.getElementById('bank-mask').onclick = () => { bankSheet.style.display = 'none'; };
+    document.getElementById('bank-sheet-done').onclick = () => { bankSheet.style.display = 'none'; };
     const secArea = document.getElementById('sec-area');
-    const secSum = document.getElementById('sec-sum');
+    const secOpenBtn = document.getElementById('sec-open');
+    const secSheet = document.getElementById('sec-sheet');
     const startBtn = document.getElementById('start-quiz');
 
     /* ---- 题库勾选（搜索 + 折叠，题库多也不用翻到底） ---- */
@@ -5961,6 +6325,9 @@ const App = (() => {
       });
       pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
       pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+      document.getElementById('bank-open').textContent = sel.size === banks.length
+        ? `📂 全部 ${banks.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${banks.length} 个题库（点此修改） ›`;
     }
 
     /* ---- 章节勾选（按库分组，chip 点选；不选 = 全部章节） ---- */
@@ -5974,7 +6341,7 @@ const App = (() => {
         if (!list.length && !hasNoSec) continue;
         const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
         const totalSec = list.length + (hasNoSec ? 1 : 0);
-        const folded = secCollapsed.has(b.id);
+        const folded = !secExpanded.has(b.id);
         parts.push(`
           <div class="sec-pick">
             <div class="sec-pick-head">
@@ -5994,12 +6361,12 @@ const App = (() => {
           </div>`);
       }
       secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
-      secSum.textContent = selSecs.size ? `已选 ${selSecs.size} 个章节（不选 = 全部章节）` : '不选 = 全部章节';
+      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
       // 整库折叠/展开
       secArea.querySelectorAll('button[data-fold]').forEach(btn => {
         btn.onclick = () => {
           const bid = btn.dataset.fold;
-          secCollapsed.has(bid) ? secCollapsed.delete(bid) : secCollapsed.add(bid);
+          secExpanded.has(bid) ? secExpanded.delete(bid) : secExpanded.add(bid);
           renderSecs();
         };
       });
@@ -6081,12 +6448,18 @@ const App = (() => {
       else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
       renderBanks(); renderSecs(); refresh();
     };
-    document.getElementById('sec-tools').onclick = (e) => {
-      const b = e.target.closest('button[data-act]'); if (!b) return;
+    /* ---- 章节选择：点击默认拉起底部弹层，不在页面里铺开 ---- */
+    secOpenBtn.onclick = () => { secSheet.style.display = ''; };
+    document.getElementById('sec-mask').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-done').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-clear').onclick = () => {
       selSecs.clear(); renderSecs(); refresh();
     };
     const segType = document.getElementById('seg-type');
     const segOrder = document.getElementById('seg-order');
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      segOrder.querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+    });
     const segMode = document.getElementById('seg-mode');
     const segTime = document.getElementById('seg-time');
     [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
@@ -6094,6 +6467,7 @@ const App = (() => {
         const b = e.target.closest('button'); if (!b) return;
         seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
+        if (seg === segOrder) savePrefShuffle(b.dataset.v === 'shuffle');   // 记住顺序偏好（题库直开也生效）
         if (seg === segMode) {
           exam = b.dataset.v === 'exam';
           document.getElementById('exam-opts').style.display = exam ? '' : 'none';
@@ -6113,6 +6487,7 @@ const App = (() => {
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
       const n = countAvail();
       const mins = curMinutes(n);
+      if (!await guardUnfinishedSession()) return;
       session = await QuizBuilder.fromBanks(ids, {
         shuffle,
         filterType: curFilter(),
@@ -6131,6 +6506,7 @@ const App = (() => {
   }
 
   async function wrongRedo() {
+    if (!await guardUnfinishedSession()) return;
     session = await QuizBuilder.wrongRedo();
     if (!session.total) return toast('没有错题');
     navigate('#/quiz');
@@ -6139,11 +6515,247 @@ const App = (() => {
   async function starRedo() {
     const qs = (await DB.starQuestions()).filter(q => q.answer);
     if (!qs.length) return toast('收藏的题都缺答案');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(qs, { shuffle: true, mode: 'star' });
     navigate('#/quiz');
   }
 
-  /* ================= 页面：答题 ================= */
+  /* ================= 页面：错题重做 / 收藏重练 范围选择 =================
+     与「开始练习」同风格：按题库分类勾选范围 + 题型/模式/顺序，替代旧的"一键全量开练" */
+  async function pageReviewSetup(kind) {
+    const isWrong = kind === 'wrong';
+    topbar(isWrong ? '错题重做' : '★ 收藏重练', isWrong ? '#/wrong' : '#/star');
+    const banks = await DB.bankList();
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    const pool = (isWrong ? await DB.wrongQuestions() : (await DB.starQuestions()).filter(q => q.answer))
+      .filter(q => bankName.has(q.bankId));
+    if (!pool.length) {
+      $view().innerHTML = `<div class="empty" style="padding-top:40px">${isWrong ? '没有错题<br>继续保持！' : '还没有能练的收藏题<br><span class="muted small">收藏的题补上答案后可在这里重练</span>'}</div>`;
+      return;
+    }
+    const cnt = new Map();               // bankId -> 可练题数
+    for (const q of pool) cnt.set(q.bankId, (cnt.get(q.bankId) || 0) + 1);
+    const list = banks.filter(b => cnt.has(b.id));
+    const sel = new Set(list.map(b => b.id));
+    let filterType = 'all', exam = false, timeMode = 'auto', shuffle = true;
+    /* 章节筛选（v1.8.13）：selSecs 空 = 全部章节；分组默认折叠 */
+    const selSecs = new Set();
+    const secExp = new Set();
+    const secMeta = new Map();          // "bankId:secIdx" -> { bankId, secIdx, n }
+    for (const q of pool) {
+      const s = String(q.secIdx ?? '');
+      const k = q.bankId + ':' + s;
+      const m = secMeta.get(k) || { bankId: q.bankId, secIdx: s, n: 0 };
+      m.n++; secMeta.set(k, m);
+    }
+    const secTitle = new Map();
+    for (const b of banks) for (const s of (b.sections || [])) secTitle.set(b.id + ':' + String(s.secIdx), s.title);
+
+    $view().innerHTML = `
+      <div class="card">
+        <div class="card-title">范围（题库）</div>
+        <button class="btn ghost big" id="rv-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（全部展开，无需折叠）</div>
+      </div>
+      <div class="card">
+        <div class="card-title">范围（章节）</div>
+        <button class="btn ghost big" id="rv-sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择（分组默认折叠）</div>
+      </div>
+      <div class="card">
+        <div class="card-title">题型</div>
+        <div class="seg" id="rv-type">
+          <button data-v="all" class="on">全部</button>
+          <button data-v="choice">选择/判断</button>
+          <button data-v="fill">填空</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">模式</div>
+        <div class="seg" id="rv-mode">
+          <button data-v="learn" class="on">📖 学习模式</button>
+          <button data-v="exam">📝 考试模式</button>
+        </div>
+        <div id="rv-exam-opts" style="display:none;margin-top:10px">
+          <div class="field"><span>考试时长</span>
+            <div class="seg" id="rv-time">
+              <button data-v="auto" class="on">按 1 分钟/题</button>
+              <button data-v="none">不限时</button>
+              <button data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="field" id="rv-min-wrap" style="display:none"><span>时长（分钟）</span>
+            <input type="number" id="rv-min" min="1" max="600" value="60" inputmode="numeric">
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">顺序</div>
+        <div class="seg" id="rv-order">
+          <button data-v="shuffle" class="on">随机</button>
+          <button data-v="order">顺序</button>
+        </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
+      </div>
+      <button class="btn primary big" id="rv-start"></button>
+
+      <div id="rv-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="chip" id="rv-tools-all">全选</button>
+            <button class="chip" id="rv-tools-none">清空</button>
+            <button class="btn primary" id="rv-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-pick" class="bank-pick" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>
+
+      <div id="rv-sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="rv-sec-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="rv-sec-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>`;
+
+    const pickEl = document.getElementById('rv-pick');
+    const startBtn = document.getElementById('rv-start');
+    const rvOpenBtn = document.getElementById('rv-open');
+    const rvSheet = document.getElementById('rv-sheet');
+
+    const matchType = q => filterType === 'all' ? true
+      : filterType === 'choice' ? (q.type === 'single' || q.type === 'multi' || q.type === 'judge')
+      : q.type === 'fill';
+    const matchSec = q => !selSecs.size || selSecs.has(q.bankId + ':' + String(q.secIdx ?? ''));
+
+    function renderPick() {
+      pickEl.innerHTML = list.map(b => `
+        <label class="pick-item"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
+          <span class="pick-name">${escapeHtml(bankName.get(b.id))}</span>
+          <span class="muted small pick-num">${cnt.get(b.id)}</span>
+        </label>`).join('');
+      pickEl.querySelectorAll('input').forEach(i => {
+        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
+      });
+      rvOpenBtn.textContent = sel.size === list.length
+        ? `📂 全部 ${list.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${list.length} 个题库（点此修改） ›`;
+    }
+    function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q)).length; }
+    function curMinutes(n) {
+      if (!exam || timeMode === 'none') return 0;
+      if (timeMode === 'custom') return Math.max(1, parseInt(document.getElementById('rv-min').value, 10) || 60);
+      return Math.max(1, n);             // 按 1 分钟/题
+    }
+    function refresh() {
+      const n = countAvail();
+      startBtn.textContent = n ? `开始${isWrong ? '重做' : '重练'}（${n} 题）` : '该范围没有可练的题';
+      startBtn.style.opacity = n ? '' : '.5';
+    }
+    /* 题库选择：进入页面默认拉起底部弹层，全部展开、无折叠；主页留摘要按钮可再次打开 */
+    document.getElementById('rv-tools-all').onclick = () => { list.forEach(x => sel.add(x.id)); renderPick(); refresh(); };
+    document.getElementById('rv-tools-none').onclick = () => { sel.clear(); renderPick(); refresh(); };
+    rvOpenBtn.onclick = () => { rvSheet.style.display = ''; };
+    document.getElementById('rv-mask').onclick = () => { rvSheet.style.display = 'none'; };
+    document.getElementById('rv-done').onclick = () => { rvSheet.style.display = 'none'; };
+
+    /* ---- 章节选择弹层（v1.8.13）：按库分组、默认折叠，点库头展开；清空 = 全部章节 ---- */
+    const rvSecArea = document.getElementById('rv-sec-area');
+    const rvSecOpenBtn = document.getElementById('rv-sec-open');
+    const rvSecSheet = document.getElementById('rv-sec-sheet');
+    function renderRvSecs() {
+      const parts = [];
+      for (const b of list) {
+        if (!sel.has(b.id)) continue;
+        const secs = [...secMeta.values()].filter(m => m.bankId === b.id);
+        if (!secs.length) continue;
+        const picked = secs.filter(m => selSecs.has(b.id + ':' + m.secIdx)).length;
+        const folded = !secExp.has(b.id);
+        parts.push(`
+          <div class="sec-pick">
+            <div class="sec-pick-head">
+              <button class="sec-toggle" data-rvfold="${b.id}" title="${folded ? '展开本章节' : '折叠本章节'}">${folded ? '▸' : '▾'}</button>
+              <b>${escapeHtml(bankName.get(b.id))}</b>
+              <span class="muted small">${picked ? `已选 ${picked}/${secs.length}` : `${secs.length} 章`}</span>
+              <button class="chip" data-rvbank="${b.id}">全选/清空</button>
+            </div>
+            ${folded ? '' : `<div class="chips">
+              ${secs.map(m => {
+                const key = b.id + ':' + m.secIdx;
+                return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-rvsec="${key}" title="${escapeHtml(secTitle.get(key) || '')}">${escapeHtml(secTitle.get(key) || (m.secIdx === '' ? '未分节' : `第 ${m.secIdx} 章`))}（${m.n}）</button>`;
+              }).join('')}
+            </div>`}
+          </div>`);
+      }
+      rvSecArea.innerHTML = parts.join('') || '<div class="muted small" style="padding:12px 0">当前题库没有章节信息，章节筛选不可用</div>';
+      rvSecArea.querySelectorAll('button[data-rvfold]').forEach(btn => {
+        btn.onclick = () => { const bid = btn.dataset.rvfold; secExp.has(bid) ? secExp.delete(bid) : secExp.add(bid); renderRvSecs(); };
+      });
+      rvSecArea.querySelectorAll('button[data-rvbank]').forEach(btn => {
+        btn.onclick = () => {
+          const bid = btn.dataset.rvbank;
+          const keys = [...secMeta.values()].filter(m => m.bankId === bid).map(m => bid + ':' + m.secIdx);
+          const all = keys.every(k => selSecs.has(k));
+          keys.forEach(k => all ? selSecs.delete(k) : selSecs.add(k));
+          renderRvSecs(); refresh();
+        };
+      });
+      rvSecArea.querySelectorAll('button[data-rvsec]').forEach(btn => {
+        btn.onclick = () => { const k = btn.dataset.rvsec; selSecs.has(k) ? selSecs.delete(k) : selSecs.add(k); renderRvSecs(); refresh(); };
+      });
+      rvSecOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+    }
+    rvSecOpenBtn.onclick = () => { renderRvSecs(); rvSecSheet.style.display = ''; };
+    document.getElementById('rv-sec-mask').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-done').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-clear').onclick = () => { selSecs.clear(); renderRvSecs(); refresh(); };
+    rvSecOpenBtn.textContent = '📂 全部章节（点此选择） ›';
+    [[document.getElementById('rv-type'), v => filterType = v],
+     [document.getElementById('rv-time'), v => { timeMode = v; document.getElementById('rv-min-wrap').style.display = v === 'custom' ? '' : 'none'; }]]
+      .forEach(([seg, set]) => {
+        seg.onclick = e => {
+          const b = e.target.closest('button[data-v]'); if (!b) return;
+          seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+          b.classList.add('on'); set(b.dataset.v); refresh();
+        };
+      });
+    document.getElementById('rv-mode').onclick = e => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('rv-mode').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      exam = b.dataset.v === 'exam';
+      document.getElementById('rv-exam-opts').style.display = exam ? '' : 'none';
+      refresh();
+    };
+    document.getElementById('rv-min').addEventListener('input', refresh);
+    document.getElementById('rv-order').onclick = e => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); shuffle = b.dataset.v === 'shuffle';
+      savePrefShuffle(shuffle);   // 记住顺序偏好（题库直开也生效）
+    };
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+      shuffle = v;
+    });
+    startBtn.onclick = () => {
+      const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
+      if (!qs.length) return toast('该范围没有可练的题');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(qs, { shuffle, exam, minutes: curMinutes(qs.length), mode: isWrong ? 'wrong' : 'star' });
+        navigate('#/quiz');
+      });
+    };
+    renderPick(); refresh();
+    rvSheet.style.display = '';   // 默认拉起：进入页面直接弹选择题库
+  }
   async function pageQuiz() {
     if (!session) return navigate('#/quiz-setup');
     // 考试中：超时自动交卷；已交卷：直接看成绩单
@@ -6375,52 +6987,117 @@ const App = (() => {
     const editBtn = document.getElementById('edit-btn');
     let editOpen = false;
     function renderEditPanel() {
-      const isFill = q.type === 'fill';
-      editCard.innerHTML = `
+      /* v1.8.17：修改本题 —— 支持改题型（单选/多选/判断/填空）、选项、答案、解析 */
+      const TYPES = [['single', '单选'], ['multi', '多选'], ['judge', '判断'], ['fill', '填空']];
+      // 面板状态（切换题型时保留已输入内容）
+      const st = {
+        type: q.type || 'single',
+        sel: new Set((q.answer || '').toUpperCase().match(/[A-H]/g) || []),
+        ansText: String(q.answer ?? '').replace(/\|\|\|/g, '/'),
+        optsText: q.options && q.type !== 'judge' ? Object.entries(q.options).map(([k, v]) => `${k}. ${v}`).join('\n') : '',
+        exp: q.explanation || ''
+      };
+      const parseOpts = text => {
+        const opts = {};
+        let auto = 0;
+        for (const line of String(text || '').split('\n')) {
+          const t = line.trim(); if (!t) continue;
+          const m = t.match(/^([A-Ha-h])\s*[.、．:：)）]?\s*(.*)$/);
+          if (m) opts[m[1].toUpperCase()] = m[2].trim();
+          else opts[String.fromCharCode(65 + (auto++))] = t;   // 无字母前缀 → 自动编号
+        }
+        return opts;
+      };
+      const renderPanel = () => {
+        const isFill = st.type === 'fill';
+        const isJudge = st.type === 'judge';
+        const oKeys = isJudge ? ['A', 'B'] : (isFill ? [] : Object.keys(parseOpts(st.optsText)));
+        editCard.innerHTML = `
         <div class="card-title">修改本题（第 ${q.no ?? '?'} 题）</div>
+        <div class="field"><span>题型</span>
+          <div class="seg" id="edit-types" style="flex-wrap:wrap">
+            ${TYPES.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:64px;padding:8px 14px">${n}</button>`).join('')}
+          </div>
+        </div>
         <div class="field"><span>答案${isFill ? '（多空用 / 分隔）' : ''}</span>
           ${isFill
-            ? `<input type="text" id="edit-ans" value="${escapeHtml(String(q.answer ?? '').replace(/\|\|\|/g, '/'))}" placeholder="标准答案">`
+            ? `<input type="text" id="edit-ans" value="${escapeHtml(st.ansText)}" placeholder="标准答案">`
             : `<div class="seg" id="edit-letters" style="flex-wrap:wrap">
-                ${optKeys.map(k => `<button data-k="${k}" class="${q.answer && q.answer.toUpperCase().includes(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:52px;padding:8px 14px">${k}</button>`).join('')}
+                ${oKeys.length ? oKeys.map(k => `<button data-k="${k}" class="${st.sel.has(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:52px;padding:8px 14px">${isJudge ? (k === 'A' ? '正确' : '错误') : k}</button>`).join('') : '<span class="muted small">请先在下方填写选项</span>'}
               </div>`}
         </div>
+        ${!isFill && !isJudge ? `
+        <div class="field"><span>选项（每行一个，A. 文本）</span>
+          <textarea id="edit-opts" rows="4" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.optsText)}</textarea>
+        </div>` : isJudge ? '<div class="muted small">判断题：选项固定为「正确 / 错误」</div>' : ''}
         <div class="field"><span>解析</span>
-          <textarea id="edit-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(q.explanation || '')}</textarea>
+          <textarea id="edit-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.exp)}</textarea>
         </div>
         <div class="btn-row">
           <button class="btn ghost" id="edit-cancel">取消</button>
           <button class="btn primary" id="edit-save">保存修改</button>
         </div>`;
-      // 字母选择
-      const letters = editCard.querySelector('#edit-letters');
-      if (letters) {
-        letters.onclick = e => {
-          const b = e.target.closest('button[data-k]'); if (!b) return;
-          if (q.type === 'multi') b.classList.toggle('on');
-          else { letters.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); }
+        // 题型切换：先收起当前输入再重渲染
+        editCard.querySelector('#edit-types').onclick = e => {
+          const b = e.target.closest('button[data-t]'); if (!b || b.dataset.t === st.type) return;
+          const newType = b.dataset.t;
+          const ansEl = editCard.querySelector('#edit-ans');
+          const optsEl = editCard.querySelector('#edit-opts');
+          const expEl = editCard.querySelector('#edit-exp');
+          if (ansEl) st.ansText = ansEl.value;
+          if (optsEl) st.optsText = optsEl.value;
+          if (expEl) st.exp = expEl.value;
+          if (newType === 'fill') { st.type = 'fill'; }                    // 字母选择丢弃，用文字答案
+          else if (newType === 'judge') {
+            st.type = 'judge';
+            st.sel = new Set([...st.sel].filter(k => k === 'A' || k === 'B'));   // 判断题只留 A/B
+          } else {
+            st.type = newType;
+            if (!st.optsText.trim()) st.optsText = 'A. \nB. \nC. \nD. ';
+            // 选项集合可能变了，超出的字母自动去掉
+            const ok = new Set(Object.keys(parseOpts(st.optsText)));
+            st.sel = new Set([...st.sel].filter(k => ok.has(k)));
+          }
+          renderPanel();
         };
-      }
-      editCard.querySelector('#edit-cancel').onclick = () => { editOpen = false; editCard.style.display = 'none'; };
-      editCard.querySelector('#edit-save').onclick = async () => {
-        let newAns;
-        if (isFill) {
-          newAns = document.getElementById('edit-ans').value.trim().split('/').map(s => s.trim()).filter(Boolean).join('|||');
-          if (!newAns) return toast('答案不能为空');
-        } else {
-          newAns = [...letters.querySelectorAll('button.on')].map(b => b.dataset.k).sort().join('');
-          if (!newAns) return toast('请选择答案字母');
+        // 字母选择
+        const letters = editCard.querySelector('#edit-letters');
+        if (letters) {
+          letters.onclick = e => {
+            const b = e.target.closest('button[data-k]'); if (!b) return;
+            if (st.type === 'multi') b.classList.toggle('on'), b.classList.contains('on') ? st.sel.add(b.dataset.k) : st.sel.delete(b.dataset.k);
+            else { letters.querySelectorAll('button').forEach(x => { x.classList.remove('on'); }); b.classList.add('on'); st.sel.clear(); st.sel.add(b.dataset.k); }
+          };
         }
-        const newExp = document.getElementById('edit-exp').value.trim();
-        q.answer = newAns;
-        q.explanation = newExp || null;
-        await DB.questionPut(q);
-        // 本题若已答过，清除作答状态让用户按新答案重做
-        session.answered.delete(q.id);
-        editOpen = false;
-        toast('已修改');
-        render();
+        editCard.querySelector('#edit-cancel').onclick = () => { editOpen = false; editCard.style.display = 'none'; };
+        editCard.querySelector('#edit-save').onclick = async () => {
+          const expEl = editCard.querySelector('#edit-exp');
+          const newExp = expEl ? expEl.value.trim() : '';
+          if (st.type === 'fill') {
+            const ansEl = editCard.querySelector('#edit-ans');
+            const newAns = (ansEl ? ansEl.value : '').trim().split('/').map(s => s.trim()).filter(Boolean).join('|||');
+            if (!newAns) return toast('答案不能为空');
+            q.type = 'fill'; q.options = null; q.answer = newAns;
+          } else {
+            const optsEl = editCard.querySelector('#edit-opts');
+            const opts = st.type === 'judge' ? { 'A': '正确', 'B': '错误' } : parseOpts(optsEl ? optsEl.value : st.optsText);
+            const keys = Object.keys(opts);
+            if (st.type !== 'judge' && keys.length < 2) return toast('选项至少需要 2 个（每行一个：A. 文本）');
+            const sel = [...st.sel].filter(k => opts[k]).sort().join('');
+            if (!sel) return toast('请选择答案字母');
+            if ((st.type === 'single' || st.type === 'judge') && sel.length !== 1) return toast(st.type === 'single' ? '单选题只能选一个答案' : '判断题只能选一个答案');
+            q.type = st.type; q.options = opts; q.answer = sel;
+          }
+          q.explanation = newExp || null;
+          await DB.questionPut(q);
+          // 本题若已答过，清除作答状态让用户按新答案重做
+          session.answered.delete(q.id);
+          editOpen = false;
+          toast('已修改');
+          render();
+        };
       };
+      renderPanel();
     }
     if (editBtn) editBtn.onclick = () => {
       editOpen = !editOpen;
@@ -6740,6 +7417,7 @@ const App = (() => {
     if (!session) return navigate('#/quiz-setup');
     const list = session.wrongList().map(x => x.q);
     if (!list.length) return toast('没有错题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(list, { shuffle: true });
     navigate('#/quiz');
   }
@@ -6757,49 +7435,83 @@ const App = (() => {
     });
   }
 
+  /* ---- 错题/收藏列表：按题库分组，默认折叠，点库头展开/收起（v1.8.12） ---- */
+  function reviewGrouped(qs, bankName, starred) {
+    const order = new Map([...bankName.keys()].map((id, i) => [id, i]));
+    const arr = qs.slice().sort((a, b) => (order.has(a.bankId) ? order.get(a.bankId) : 1e9) - (order.has(b.bankId) ? order.get(b.bankId) : 1e9));
+    const groups = [];
+    for (const q of arr) {
+      let g = groups[groups.length - 1];
+      if (!g || g.id !== q.bankId) { g = { id: q.bankId, items: [] }; groups.push(g); }
+      g.items.push(q);
+    }
+    return groups.map(g => `
+      <div class="rev-group">
+        <button class="rev-group-head" data-rev-fold="${g.id}" style="display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;padding:12px 4px;cursor:pointer;text-align:left">
+          <span class="rev-arrow" style="color:var(--muted,#888);font-size:12px;flex:0 0 auto">▸</span>
+          <span class="muted small" style="font-weight:600">📁 ${escapeHtml(bankName.get(g.id) || '未知题库')} · ${g.items.length} 题</span>
+        </button>
+        <div id="rev-body-${g.id}" style="display:none">
+          ${g.items.map(q => `
+            <div class="card wrong-card">
+              <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+                <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+                ${starred ? `<button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>` : ''}
+              </div>
+              <div class="stem sm">${renderStem(q)}</div>
+              ${q.answer
+                ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
+                : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
+              ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  /* 分组折叠绑定：点库头切换展开/收起 */
+  function bindReviewFolds() {
+    $view().querySelectorAll('[data-rev-fold]').forEach(btn => {
+      btn.onclick = () => {
+        const body = document.getElementById('rev-body-' + btn.dataset.revFold);
+        if (!body) return;
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : '';
+        const arrow = btn.querySelector('.rev-arrow');
+        if (arrow) arrow.textContent = open ? '▸' : '▾';
+      };
+    });
+  }
+
   async function pageWrong() {
     topbar('错题本');
     const qs = await DB.wrongQuestions();
+    const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
-      <button class="btn primary big" onclick="App.wrongRedo()">重做全部错题（${qs.length}）</button>
+      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">重做错题（${qs.length} · 按题库选）</button>
       <div class="wrong-list">
-        ${qs.map(q => `
-          <div class="card wrong-card">
-            <div class="wrong-head"><span class="q-type ${q.type}">${typeLabel[q.type]}</span></div>
-            <div class="stem sm">${renderStem(q)}</div>
-            <div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>
-            ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-          </div>`).join('')}
+        ${reviewGrouped(qs, bankName, false)}
       </div>`
       : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
     bindNavSeg('#/wrong');
+    bindReviewFolds();
   }
 
   /* ---- 收藏夹：跨题库集中看收藏题、取消收藏、一键收藏练习 ---- */
   async function pageStar() {
     topbar('收藏夹');
     const qs = await DB.starQuestions();
+    const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     const ready = qs.filter(q => q.answer).length;
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
       ${ready
-        ? `<button class="btn primary big" onclick="App.starRedo()">收藏练习（${ready}）</button>`
+        ? `<button class="btn primary big" onclick="App.navigate('#/star-setup')">收藏练习（${ready} · 按题库选）</button>`
         : `<div class="muted small" style="margin-bottom:12px">收藏的题都缺答案，先在题库里补答案才能练习</div>`}
       <div class="wrong-list">
-        ${qs.map(q => `
-          <div class="card wrong-card">
-            <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
-              <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-              <button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>
-            </div>
-            <div class="stem sm">${renderStem(q)}</div>
-            ${q.answer
-              ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
-              : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
-            ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-          </div>`).join('')}
+        ${reviewGrouped(qs, bankName, true)}
       </div>`
       : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
     bindNavSeg('#/star');
+    bindReviewFolds();
     $view().querySelectorAll('[data-unstar]').forEach(btn => {
       btn.onclick = async () => {
         await DB.starToggle(btn.dataset.unstar);
@@ -6904,6 +7616,7 @@ const App = (() => {
 
   async function startSearchPractice() {
     if (!searchPool.length) return toast('没有可练的题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession([...searchPool], { shuffle: true, mode: 'search' });
     navigate('#/quiz');
   }
@@ -7066,6 +7779,19 @@ const App = (() => {
             <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
             <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
         </div>` : '<div class="muted">暂无答题记录</div>'}
+      </div>
+      <div class="card">
+        <div class="card-title">近 ${days.length} 日正确率</div>
+        ${days.length ? `<div class="chart">
+          ${days.map(([d, v]) => {
+            const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
+            return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
+              <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
+              <span class="col-label"><span class="lb-full">${a}%</span><span class="lb-mini">${a}%</span></span></div>`;
+          }).join('')}
+        </div>
+        <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`
+        : '<div class="muted">暂无答题记录</div>'}
       </div>`;
 
     if (!rows.length) return;
@@ -7108,7 +7834,8 @@ const App = (() => {
   /** 统计页点章节 → 直接开练这一章（学习模式，只练有答案的题） */
   async function practiceSection(bankId, secIdx) {
     const key = bankId + ':' + (secIdx || '');
-    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]) });
+    if (!await guardUnfinishedSession()) return;
+    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]), shuffle: await prefShuffle() });
     if (!session.total) return toast('该章节没有带答案的题可练');
     navigate('#/quiz');
   }
@@ -7139,14 +7866,36 @@ const App = (() => {
           <span class="muted small">删掉的题库先放这里</span>
           <span class="me-chev">›</span>
         </button>
-        <button class="me-entry" onclick="window.open('https://github.com/Chad3486/shuati-bao/releases','_blank')">
+        <button class="me-entry" id="check-update">
           <span class="me-ico" style="background:#3d8f5f">⟳</span>
           <span class="me-label">检查更新</span>
-          <span class="muted small">GitHub Releases</span>
+          <span class="muted small">对比 GitHub 最新版</span>
           <span class="me-chev">›</span>
         </button>
       </div>
       <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
+
+    /* 检查更新：拉 GitHub 最新 Release 对比版本号，有新版直接打开 APK 下载直链 */
+    document.getElementById('check-update').onclick = async () => {
+      toast('正在检查更新…');
+      try {
+        const r = await fetch('https://api.github.com/repos/Chad3486/shuati-bao/releases/latest');
+        const d = await r.json();
+        const latest = String(d.tag_name || '').replace(/^v/, '');
+        if (!latest) throw new Error('no tag');
+        if (latest === VERSION) return toast(`已是最新版本 v${VERSION}`);
+        if (latest > VERSION) {
+          const apk = (d.assets || []).find(a => /apk$/i.test(a.name));
+          toast(`发现新版本 v${latest}，正在打开下载…`);
+          window.open(apk ? apk.browser_download_url : d.html_url, '_blank');
+        } else {
+          toast(`当前 v${VERSION} 比线上 v${latest} 还新`);
+        }
+      } catch (e) {
+        toast('检查失败（无网络？），去浏览器打开 GitHub Releases');
+        window.open('https://github.com/Chad3486/shuati-bao/releases', '_blank');
+      }
+    };
   }
 
   async function pageSettings() {
@@ -7171,8 +7920,17 @@ const App = (() => {
           <input id="set-key" type="password" value="${escapeHtml(cfg.apiKey)}" placeholder="sk-...">
         </label>
         <div class="muted small">⚠ Key 明文保存在本机浏览器（IndexedDB），不上传服务器；请勿在共用设备上保存，泄露需到服务商处作废重换</div>
-        <label class="field"><span>模型名称</span>
-          <input id="set-model" value="${escapeHtml(cfg.model)}" placeholder="deepseek-chat">
+        <label class="field"><span>模型（填好上方接口地址和 Key 后，点「获取列表」自动拉取，不用手填）</span>
+          <div style="display:flex;gap:8px">
+            <select id="set-model-sel" style="flex:1">
+              <option value="${escapeHtml(cfg.model)}" selected>${escapeHtml(cfg.model || '（未设置）')}</option>
+              <option value="__custom">自定义（手填模型名）</option>
+            </select>
+            <button class="btn ghost" id="fetch-models" type="button" style="flex:0 0 auto;white-space:nowrap">↻ 获取列表</button>
+          </div>
+        </label>
+        <label class="field" id="set-model-custom-wrap" style="display:none"><span>自定义模型名</span>
+          <input id="set-model" placeholder="任意 OpenAI 兼容模型名">
         </label>
         <label class="field"><span>视觉模型（图片识别用，留空 = 跟随主模型）</span>
           <input id="set-vmodel" value="${escapeHtml(cfg.visionModel || '')}" placeholder="如 glm-4v / qwen-vl-plus / gpt-4o-mini，需支持图片输入">
@@ -7184,16 +7942,10 @@ const App = (() => {
         <label class="field"><span>单次输出上限（tok，答长题/长解析可调大，受模型上限约束）</span>
           <input id="set-mtok" type="number" min="256" step="256" value="${cfg.maxTokens != null ? cfg.maxTokens : 8192}">
         </label>
-        <label class="field"><span>输入价（¥/百万 tok，用于费用预估与实耗）</span>
-          <input id="set-pin" type="number" min="0" step="0.1" value="${cfg.priceIn != null ? cfg.priceIn : 2}">
-        </label>
-        <label class="field"><span>输出价（¥/百万 tok）</span>
-          <input id="set-pout" type="number" min="0" step="0.1" value="${cfg.priceOut != null ? cfg.priceOut : 8}">
-        </label>
         <label class="field"><span>单次费用上限（¥，0 = 不限，实耗达到即自动暂停）</span>
           <input id="set-cap" type="number" min="0" step="0.1" value="${cfg.capYuan != null ? cfg.capYuan : 0}">
         </label>
-        <div class="muted small">常用：DeepSeek（api.deepseek.com/v1，model: deepseek-chat，参考价 输入 ¥2 / 输出 ¥8 每百万 tok）· 智谱（open.bigmodel.cn/api/paas/v4，model: glm-4-flash）· 其他 OpenAI 兼容接口均可；换模型或改价时同步调上面的单价</div>
+        <div class="muted small">费用预估沿用已保存的单价（参考价）；上方列表来自接口 /models，选不到的模型选「自定义」手填</div>
         <div class="btn-row">
           <button class="btn ghost" id="test-btn">测试连接</button>
           <button class="btn primary" id="save-btn">保存</button>
@@ -7272,15 +8024,50 @@ const App = (() => {
     };
 
 
+    /* 模型下拉：点「获取列表」按接口地址 + Key 拉取 /models，真实模型自动填充；拉不到可手填 */
+    const curPrice = { priceIn: cfg.priceIn != null ? cfg.priceIn : 2, priceOut: cfg.priceOut != null ? cfg.priceOut : 8 };
+    const selModel = document.getElementById('set-model-sel');
+    selModel.onchange = () => {
+      document.getElementById('set-model-custom-wrap').style.display = selModel.value === '__custom' ? '' : 'none';
+    };
+    document.getElementById('fetch-models').onclick = async () => {
+      const base = document.getElementById('set-url').value.trim().replace(/\/+$/, '');
+      const key = document.getElementById('set-key').value.trim();
+      if (!base) return toast('先填接口地址再拉取');
+      const btn = document.getElementById('fetch-models');
+      btn.textContent = '拉取中…'; btn.disabled = true;
+      try {
+        const headers = key ? { Authorization: 'Bearer ' + key } : {};
+        let resp = await fetch(base + '/models', { headers });
+        if (resp.status === 404) resp = await fetch(base + '/v1/models', { headers }); // 地址没带 /v1 时兜底
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const ids = (data.data || data.models || []).map(m => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean).sort();
+        if (!ids.length) throw new Error('接口返回空列表');
+        const cur = selModel.value === '__custom' ? (document.getElementById('set-model').value.trim() || cfg.model) : selModel.value;
+        selModel.innerHTML = ids.map(id => `<option value="${escapeHtml(id)}" ${id === cur ? 'selected' : ''}>${escapeHtml(id)}</option>`).join('')
+          + `<option value="__custom" ${ids.includes(cur) ? '' : 'selected'}>自定义（手填模型名）</option>`;
+        document.getElementById('set-model-custom-wrap').style.display = ids.includes(cur) ? 'none' : '';
+        if (!ids.includes(cur)) document.getElementById('set-model').value = cur || '';
+        toast(`✓ 拉到 ${ids.length} 个模型，直接选一个保存即可`);
+      } catch (e) {
+        toast('拉取失败：' + e.message + '（检查地址/Key，或选「自定义」手填）', 4000);
+      } finally {
+        btn.textContent = '↻ 获取列表'; btn.disabled = false;
+      }
+    };
+
     const readCfgForm = () => ({
       baseUrl: document.getElementById('set-url').value.trim(),
       apiKey: document.getElementById('set-key').value.trim(),
-      model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
+      model: selModel.value === '__custom'
+        ? (document.getElementById('set-model').value.trim() || 'deepseek-chat')
+        : selModel.value,
       visionModel: (document.getElementById('set-vmodel')?.value || '').trim(),
       concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
       maxTokens: Math.max(256, parseInt(document.getElementById('set-mtok').value, 10) || 8192),
-      priceIn: Math.max(0, parseFloat(document.getElementById('set-pin').value) || 0),
-      priceOut: Math.max(0, parseFloat(document.getElementById('set-pout').value) || 0),
+      priceIn: curPrice.priceIn,
+      priceOut: curPrice.priceOut,
       capYuan: Math.max(0, parseFloat(document.getElementById('set-cap').value) || 0)
     });
     document.getElementById('save-btn').onclick = async () => {
@@ -7347,6 +8134,7 @@ const App = (() => {
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
+
 
 </script>
 </body>

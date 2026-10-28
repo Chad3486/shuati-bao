@@ -1,48 +1,84 @@
 name: Build ShuatiBao APK
 
 on:
-  workflow_dispatch: # 手动触发：Actions → 选此 workflow → Run workflow
+  workflow_dispatch:
   push:
     branches: [ main ]
-    tags: [ 'v*' ] # 推送 v 开头的 tag 时触发发版（paths 过滤器不作用于 tag，tag 必触发）
-    paths: [ 'apk-src/**' ]
+    tags: [ 'v*' ]
+    paths: [ 'apk-src/**', 'js/**', 'css/**', 'libs/**', 'index.html', 'build-single.mjs' ]
 
 permissions:
-  contents: write # 发布 Release 需要写权限，否则会 403
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
+
+      # 版本号唯一来源 = tag。发版只靠 tag，不再手改 versionCode/versionName。
+      # versionCode = 主*10000 + 次*100 + 修订，保证单调递增且与 tag 对得上。
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V=$(grep -oE "fallbackName = '[0-9.]+'" apk-src/app/build.gradle | grep -oE "[0-9]+[.][0-9]+[.][0-9]+" | head -1)
+          fi
+          if ! echo "$V" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+$'; then
+            echo "版本号格式不合法: $V"; exit 1
+          fi
+          MAJ=${V%%.*}
+          REST=${V#*.}
+          MIN=${REST%%.*}
+          PAT=${REST#*.}
+          CODE=$((MAJ * 10000 + MIN * 100 + PAT))
+          echo "VERSION_NAME=$V" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "版本号 $V (versionCode $CODE)"
+
+      # 用同一份版本号重建单文件版，保证 App 内显示的版本号与 APK 一致
+      # （历史上出现过 versionName 写 1.8.17、内嵌 app.html 实为 1.8.16 的包）
+      - name: Rebuild single-file bundle
+        run: |
+          node build-single.mjs
+          if ! grep -q "const VERSION = '${VERSION_NAME}';" apk-src/app/src/main/assets/app.html; then
+            echo "内嵌 app.html 版本号与 ${VERSION_NAME} 不一致，中止"
+            exit 1
+          fi
 
       - name: Assemble Debug APK
         run: gradle -p apk-src :app:assembleDebug --no-daemon
 
       - name: Rename APK
-        # 附件名带版本号（tag 名）；用 ASCII 名，规避中文文件名被 GitHub 规整成 default.apk
-        run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk "shuati-bao-${GITHUB_REF_NAME}.apk"
+        run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk "shuati-bao-v${VERSION_NAME}.apk"
 
-      # Artifact 仅作临时产物，保留期拉到 GitHub 上限（400 天）
+      # 卡住「versionName 与内嵌 app.html 版本不一致」这种坏包（见 scripts/verify-apk.py 注释）
+      - name: Verify APK version consistency
+        run: python3 scripts/verify-apk.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: shuati-bao-apk
-          path: shuati-bao-*.apk
-          retention-days: 400
+          path: shuati-bao-v*.apk
+          retention-days: 30
 
-      # ── 以下步骤仅打 tag 时执行（推 main 和手动触发只构建、不发版）──
-
-      # 从 README「## 更新日志」中提取当前 tag 对应的一段作为 Release 说明；
-      # 找不到对应段落时退化为 tag 名
+      # 以下步骤仅打 tag 时执行（推 main 和手动触发只构建、不发版）
       - name: Extract release notes
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -57,11 +93,9 @@ jobs:
           fi
           printf '%s\n' "${BODY}" > release_notes.md
 
-      # 发布到 GitHub Releases：永久保存、免登录直链下载；
-      # tag 已存在 Release 时自动更新（幂等），不会报错
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: shuati-bao-*.apk
+          files: shuati-bao-v*.apk
           body_path: release_notes.md

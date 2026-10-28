@@ -4,8 +4,8 @@
 
 ## 下载安装
 
-- **APK（推荐）**：到 [Releases](../../releases) 下载最新 `shuati-bao-v*.apk`，传到手机安装（需允许未知来源），要求 Android 5.0+。
-- **网页版**：直接用浏览器打开仓库里的 `dist/刷题宝-单文件版.html`，功能一致，数据同样存本地。
+- **APK（推荐）**：到 [Releases](../../releases) 下载最新 `shuati-bao-v<版本号>.apk`（v1.8.17 起附件名带版本号，更早版本叫 `default.apk`），传到手机安装（需允许未知来源），要求 Android 5.0+。
+- **网页版**：直接用浏览器打开仓库里的 `dist/刷题宝-单文件版.html`，与 APK 同一份代码，数据同样存本地。
 - **自己构建**：见下方「从源码构建」。
 
 ## 导入题库
@@ -40,17 +40,19 @@ AI 功能均为可选（配 Key 才用）：缺答案的题让 AI 解、答案�
 
 仓库已配好 GitHub Actions，无需本地环境：Actions → **Build ShuatiBao APK** → Run workflow → 等 3~5 分钟后从 Artifacts 下载。
 
-本地构建（需 JDK 17 + Android SDK + Gradle 8.4+）：
+本地构建（需 JDK 17 + Android SDK + Gradle 8.4+、Node 18+）：
 
 ```bash
+node build-single.mjs                 # 重建单文件版，并把产物拷进 apk-src（脚本自己拷，无需手 cp）
 gradle -p apk-src :app:assembleDebug
 ```
 
-改了网页代码后先重建单文件再构建：
+发版只靠 tag，不用手改 versionCode：
 
 ```bash
-node build-single.mjs
-cp "dist/刷题宝-单文件版.html" apk-src/app/src/main/assets/app.html
+git tag v1.8.18 && git push origin v1.8.18
+gradle 的 versionName / versionCode 由 CI 按 tag 注入（1.8.18 → versionCode 10818），
+build-single.mjs 会把同一个版本号写进 App 内显示的 VERSION。
 ```
 
 ## 技术栈
@@ -75,6 +77,7 @@ cp "dist/刷题宝-单文件版.html" apk-src/app/src/main/assets/app.html
 
 | 版本 | 要点 |
 |---|---|
+| v1.8.18 | **工程整改**：删掉 APK 里 22MB 已废弃的 tesseract 资源（包体积 15.8MB 降到 0.4MB）；`dist/` 网页版重新生成（此前停在 v1.8.7）；版本号改由 tag 注入（versionCode 不再手改）；CI 发版前硬校验 APK versionName 与内嵌 app.html VERSION 一致，杜绝 v1.8.17 那种版本错配坏包；补回只存在于构建产物里的 23 行 CSS（首页四宫格磁贴、设置页下拉框），从源码重建不再丢样式 |
 | v1.8.17 | **答案导入大修**：识别「答案：A（A. 原文）解析：…」格式（此前整套拒收）；Word 答案速查表（表格）可解析；多选题节标题（带题号范围）不再漏识别；判分容错归一（历史脏答案不再误判，修复正确率）；AI 对位/AI 解答校验容错（照抄原文不再被拒）；修复 AI 转范式路径 findAnswerTableSpan 未导出崩溃；✎ 修改面板支持改题型/选项 |
 | v1.8.16 | 顺序偏好全局生效（默认随机）；中途退出自动存档练习进度 |
 | v1.8.15 | 选项乱序（答案字母自动换算）；防误覆盖进度确认 |
