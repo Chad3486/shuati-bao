@@ -8,7 +8,11 @@ class QuizSession {
   constructor(questions, opts = {}) {
     this.all = questions;
     this.opts = opts;
-    this.list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    let list = opts.shuffle ? this._shuffle([...questions]) : [...questions];
+    // v1.8.15 选项乱序：随机模式 = 题序 + 选项序一起打乱。
+    // 只改会话内副本（题库原数据不动），答案字母同步换算；异常一律回退原题
+    if (opts.shuffle) list = list.map(q => this._shuffleOptions(q));
+    this.list = list;
     this.index = 0;
     this.answered = new Map(); // qid -> {userAnswer, correct, q, answer, explanation}
     this.startTime = Date.now();
@@ -27,6 +31,46 @@ class QuizSession {
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
     return arr;
+  }
+
+  /* ---- 选项乱序（v1.8.15）----
+     规则：仅单选/多选、选项 ≥3 个且有答案；「以上都对 / 上述都不对」类联动选项不打乱（语义会破）；
+     返回浅拷贝题（options 新对象 + 换算后的 answer + _optPerm 旧字母→新字母映射），题库原数据不动；
+     任何不确定（答案字母对不上选项等）都原样返回，保证答案永不因乱序而出错 */
+  _shuffleOptions(q) {
+    if (q.type !== 'single' && q.type !== 'multi') return q;
+    if (!q.options || !q.answer) return q;
+    const keys = Object.keys(q.options).sort();
+    if (keys.length < 3) return q;                       // 对/错、A/B 两个选项打乱无意义
+    const texts = keys.map(k => String(q.options[k] ?? ''));
+    if (texts.some(t => /以上|上述|都不?对|都不?是|都正确|都错误|全部正确|全部错误/.test(t))) return q;
+    const ansLetters = String(q.answer).toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !keys.includes(c))) return q;
+
+    const order = this._shuffle([...keys.keys()]);       // order[j] = 新位置 j 的内容来自旧下标
+    const mapping = new Map();                           // 旧字母 → 新字母
+    keys.forEach((oldK, i) => mapping.set(oldK, keys[order[i]]));
+    const copy = QuizSession.permuteQuestion(q, mapping);
+    if (!copy) return q;                                 // 换算失败兜底：原题原样
+    return copy;
+  }
+
+  /* 按 旧字母→新字母 映射生成题目副本（restore 续练复用）；校验失败返回 null。
+     注意：options 新对象必须按新字母 A,B,C… 顺序插入——渲染层用 Object.keys 的插入顺序显示 */
+  static permuteQuestion(q, mapping) {
+    const keys = Object.keys(q.options || {}).sort();
+    if (!keys.length || keys.some(k => !mapping.has(k))) return null;
+    const news = keys.map(k => mapping.get(k));
+    if (new Set(news).size !== keys.length) return null; // 必须是双射
+    const newOptions = {};
+    [...news].sort().forEach(nk => {
+      const oldK = keys.find(k => mapping.get(k) === nk);
+      newOptions[nk] = q.options[oldK];
+    });
+    const ansLetters = String(q.answer || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (!ansLetters || [...ansLetters].some(c => !mapping.has(c))) return null;
+    const newAnswer = [...ansLetters].map(c => mapping.get(c)).sort().join('');
+    return { ...q, options: newOptions, answer: newAnswer, _optPerm: Object.fromEntries(mapping) };
   }
 
   get current() { return this.list[this.index]; }
@@ -167,15 +211,20 @@ class QuizSession {
       deadline: this.deadline || 0,
       graded: this.graded,
       recite: !!this.recite,
-      examAnswers: [...this.examAnswers.entries()]
+      examAnswers: [...this.examAnswers.entries()],
+      // 选项乱序映射（v1.8.15）：qid -> {旧字母:新字母}，恢复时原样套回，已答字母才不会错位
+      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm])
     };
   }
   /* ---- 反序列化：查库重建 ---- */
   static async restore(data) {
+    const permMap = new Map(data.optPerm || []);
     const qs = [];
     for (const id of data.ids) {
       const q = await DB.questionGet(id);
-      if (q) qs.push(q);
+      if (!q) continue;
+      // 套回上次会话的选项乱序（保证已答字母不错位）；套不上就原题，判分仍正确
+      qs.push(permMap.has(id) ? (QuizSession.permuteQuestion(q, new Map(Object.entries(permMap.get(id)))) || q) : q);
     }
     const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));

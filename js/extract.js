@@ -225,7 +225,13 @@ const Extractor = (() => {
      R1 子小问（1）（2）（3）并入父题；R2 答案区停切；R3 短答案行不算题
      S1 题型小节感知：「一、单选题」等行设置当前节，题号回到1时隐式开新节
      每题带 key=节序号-题号（跨节去重用，修复各节同号互相覆盖）---- */
-  function splitQuestions(text) {
+  function splitQuestions(text, customSrc) {
+    // 自定义切题正则（v1.8.13）：设置后只按该行首模式切题，第一个括号捕获题号（无捕获则顺序编号）
+    const customRe = (() => {
+      if (!customSrc) return null;
+      try { const r = new RegExp(customSrc); return r.test('') ? null : r; } catch { return null; }
+    })();
+    let autoNo = 0;
     const lines = text.split('\n');
     const mainRe = /^\s*(\d{1,3})\s*[.、．)）]\s*/;
     const subRe = /^[（(]\s*(\d{1,3})\s*[)）]\s*/;
@@ -309,6 +315,26 @@ const Extractor = (() => {
       }
       if (isAnswerLine(line)) { if (cur) { items.push(cur); cur = null; } continue; }
       if (isAnswerEntry(line)) { if (cur) { items.push(cur); cur = null; } continue; }
+
+      /* 自定义正则模式：命中 = 开新题，其余行归入当前题 */
+      if (customRe) {
+        const cm = trimmed.length > 3 ? line.match(customRe) : null;
+        if (cm) {
+          let no = ++autoNo;
+          if (cm[1] && /^\d{1,4}$/.test(cm[1].trim())) { no = parseInt(cm[1], 10); autoNo = no; }
+          if (no === 1 && lastQNo > 1) {
+            secIdx++; curType = null; chapPart++;
+            sections.push({ secIdx, title: curChapter ? (curChapter + ' · 第' + chapPart + '组') : null, type: null });
+          }
+          lastQNo = no;
+          if (cur) items.push(cur);
+          cur = { no, secIdx, type: curType, key: secIdx + '-' + no, text: [line.replace(customRe, '').trim() || line] };
+        } else if (cur) {
+          cur.text.push(line);
+          if (cur.text.join('\n').length > 4000) { items.push(cur); cur = null; }
+        }
+        continue;
+      }
 
       const m = line.match(mainRe);
       const sm = line.match(subRe);
@@ -569,3 +595,4 @@ const Extractor = (() => {
 
   return { extract, extractFull, shrinkImage, cleanText, chunk, splitQuestions, parseOneQuestion, detectNoiseLines };
 })();
+

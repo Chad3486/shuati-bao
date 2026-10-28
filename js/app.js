@@ -21,6 +21,8 @@ const App = (() => {
     'quiz-result': pageQuizResult,
     'wrong': pageWrong,
     'star': pageStar,
+    'wrong-setup': () => pageReviewSetup('wrong'),
+    'star-setup': () => pageReviewSetup('star'),
     'search': pageSearch,
     'history': pageHistory,
     'stats': pageStats,
@@ -183,7 +185,7 @@ const App = (() => {
     const tabs = ['home', 'quiz-setup', 'wrong', 'stats', 'me'];
     const active = tabs.includes(path) ? path
       : path.startsWith('quiz') ? 'quiz-setup'
-      : path === 'star' ? 'wrong'
+      : path === 'star' || path === 'star-setup' || path === 'wrong-setup' ? 'wrong'
       : path === 'history' ? 'stats'
       : path === 'settings' ? 'me'
       : 'home';
@@ -227,6 +229,61 @@ const App = (() => {
   }
 
   function confirmDialog(msg) { return window.confirm(msg); }
+
+  /* v1.8.16 兜底：旧进度被新练习顶掉前，自动存一条「练习（未完成）」进练习记录，永不真丢 */
+  async function archivePartialSession(data) {
+    try {
+      const s = await QuizSession.restore(data);
+      if (!s || !s.total) return;
+      const rows = s.list.map(q => {
+        const a = s.answered.get(q.id);
+        if (a) return { qid: q.id, ua: a.userAnswer, status: a.correct ? 'ok' : 'bad' };
+        const ua = s.examAnswers.has(q.id) ? s.examAnswers.get(q.id) : null;
+        if (ua != null && String(ua).trim() && q.answer) return { qid: q.id, ua, status: QuizSession.judge(q, ua) ? 'ok' : 'bad' };
+        return { qid: q.id, ua: ua || null, status: 'none' };
+      });
+      const answeredN = rows.filter(x => x.status !== 'none').length;
+      if (!answeredN) return;
+      const correctN = rows.filter(x => x.status === 'ok').length;
+      const wrongN = rows.filter(x => x.status === 'bad').length;
+      await historyPush({
+        id: DB.uid(), at: s.startTime || Date.now(), partial: true, exam: !!s.exam,
+        label: s.exam ? '考试（未交卷·自动保存）' : '练习（未完成·自动保存）',
+        total: s.total, answered: answeredN, correct: correctN, wrong: wrongN,
+        unanswered: s.total - answeredN,
+        acc: s.exam ? Math.round(correctN / s.total * 100) : Math.round(correctN / answeredN * 100),
+        timeUsed: Math.max(0, Math.round((Date.now() - (s.startTime || Date.now())) / 1000)),
+        rows
+      });
+      toast('上一份未完成进度已自动存入练习记录');
+    } catch (e) { /* 存档失败不拦新练习 */ }
+  }
+
+  /* v1.8.15 防误覆盖：还有没做完的练习时，开新练习前先确认一次，
+     防止手滑开新练习把上次的答题进度顶掉（已交卷/没答过的不拦） */
+  async function guardUnfinishedSession() {
+    let data = null;
+    try { data = await DB.metaGet('lastSession'); } catch (e) { return true; }
+    if (!data || !Array.isArray(data.ids) || data.graded) return true;
+    const answered = (data.answered || []).length + (data.examAnswers || []).length;
+    if (!answered) return true;
+    if (answered < data.ids.length) {
+      const go = confirmDialog(`上次有没做完的练习（已答 ${answered}/${data.ids.length} 题）。\n开始新练习会丢掉这份进度，确定继续？`);
+      if (!go) return false;
+    }
+    try { await archivePartialSession(data); } catch (e) { /* 静默 */ }
+    return true;
+  }
+
+  /* v1.8.16 顺序偏好：练习设置页选过「随机/顺序」后记住，题库直开 / 章节直练也按它来。
+     默认随机（乱序含选项）；设置页切换时写入 DB meta 'prefShuffle' */
+  async function prefShuffle() {
+    try {
+      const v = await DB.metaGet('prefShuffle');
+      return v === null || v === undefined ? true : !!v;
+    } catch (e) { return true; }
+  }
+  async function savePrefShuffle(on) { try { await DB.metaSet('prefShuffle', !!on); } catch (e) { /* 静默 */ } }
 
   /* ---- 文件小工具（浏览器 / APK 通用） ---- */
   function blobToBase64(blob) {
@@ -478,9 +535,32 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      <button class="btn primary big" onclick="App.navigate('#/import')">＋ 导入题库</button>
-      <button class="btn ghost big" onclick="App.navigate('#/canon')">粘贴文本导入（高级）</button>
-      ${total ? `<button class="btn ghost big" onclick="App.navigate('#/search')">🔍 搜题（跨全部题库）</button>` : ''}
+      <div class="quick-grid">
+        <button class="quick-tile" onclick="App.navigate('#/import')">
+          <span class="quick-ico" style="background:rgba(59,130,246,.14);color:#2f6bff">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          </span>
+          <span>导入题库</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/canon')">
+          <span class="quick-ico" style="background:rgba(139,92,246,.14);color:#7c3aed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 11h6"/><path d="M9 15h4"/></svg>
+          </span>
+          <span>粘贴导入</span>
+        </button>
+        <button class="quick-tile" onclick="App.navigate('#/search')">
+          <span class="quick-ico" style="background:rgba(16,163,127,.14);color:#0e9f6e">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          </span>
+          <span>搜题</span>
+        </button>
+        <button class="quick-tile" onclick="App.wrongRedo()">
+          <span class="quick-ico" style="background:rgba(239,68,68,.14);color:#e05656">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>
+          </span>
+          <span>错题重做</span>
+        </button>
+      </div>
       ${banks.length > LIMIT ? `
       <div class="list-tools">
         <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
@@ -550,7 +630,8 @@ const App = (() => {
   }
 
   async function startBank(id) {
-    session = await QuizBuilder.fromBanks([id], { filterType: 'answered' });
+    if (!await guardUnfinishedSession()) return;
+    session = await QuizBuilder.fromBanks([id], { filterType: 'answered', shuffle: await prefShuffle() });
     if (!session.total) {
       const qs = await DB.questionsByBank(id);
       if (qs.length) return toast(`${qs.length} 题均缺答案，请先「补答案」`);
@@ -832,7 +913,19 @@ const App = (() => {
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">选择文件</div>
-        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完：<b>AI 直接把原卷转成范式并入库</b>，原卷里的答案、解析原样带走，不用再手动补。需在「设置」配置 API Key；<b>没配 Key 时自动降级本地解析</b>（免费、快，但排版乱的文档可能切不准）。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <p class="muted">支持多选 DOCX（Word）/ TXT / MD / <b>图片（JPG/PNG）</b>。选完文件后一条路走完，答案、解析原样带走，不用再手动补。图片和图片型 Word 由 AI 视觉模型识别。</p>
+        <label class="field" style="margin-top:6px"><span>解析引擎</span>
+          <div class="seg" id="seg-engine">
+            <button data-v="auto" class="on">自动</button>
+            <button data-v="local">本地正则（免AI）</button>
+            <button data-v="ai">仅 AI</button>
+          </div>
+        </label>
+        <div class="muted small" id="engine-hint"></div>
+        <label class="field" style="margin-top:10px"><span>自定义切题正则（高级 · 可留空）</span>
+          <input type="text" id="custom-re" placeholder="行首匹配；第一个括号捕获题号，如 ^第\s*(\d+)\s*题">
+        </label>
+        <div class="muted small" id="custom-re-hint">留空 = 内置规则（1. 2.、(1) (2)）。设置后「本地正则」引擎只按这个行首模式切题（对文字版 DOCX/TXT/MD 生效），保存后重新导入生效。</div>
         <button class="btn primary big" style="margin-top:10px" id="pick-btn">选择文件</button>
         <input type="file" id="file-input" multiple accept=".docx,.doc,.txt,.md,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none">
         <div id="file-list" class="file-list"></div>
@@ -847,6 +940,42 @@ const App = (() => {
     const input = document.getElementById('file-input');
     document.getElementById('pick-btn').onclick = () => input.click();
     input.onchange = () => { lastPickedFiles = [...input.files]; handleFiles(lastPickedFiles); };
+
+    /* 解析引擎选择：本地正则 = 老桌面版的秒级正则引擎，零 API、免费；持久化保存 */
+    const HINTS = {
+      auto: '自动 = 配了 Key 走 AI 转范式（乱排版更稳），没配 Key 走本地正则（秒级、零费用）',
+      local: '本地正则：不用 API Key、不花钱、毫秒级；排版乱的文档可能切不准，建议导入后抽查',
+      ai: '仅 AI：每次导入都走 AI 转范式（需在「设置」配好 Key），没 Key 的文件会跳过'
+    };
+    const segEngine = document.getElementById('seg-engine');
+    const engineHint = document.getElementById('engine-hint');
+    DB.metaGet('importEngine').then(saved => {
+      const v = saved || 'auto';
+      segEngine.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+      engineHint.textContent = HINTS[v];
+    });
+    segEngine.onclick = async (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      segEngine.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      engineHint.textContent = HINTS[b.dataset.v];
+      await DB.metaSet('importEngine', b.dataset.v);
+    };
+
+    /* 自定义切题正则（v1.8.13）：持久化 + 语法校验（空行可匹配的一律拒绝） */
+    const customReInput = document.getElementById('custom-re');
+    const customReHint = document.getElementById('custom-re-hint');
+    DB.metaGet('importRegex').then(v => { customReInput.value = v || ''; });
+    customReInput.addEventListener('change', async () => {
+      const v = customReInput.value.trim();
+      if (!v) { await DB.metaSet('importRegex', ''); customReHint.textContent = '✓ 已清除，恢复内置切题规则'; return; }
+      try {
+        const r = new RegExp(v);
+        if (r.test('')) { customReHint.textContent = '⚠ 这个正则能匹配空内容，会乱切；请加 ^ 锚定行首（如 ^第\\s*(\\d+)\\s*题）'; return; }
+      } catch (e) { customReHint.textContent = '⚠ 正则语法错误：' + e.message; return; }
+      await DB.metaSet('importRegex', v);
+      customReHint.textContent = '✓ 已保存，重新导入时本地正则引擎按此模式切题';
+    });
   }
 
   async function handleFiles(files) {
@@ -955,8 +1084,15 @@ const App = (() => {
       try {
         // v1.8 快速通道 = AI 转范式直通：配了 API Key → AI 直接把原卷转成范式、逐片入库，
         // 答案/解析原样带走，导入即用；没配 Key → 本地解析保底。不再本地先行、不再两条路绕
+        // v1.8.11：引擎可选（自动 / 本地正则免AI / 仅AI），本地正则成为一等公民
         const cfg = await LLM.getConfig();
-        if (cfg.apiKey) {
+        const engine = (await DB.metaGet('importEngine')) || 'auto';
+        if (engine === 'ai' && !cfg.apiKey) {
+          setState('跳过（无 Key）');
+          statusEl.textContent = '⚠ 已选「仅 AI」但没配 API Key，本题库跳过；把引擎改成「自动 / 本地正则」或到「设置」配好 Key 再导';
+          continue;
+        }
+        if (engine === 'ai' || (engine === 'auto' && cfg.apiKey)) {
           setState('AI 转范式…');
           // v1.7.1：全局任务中心接管进度与通知栏（换页/锁屏回来自动可见）；逐批入库不等整份
           const dImgs = docImgs.get(i) || [];
@@ -1117,16 +1253,20 @@ const App = (() => {
           }
           continue;
         }
-        // ---- 无 API Key：本地解析保底（零调用、免费） ----
+        // ---- 无 API Key：本地解析保底（零调用、免费；支持自定义切题正则） ----
         setState('本地解析…');
+        const customSrc = ((await DB.metaGet('importRegex')) || '').trim();
         const res = await LLM.parseDocument(text, (done, total, got) => {
           const elapsed = Math.round((Date.now() - t0) / 1000);
           statusEl.textContent = `本地解析中：已提取 ${got} 题 · 已用 ${elapsed}s`;
           bar.style.width = Math.round(done / total * 95) + '%';
-        });
+        }, customSrc);
         if (!res.questions.length) {
           setState('未发现题目');
-          statusEl.textContent = '⚠ 本地解析没切出题，且未配置 API Key（AI 转范式不可用）。到「设置」配好 Key 后重新导入，或到「粘贴文本导入（高级）」人工核对原文';
+          const hasImg = (docImgs.get(i) || []).length > 0;
+          statusEl.textContent = hasImg
+            ? '⚠ 本地解析没切出题：这份文件以图片为主，本地正则认不了图片。识别图片试卷需在「设置」配好 API Key、引擎选「自动 / 仅 AI」走 AI 视觉；文字部分可复制到「粘贴文本导入（高级）」'
+            : '⚠ 本地解析没切出题，且未配置 API Key。可在导入页填「自定义切题正则」后重试；或到「设置」配 Key 走 AI 转范式；或到「粘贴文本导入（高级）」人工核对原文';
           continue;
         }
         // 残缺题（选项缺字母的降级解析结果）不入库
@@ -1341,26 +1481,28 @@ const App = (() => {
           <button class="btn ghost" id="sel-all">全选可见</button>
           <button class="btn ghost" id="sel-none">清空选择</button>
         </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="sel-noans">只选有答案</button>
-          <button class="btn ghost" id="sel-unans">只选缺答案</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="ai-review-btn">🤖 逐题核对 AI 答案</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="exp-canon">导出范式 Word</button>
-          <button class="btn ghost" id="copy-canon">复制范式</button>
-        </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
-        </div>
-        <div class="muted small" style="margin-top:6px">导出范式 Word（.docx）后可在 Word / WPS 里补答案 / 加题 / 改题干，再回「范式导入」用「Word 转换器」选这份 .docx 一键导回覆盖建库（答案随题，无需再对齐）；「复制范式」拿纯文本</div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
-        <div class="muted small" style="margin-top:4px">缺答案的题（虚线框）也能勾选练习：练习时点右上角 ✎ 自己填答案；点章节标题可折叠。AI 补的答案带「AI 解答·需核对」标，点上方「逐题核对 AI 答案」可逐题 采纳 / 修改 / 重跑</div>
+        <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
+        <details style="margin-top:12px">
+          <summary class="muted small" style="cursor:pointer;font-weight:600">更多操作（批量选 / AI 核对 / 导出范式 / 删除）</summary>
+          <div class="btn-row" style="margin-top:10px">
+            <button class="btn ghost" id="sel-noans">只选有答案</button>
+            <button class="btn ghost" id="sel-unans">只选缺答案</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="ai-review-btn">🤖 逐题核对 AI 答案</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="exp-canon">导出范式 Word</button>
+            <button class="btn ghost" id="copy-canon">复制范式</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="del-sel" style="color:var(--bad)">删除选中</button>
+          </div>
+          <div class="muted small" style="margin-top:6px">缺答案的题（虚线框）也能勾选练习，答题时点 ✎ 自己补答案；导出的范式 Word 在 Word / WPS 补答案后，回「范式导入」用 Word 转换器覆盖建库（答案随题，无需对齐）</div>
+        </details>
         <div id="no-grid"></div>
         <div id="ai-review"></div>
-        <button class="btn primary big" id="go-quiz" style="margin-top:12px"></button>
       </div>
       <style>
         .sec-group { margin-top:12px; }
@@ -1641,9 +1783,12 @@ const App = (() => {
       // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
       const list = qs.filter(q => sel.has(q.id));
       const noAnsCount = list.filter(q => !q.answer).length;
-      session = new QuizSession(list, { shuffle: false });
-      if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
-      navigate('#/quiz');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(list, { shuffle: false });
+        if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
+        navigate('#/quiz');
+      });
     };
 
     // 导出 / 复制范式：题库 → 范式文本（导出 .docx 在 Word 里改完，回「范式导入」载入即可导回）
@@ -2083,32 +2228,21 @@ const App = (() => {
     // ---- 选择状态 ----
     const sel = new Set(banks.map(b => b.id));  // 选中的题库
     const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
-    const secCollapsed = new Set();             // 章节区：被折叠起来的题库 id（整库收起）
+    const secExpanded = new Set();              // 章节区：默认整库折叠，点库头才展开（v1.8.12）
     let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
     const LIMIT = 6;
 
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">范围（题库）</div>
-        <div class="list-tools">
-          <input id="setup-search" class="search-input" placeholder="搜索题库名称…">
-          <div class="chips" id="pick-tools">
-            <button class="chip" data-act="all">全选</button>
-            <button class="chip" data-act="none">清空</button>
-            <button class="chip" data-act="ans">只选有答案的库</button>
-          </div>
-        </div>
-        <div class="bank-pick" id="bank-pick"></div>
-        <button class="btn ghost" id="pick-more" style="display:none;margin-top:8px"></button>
+        <button class="btn ghost big" id="bank-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（默认全选，可搜索）</div>
       </div>
 
       <div class="card">
         <div class="card-title">范围（章节）</div>
-        <div class="muted small" id="sec-sum">不选 = 全部章节</div>
-        <div class="chips" id="sec-tools" style="margin-top:8px">
-          <button class="chip" data-act="none">清空（=全部章节）</button>
-        </div>
-        <div id="sec-area"></div>
+        <button class="btn ghost big" id="sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择</div>
       </div>
 
       <div class="card">
@@ -2148,15 +2282,56 @@ const App = (() => {
           <button data-v="order" class="on">顺序</button>
           <button data-v="shuffle">随机</button>
         </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
       </div>
       <button class="btn primary big" id="start-quiz"></button>
-      <button class="btn ghost big" onclick="App.wrongRedo()">错题重做</button>
-      ${starCount ? `<button class="btn ghost big" onclick="App.starRedo()">★ 收藏重练（${starCount}）</button>` : ''}`;
+      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
+      ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}
+
+      <div id="sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="sec-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>
+
+      <div id="bank-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="bank-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:76vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="btn primary" id="bank-sheet-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div style="padding:0 16px 8px">
+            <input id="setup-search" class="search-input" style="width:100%" placeholder="搜索题库名称…">
+            <div class="chips" id="pick-tools" style="margin-top:8px">
+              <button class="chip" data-act="all">全选</button>
+              <button class="chip" data-act="none">清空</button>
+              <button class="chip" data-act="ans">只选有答案的库</button>
+            </div>
+          </div>
+          <div class="bank-pick" id="bank-pick" style="overflow-y:auto;padding:0 16px;flex:1;-webkit-overflow-scrolling:touch"></div>
+          <div style="padding:8px 16px calc(12px + env(safe-area-inset-bottom))">
+            <button class="btn ghost" id="pick-more" style="display:none;width:100%"></button>
+          </div>
+        </div>
+      </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
     const pickMoreBtn = document.getElementById('pick-more');
+    /* 题库选择弹层：点摘要按钮拉起，遮罩/完成关闭（v1.8.13） */
+    const bankSheet = document.getElementById('bank-sheet');
+    document.getElementById('bank-open').onclick = () => { bankSheet.style.display = ''; };
+    document.getElementById('bank-mask').onclick = () => { bankSheet.style.display = 'none'; };
+    document.getElementById('bank-sheet-done').onclick = () => { bankSheet.style.display = 'none'; };
     const secArea = document.getElementById('sec-area');
-    const secSum = document.getElementById('sec-sum');
+    const secOpenBtn = document.getElementById('sec-open');
+    const secSheet = document.getElementById('sec-sheet');
     const startBtn = document.getElementById('start-quiz');
 
     /* ---- 题库勾选（搜索 + 折叠，题库多也不用翻到底） ---- */
@@ -2176,6 +2351,9 @@ const App = (() => {
       });
       pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
       pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+      document.getElementById('bank-open').textContent = sel.size === banks.length
+        ? `📂 全部 ${banks.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${banks.length} 个题库（点此修改） ›`;
     }
 
     /* ---- 章节勾选（按库分组，chip 点选；不选 = 全部章节） ---- */
@@ -2189,7 +2367,7 @@ const App = (() => {
         if (!list.length && !hasNoSec) continue;
         const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
         const totalSec = list.length + (hasNoSec ? 1 : 0);
-        const folded = secCollapsed.has(b.id);
+        const folded = !secExpanded.has(b.id);
         parts.push(`
           <div class="sec-pick">
             <div class="sec-pick-head">
@@ -2209,12 +2387,12 @@ const App = (() => {
           </div>`);
       }
       secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
-      secSum.textContent = selSecs.size ? `已选 ${selSecs.size} 个章节（不选 = 全部章节）` : '不选 = 全部章节';
+      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
       // 整库折叠/展开
       secArea.querySelectorAll('button[data-fold]').forEach(btn => {
         btn.onclick = () => {
           const bid = btn.dataset.fold;
-          secCollapsed.has(bid) ? secCollapsed.delete(bid) : secCollapsed.add(bid);
+          secExpanded.has(bid) ? secExpanded.delete(bid) : secExpanded.add(bid);
           renderSecs();
         };
       });
@@ -2296,12 +2474,18 @@ const App = (() => {
       else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
       renderBanks(); renderSecs(); refresh();
     };
-    document.getElementById('sec-tools').onclick = (e) => {
-      const b = e.target.closest('button[data-act]'); if (!b) return;
+    /* ---- 章节选择：点击默认拉起底部弹层，不在页面里铺开 ---- */
+    secOpenBtn.onclick = () => { secSheet.style.display = ''; };
+    document.getElementById('sec-mask').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-done').onclick = () => { secSheet.style.display = 'none'; };
+    document.getElementById('sec-sheet-clear').onclick = () => {
       selSecs.clear(); renderSecs(); refresh();
     };
     const segType = document.getElementById('seg-type');
     const segOrder = document.getElementById('seg-order');
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      segOrder.querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+    });
     const segMode = document.getElementById('seg-mode');
     const segTime = document.getElementById('seg-time');
     [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
@@ -2309,6 +2493,7 @@ const App = (() => {
         const b = e.target.closest('button'); if (!b) return;
         seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
+        if (seg === segOrder) savePrefShuffle(b.dataset.v === 'shuffle');   // 记住顺序偏好（题库直开也生效）
         if (seg === segMode) {
           exam = b.dataset.v === 'exam';
           document.getElementById('exam-opts').style.display = exam ? '' : 'none';
@@ -2328,6 +2513,7 @@ const App = (() => {
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
       const n = countAvail();
       const mins = curMinutes(n);
+      if (!await guardUnfinishedSession()) return;
       session = await QuizBuilder.fromBanks(ids, {
         shuffle,
         filterType: curFilter(),
@@ -2346,6 +2532,7 @@ const App = (() => {
   }
 
   async function wrongRedo() {
+    if (!await guardUnfinishedSession()) return;
     session = await QuizBuilder.wrongRedo();
     if (!session.total) return toast('没有错题');
     navigate('#/quiz');
@@ -2354,11 +2541,247 @@ const App = (() => {
   async function starRedo() {
     const qs = (await DB.starQuestions()).filter(q => q.answer);
     if (!qs.length) return toast('收藏的题都缺答案');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(qs, { shuffle: true, mode: 'star' });
     navigate('#/quiz');
   }
 
-  /* ================= 页面：答题 ================= */
+  /* ================= 页面：错题重做 / 收藏重练 范围选择 =================
+     与「开始练习」同风格：按题库分类勾选范围 + 题型/模式/顺序，替代旧的"一键全量开练" */
+  async function pageReviewSetup(kind) {
+    const isWrong = kind === 'wrong';
+    topbar(isWrong ? '错题重做' : '★ 收藏重练', isWrong ? '#/wrong' : '#/star');
+    const banks = await DB.bankList();
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    const pool = (isWrong ? await DB.wrongQuestions() : (await DB.starQuestions()).filter(q => q.answer))
+      .filter(q => bankName.has(q.bankId));
+    if (!pool.length) {
+      $view().innerHTML = `<div class="empty" style="padding-top:40px">${isWrong ? '没有错题<br>继续保持！' : '还没有能练的收藏题<br><span class="muted small">收藏的题补上答案后可在这里重练</span>'}</div>`;
+      return;
+    }
+    const cnt = new Map();               // bankId -> 可练题数
+    for (const q of pool) cnt.set(q.bankId, (cnt.get(q.bankId) || 0) + 1);
+    const list = banks.filter(b => cnt.has(b.id));
+    const sel = new Set(list.map(b => b.id));
+    let filterType = 'all', exam = false, timeMode = 'auto', shuffle = true;
+    /* 章节筛选（v1.8.13）：selSecs 空 = 全部章节；分组默认折叠 */
+    const selSecs = new Set();
+    const secExp = new Set();
+    const secMeta = new Map();          // "bankId:secIdx" -> { bankId, secIdx, n }
+    for (const q of pool) {
+      const s = String(q.secIdx ?? '');
+      const k = q.bankId + ':' + s;
+      const m = secMeta.get(k) || { bankId: q.bankId, secIdx: s, n: 0 };
+      m.n++; secMeta.set(k, m);
+    }
+    const secTitle = new Map();
+    for (const b of banks) for (const s of (b.sections || [])) secTitle.set(b.id + ':' + String(s.secIdx), s.title);
+
+    $view().innerHTML = `
+      <div class="card">
+        <div class="card-title">范围（题库）</div>
+        <button class="btn ghost big" id="rv-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（全部展开，无需折叠）</div>
+      </div>
+      <div class="card">
+        <div class="card-title">范围（章节）</div>
+        <button class="btn ghost big" id="rv-sec-open" style="width:100%"></button>
+        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择（分组默认折叠）</div>
+      </div>
+      <div class="card">
+        <div class="card-title">题型</div>
+        <div class="seg" id="rv-type">
+          <button data-v="all" class="on">全部</button>
+          <button data-v="choice">选择/判断</button>
+          <button data-v="fill">填空</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">模式</div>
+        <div class="seg" id="rv-mode">
+          <button data-v="learn" class="on">📖 学习模式</button>
+          <button data-v="exam">📝 考试模式</button>
+        </div>
+        <div id="rv-exam-opts" style="display:none;margin-top:10px">
+          <div class="field"><span>考试时长</span>
+            <div class="seg" id="rv-time">
+              <button data-v="auto" class="on">按 1 分钟/题</button>
+              <button data-v="none">不限时</button>
+              <button data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="field" id="rv-min-wrap" style="display:none"><span>时长（分钟）</span>
+            <input type="number" id="rv-min" min="1" max="600" value="60" inputmode="numeric">
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">顺序</div>
+        <div class="seg" id="rv-order">
+          <button data-v="shuffle" class="on">随机</button>
+          <button data-v="order">顺序</button>
+        </div>
+        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
+      </div>
+      <button class="btn primary big" id="rv-start"></button>
+
+      <div id="rv-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择题库</b>
+            <button class="chip" id="rv-tools-all">全选</button>
+            <button class="chip" id="rv-tools-none">清空</button>
+            <button class="btn primary" id="rv-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-pick" class="bank-pick" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>
+
+      <div id="rv-sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
+        <div id="rv-sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
+          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
+            <b style="flex:1;font-size:15px">选择章节</b>
+            <button class="chip" id="rv-sec-clear">清空（=全部章节）</button>
+            <button class="btn primary" id="rv-sec-done" style="padding:8px 16px">完成</button>
+          </div>
+          <div id="rv-sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+        </div>
+      </div>`;
+
+    const pickEl = document.getElementById('rv-pick');
+    const startBtn = document.getElementById('rv-start');
+    const rvOpenBtn = document.getElementById('rv-open');
+    const rvSheet = document.getElementById('rv-sheet');
+
+    const matchType = q => filterType === 'all' ? true
+      : filterType === 'choice' ? (q.type === 'single' || q.type === 'multi' || q.type === 'judge')
+      : q.type === 'fill';
+    const matchSec = q => !selSecs.size || selSecs.has(q.bankId + ':' + String(q.secIdx ?? ''));
+
+    function renderPick() {
+      pickEl.innerHTML = list.map(b => `
+        <label class="pick-item"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
+          <span class="pick-name">${escapeHtml(bankName.get(b.id))}</span>
+          <span class="muted small pick-num">${cnt.get(b.id)}</span>
+        </label>`).join('');
+      pickEl.querySelectorAll('input').forEach(i => {
+        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
+      });
+      rvOpenBtn.textContent = sel.size === list.length
+        ? `📂 全部 ${list.length} 个题库（点此修改） ›`
+        : `📂 已选 ${sel.size}/${list.length} 个题库（点此修改） ›`;
+    }
+    function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q)).length; }
+    function curMinutes(n) {
+      if (!exam || timeMode === 'none') return 0;
+      if (timeMode === 'custom') return Math.max(1, parseInt(document.getElementById('rv-min').value, 10) || 60);
+      return Math.max(1, n);             // 按 1 分钟/题
+    }
+    function refresh() {
+      const n = countAvail();
+      startBtn.textContent = n ? `开始${isWrong ? '重做' : '重练'}（${n} 题）` : '该范围没有可练的题';
+      startBtn.style.opacity = n ? '' : '.5';
+    }
+    /* 题库选择：进入页面默认拉起底部弹层，全部展开、无折叠；主页留摘要按钮可再次打开 */
+    document.getElementById('rv-tools-all').onclick = () => { list.forEach(x => sel.add(x.id)); renderPick(); refresh(); };
+    document.getElementById('rv-tools-none').onclick = () => { sel.clear(); renderPick(); refresh(); };
+    rvOpenBtn.onclick = () => { rvSheet.style.display = ''; };
+    document.getElementById('rv-mask').onclick = () => { rvSheet.style.display = 'none'; };
+    document.getElementById('rv-done').onclick = () => { rvSheet.style.display = 'none'; };
+
+    /* ---- 章节选择弹层（v1.8.13）：按库分组、默认折叠，点库头展开；清空 = 全部章节 ---- */
+    const rvSecArea = document.getElementById('rv-sec-area');
+    const rvSecOpenBtn = document.getElementById('rv-sec-open');
+    const rvSecSheet = document.getElementById('rv-sec-sheet');
+    function renderRvSecs() {
+      const parts = [];
+      for (const b of list) {
+        if (!sel.has(b.id)) continue;
+        const secs = [...secMeta.values()].filter(m => m.bankId === b.id);
+        if (!secs.length) continue;
+        const picked = secs.filter(m => selSecs.has(b.id + ':' + m.secIdx)).length;
+        const folded = !secExp.has(b.id);
+        parts.push(`
+          <div class="sec-pick">
+            <div class="sec-pick-head">
+              <button class="sec-toggle" data-rvfold="${b.id}" title="${folded ? '展开本章节' : '折叠本章节'}">${folded ? '▸' : '▾'}</button>
+              <b>${escapeHtml(bankName.get(b.id))}</b>
+              <span class="muted small">${picked ? `已选 ${picked}/${secs.length}` : `${secs.length} 章`}</span>
+              <button class="chip" data-rvbank="${b.id}">全选/清空</button>
+            </div>
+            ${folded ? '' : `<div class="chips">
+              ${secs.map(m => {
+                const key = b.id + ':' + m.secIdx;
+                return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-rvsec="${key}" title="${escapeHtml(secTitle.get(key) || '')}">${escapeHtml(secTitle.get(key) || (m.secIdx === '' ? '未分节' : `第 ${m.secIdx} 章`))}（${m.n}）</button>`;
+              }).join('')}
+            </div>`}
+          </div>`);
+      }
+      rvSecArea.innerHTML = parts.join('') || '<div class="muted small" style="padding:12px 0">当前题库没有章节信息，章节筛选不可用</div>';
+      rvSecArea.querySelectorAll('button[data-rvfold]').forEach(btn => {
+        btn.onclick = () => { const bid = btn.dataset.rvfold; secExp.has(bid) ? secExp.delete(bid) : secExp.add(bid); renderRvSecs(); };
+      });
+      rvSecArea.querySelectorAll('button[data-rvbank]').forEach(btn => {
+        btn.onclick = () => {
+          const bid = btn.dataset.rvbank;
+          const keys = [...secMeta.values()].filter(m => m.bankId === bid).map(m => bid + ':' + m.secIdx);
+          const all = keys.every(k => selSecs.has(k));
+          keys.forEach(k => all ? selSecs.delete(k) : selSecs.add(k));
+          renderRvSecs(); refresh();
+        };
+      });
+      rvSecArea.querySelectorAll('button[data-rvsec]').forEach(btn => {
+        btn.onclick = () => { const k = btn.dataset.rvsec; selSecs.has(k) ? selSecs.delete(k) : selSecs.add(k); renderRvSecs(); refresh(); };
+      });
+      rvSecOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+    }
+    rvSecOpenBtn.onclick = () => { renderRvSecs(); rvSecSheet.style.display = ''; };
+    document.getElementById('rv-sec-mask').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-done').onclick = () => { rvSecSheet.style.display = 'none'; };
+    document.getElementById('rv-sec-clear').onclick = () => { selSecs.clear(); renderRvSecs(); refresh(); };
+    rvSecOpenBtn.textContent = '📂 全部章节（点此选择） ›';
+    [[document.getElementById('rv-type'), v => filterType = v],
+     [document.getElementById('rv-time'), v => { timeMode = v; document.getElementById('rv-min-wrap').style.display = v === 'custom' ? '' : 'none'; }]]
+      .forEach(([seg, set]) => {
+        seg.onclick = e => {
+          const b = e.target.closest('button[data-v]'); if (!b) return;
+          seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+          b.classList.add('on'); set(b.dataset.v); refresh();
+        };
+      });
+    document.getElementById('rv-mode').onclick = e => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('rv-mode').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      exam = b.dataset.v === 'exam';
+      document.getElementById('rv-exam-opts').style.display = exam ? '' : 'none';
+      refresh();
+    };
+    document.getElementById('rv-min').addEventListener('input', refresh);
+    document.getElementById('rv-order').onclick = e => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); shuffle = b.dataset.v === 'shuffle';
+      savePrefShuffle(shuffle);   // 记住顺序偏好（题库直开也生效）
+    };
+    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
+      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
+      shuffle = v;
+    });
+    startBtn.onclick = () => {
+      const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
+      if (!qs.length) return toast('该范围没有可练的题');
+      guardUnfinishedSession().then(go => {
+        if (!go) return;
+        session = new QuizSession(qs, { shuffle, exam, minutes: curMinutes(qs.length), mode: isWrong ? 'wrong' : 'star' });
+        navigate('#/quiz');
+      });
+    };
+    renderPick(); refresh();
+    rvSheet.style.display = '';   // 默认拉起：进入页面直接弹选择题库
+  }
   async function pageQuiz() {
     if (!session) return navigate('#/quiz-setup');
     // 考试中：超时自动交卷；已交卷：直接看成绩单
@@ -3020,6 +3443,7 @@ const App = (() => {
     if (!session) return navigate('#/quiz-setup');
     const list = session.wrongList().map(x => x.q);
     if (!list.length) return toast('没有错题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession(list, { shuffle: true });
     navigate('#/quiz');
   }
@@ -3037,49 +3461,83 @@ const App = (() => {
     });
   }
 
+  /* ---- 错题/收藏列表：按题库分组，默认折叠，点库头展开/收起（v1.8.12） ---- */
+  function reviewGrouped(qs, bankName, starred) {
+    const order = new Map([...bankName.keys()].map((id, i) => [id, i]));
+    const arr = qs.slice().sort((a, b) => (order.has(a.bankId) ? order.get(a.bankId) : 1e9) - (order.has(b.bankId) ? order.get(b.bankId) : 1e9));
+    const groups = [];
+    for (const q of arr) {
+      let g = groups[groups.length - 1];
+      if (!g || g.id !== q.bankId) { g = { id: q.bankId, items: [] }; groups.push(g); }
+      g.items.push(q);
+    }
+    return groups.map(g => `
+      <div class="rev-group">
+        <button class="rev-group-head" data-rev-fold="${g.id}" style="display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;padding:12px 4px;cursor:pointer;text-align:left">
+          <span class="rev-arrow" style="color:var(--muted,#888);font-size:12px;flex:0 0 auto">▸</span>
+          <span class="muted small" style="font-weight:600">📁 ${escapeHtml(bankName.get(g.id) || '未知题库')} · ${g.items.length} 题</span>
+        </button>
+        <div id="rev-body-${g.id}" style="display:none">
+          ${g.items.map(q => `
+            <div class="card wrong-card">
+              <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+                <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
+                ${starred ? `<button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>` : ''}
+              </div>
+              <div class="stem sm">${renderStem(q)}</div>
+              ${q.answer
+                ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
+                : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
+              ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  /* 分组折叠绑定：点库头切换展开/收起 */
+  function bindReviewFolds() {
+    $view().querySelectorAll('[data-rev-fold]').forEach(btn => {
+      btn.onclick = () => {
+        const body = document.getElementById('rev-body-' + btn.dataset.revFold);
+        if (!body) return;
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : '';
+        const arrow = btn.querySelector('.rev-arrow');
+        if (arrow) arrow.textContent = open ? '▸' : '▾';
+      };
+    });
+  }
+
   async function pageWrong() {
     topbar('错题本');
     const qs = await DB.wrongQuestions();
+    const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
-      <button class="btn primary big" onclick="App.wrongRedo()">重做全部错题（${qs.length}）</button>
+      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">重做错题（${qs.length} · 按题库选）</button>
       <div class="wrong-list">
-        ${qs.map(q => `
-          <div class="card wrong-card">
-            <div class="wrong-head"><span class="q-type ${q.type}">${typeLabel[q.type]}</span></div>
-            <div class="stem sm">${renderStem(q)}</div>
-            <div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>
-            ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-          </div>`).join('')}
+        ${reviewGrouped(qs, bankName, false)}
       </div>`
       : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
     bindNavSeg('#/wrong');
+    bindReviewFolds();
   }
 
   /* ---- 收藏夹：跨题库集中看收藏题、取消收藏、一键收藏练习 ---- */
   async function pageStar() {
     topbar('收藏夹');
     const qs = await DB.starQuestions();
+    const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     const ready = qs.filter(q => q.answer).length;
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
       ${ready
-        ? `<button class="btn primary big" onclick="App.starRedo()">收藏练习（${ready}）</button>`
+        ? `<button class="btn primary big" onclick="App.navigate('#/star-setup')">收藏练习（${ready} · 按题库选）</button>`
         : `<div class="muted small" style="margin-bottom:12px">收藏的题都缺答案，先在题库里补答案才能练习</div>`}
       <div class="wrong-list">
-        ${qs.map(q => `
-          <div class="card wrong-card">
-            <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
-              <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-              <button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>
-            </div>
-            <div class="stem sm">${renderStem(q)}</div>
-            ${q.answer
-              ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
-              : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
-            ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-          </div>`).join('')}
+        ${reviewGrouped(qs, bankName, true)}
       </div>`
       : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
     bindNavSeg('#/star');
+    bindReviewFolds();
     $view().querySelectorAll('[data-unstar]').forEach(btn => {
       btn.onclick = async () => {
         await DB.starToggle(btn.dataset.unstar);
@@ -3184,6 +3642,7 @@ const App = (() => {
 
   async function startSearchPractice() {
     if (!searchPool.length) return toast('没有可练的题');
+    if (!await guardUnfinishedSession()) return;
     session = new QuizSession([...searchPool], { shuffle: true, mode: 'search' });
     navigate('#/quiz');
   }
@@ -3346,6 +3805,19 @@ const App = (() => {
             <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
             <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
         </div>` : '<div class="muted">暂无答题记录</div>'}
+      </div>
+      <div class="card">
+        <div class="card-title">近 ${days.length} 日正确率</div>
+        ${days.length ? `<div class="chart">
+          ${days.map(([d, v]) => {
+            const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
+            return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
+              <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
+              <span class="col-label"><span class="lb-full">${a}%</span><span class="lb-mini">${a}%</span></span></div>`;
+          }).join('')}
+        </div>
+        <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`
+        : '<div class="muted">暂无答题记录</div>'}
       </div>`;
 
     if (!rows.length) return;
@@ -3388,7 +3860,8 @@ const App = (() => {
   /** 统计页点章节 → 直接开练这一章（学习模式，只练有答案的题） */
   async function practiceSection(bankId, secIdx) {
     const key = bankId + ':' + (secIdx || '');
-    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]) });
+    if (!await guardUnfinishedSession()) return;
+    session = await QuizBuilder.fromBanks([bankId], { filterType: 'answered', secKeys: new Set([key]), shuffle: await prefShuffle() });
     if (!session.total) return toast('该章节没有带答案的题可练');
     navigate('#/quiz');
   }
@@ -3419,14 +3892,36 @@ const App = (() => {
           <span class="muted small">删掉的题库先放这里</span>
           <span class="me-chev">›</span>
         </button>
-        <button class="me-entry" onclick="window.open('https://github.com/Chad3486/shuati-bao/releases','_blank')">
+        <button class="me-entry" id="check-update">
           <span class="me-ico" style="background:#3d8f5f">⟳</span>
           <span class="me-label">检查更新</span>
-          <span class="muted small">GitHub Releases</span>
+          <span class="muted small">对比 GitHub 最新版</span>
           <span class="me-chev">›</span>
         </button>
       </div>
       <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
+
+    /* 检查更新：拉 GitHub 最新 Release 对比版本号，有新版直接打开 APK 下载直链 */
+    document.getElementById('check-update').onclick = async () => {
+      toast('正在检查更新…');
+      try {
+        const r = await fetch('https://api.github.com/repos/Chad3486/shuati-bao/releases/latest');
+        const d = await r.json();
+        const latest = String(d.tag_name || '').replace(/^v/, '');
+        if (!latest) throw new Error('no tag');
+        if (latest === VERSION) return toast(`已是最新版本 v${VERSION}`);
+        if (latest > VERSION) {
+          const apk = (d.assets || []).find(a => /apk$/i.test(a.name));
+          toast(`发现新版本 v${latest}，正在打开下载…`);
+          window.open(apk ? apk.browser_download_url : d.html_url, '_blank');
+        } else {
+          toast(`当前 v${VERSION} 比线上 v${latest} 还新`);
+        }
+      } catch (e) {
+        toast('检查失败（无网络？），去浏览器打开 GitHub Releases');
+        window.open('https://github.com/Chad3486/shuati-bao/releases', '_blank');
+      }
+    };
   }
 
   async function pageSettings() {
@@ -3451,8 +3946,17 @@ const App = (() => {
           <input id="set-key" type="password" value="${escapeHtml(cfg.apiKey)}" placeholder="sk-...">
         </label>
         <div class="muted small">⚠ Key 明文保存在本机浏览器（IndexedDB），不上传服务器；请勿在共用设备上保存，泄露需到服务商处作废重换</div>
-        <label class="field"><span>模型名称</span>
-          <input id="set-model" value="${escapeHtml(cfg.model)}" placeholder="deepseek-chat">
+        <label class="field"><span>模型（填好上方接口地址和 Key 后，点「获取列表」自动拉取，不用手填）</span>
+          <div style="display:flex;gap:8px">
+            <select id="set-model-sel" style="flex:1">
+              <option value="${escapeHtml(cfg.model)}" selected>${escapeHtml(cfg.model || '（未设置）')}</option>
+              <option value="__custom">自定义（手填模型名）</option>
+            </select>
+            <button class="btn ghost" id="fetch-models" type="button" style="flex:0 0 auto;white-space:nowrap">↻ 获取列表</button>
+          </div>
+        </label>
+        <label class="field" id="set-model-custom-wrap" style="display:none"><span>自定义模型名</span>
+          <input id="set-model" placeholder="任意 OpenAI 兼容模型名">
         </label>
         <label class="field"><span>视觉模型（图片识别用，留空 = 跟随主模型）</span>
           <input id="set-vmodel" value="${escapeHtml(cfg.visionModel || '')}" placeholder="如 glm-4v / qwen-vl-plus / gpt-4o-mini，需支持图片输入">
@@ -3464,16 +3968,10 @@ const App = (() => {
         <label class="field"><span>单次输出上限（tok，答长题/长解析可调大，受模型上限约束）</span>
           <input id="set-mtok" type="number" min="256" step="256" value="${cfg.maxTokens != null ? cfg.maxTokens : 8192}">
         </label>
-        <label class="field"><span>输入价（¥/百万 tok，用于费用预估与实耗）</span>
-          <input id="set-pin" type="number" min="0" step="0.1" value="${cfg.priceIn != null ? cfg.priceIn : 2}">
-        </label>
-        <label class="field"><span>输出价（¥/百万 tok）</span>
-          <input id="set-pout" type="number" min="0" step="0.1" value="${cfg.priceOut != null ? cfg.priceOut : 8}">
-        </label>
         <label class="field"><span>单次费用上限（¥，0 = 不限，实耗达到即自动暂停）</span>
           <input id="set-cap" type="number" min="0" step="0.1" value="${cfg.capYuan != null ? cfg.capYuan : 0}">
         </label>
-        <div class="muted small">常用：DeepSeek（api.deepseek.com/v1，model: deepseek-chat，参考价 输入 ¥2 / 输出 ¥8 每百万 tok）· 智谱（open.bigmodel.cn/api/paas/v4，model: glm-4-flash）· 其他 OpenAI 兼容接口均可；换模型或改价时同步调上面的单价</div>
+        <div class="muted small">费用预估沿用已保存的单价（参考价）；上方列表来自接口 /models，选不到的模型选「自定义」手填</div>
         <div class="btn-row">
           <button class="btn ghost" id="test-btn">测试连接</button>
           <button class="btn primary" id="save-btn">保存</button>
@@ -3552,15 +4050,50 @@ const App = (() => {
     };
 
 
+    /* 模型下拉：点「获取列表」按接口地址 + Key 拉取 /models，真实模型自动填充；拉不到可手填 */
+    const curPrice = { priceIn: cfg.priceIn != null ? cfg.priceIn : 2, priceOut: cfg.priceOut != null ? cfg.priceOut : 8 };
+    const selModel = document.getElementById('set-model-sel');
+    selModel.onchange = () => {
+      document.getElementById('set-model-custom-wrap').style.display = selModel.value === '__custom' ? '' : 'none';
+    };
+    document.getElementById('fetch-models').onclick = async () => {
+      const base = document.getElementById('set-url').value.trim().replace(/\/+$/, '');
+      const key = document.getElementById('set-key').value.trim();
+      if (!base) return toast('先填接口地址再拉取');
+      const btn = document.getElementById('fetch-models');
+      btn.textContent = '拉取中…'; btn.disabled = true;
+      try {
+        const headers = key ? { Authorization: 'Bearer ' + key } : {};
+        let resp = await fetch(base + '/models', { headers });
+        if (resp.status === 404) resp = await fetch(base + '/v1/models', { headers }); // 地址没带 /v1 时兜底
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const ids = (data.data || data.models || []).map(m => (typeof m === 'string' ? m : (m.id || m.name))).filter(Boolean).sort();
+        if (!ids.length) throw new Error('接口返回空列表');
+        const cur = selModel.value === '__custom' ? (document.getElementById('set-model').value.trim() || cfg.model) : selModel.value;
+        selModel.innerHTML = ids.map(id => `<option value="${escapeHtml(id)}" ${id === cur ? 'selected' : ''}>${escapeHtml(id)}</option>`).join('')
+          + `<option value="__custom" ${ids.includes(cur) ? '' : 'selected'}>自定义（手填模型名）</option>`;
+        document.getElementById('set-model-custom-wrap').style.display = ids.includes(cur) ? 'none' : '';
+        if (!ids.includes(cur)) document.getElementById('set-model').value = cur || '';
+        toast(`✓ 拉到 ${ids.length} 个模型，直接选一个保存即可`);
+      } catch (e) {
+        toast('拉取失败：' + e.message + '（检查地址/Key，或选「自定义」手填）', 4000);
+      } finally {
+        btn.textContent = '↻ 获取列表'; btn.disabled = false;
+      }
+    };
+
     const readCfgForm = () => ({
       baseUrl: document.getElementById('set-url').value.trim(),
       apiKey: document.getElementById('set-key').value.trim(),
-      model: document.getElementById('set-model').value.trim() || 'deepseek-chat',
+      model: selModel.value === '__custom'
+        ? (document.getElementById('set-model').value.trim() || 'deepseek-chat')
+        : selModel.value,
       visionModel: (document.getElementById('set-vmodel')?.value || '').trim(),
       concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
       maxTokens: Math.max(256, parseInt(document.getElementById('set-mtok').value, 10) || 8192),
-      priceIn: Math.max(0, parseFloat(document.getElementById('set-pin').value) || 0),
-      priceOut: Math.max(0, parseFloat(document.getElementById('set-pout').value) || 0),
+      priceIn: curPrice.priceIn,
+      priceOut: curPrice.priceOut,
       capYuan: Math.max(0, parseFloat(document.getElementById('set-cap').value) || 0)
     });
     document.getElementById('save-btn').onclick = async () => {
@@ -3627,3 +4160,4 @@ const App = (() => {
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
+

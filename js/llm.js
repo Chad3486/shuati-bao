@@ -682,12 +682,12 @@ const LLM = (() => {
   }
 
   /* ---- 整体解析 · 纯本地：正则切题 + 逐题解析 + 答案表匹配（0 次 API 调用、无需 API Key） ---- */
-  async function parseDocument(fullText, onProgress) {
+  async function parseDocument(fullText, onProgress, customSrc) {
     const text = Extractor.cleanText(fullText);
     const answerTable = findAnswerTable(text);
 
-    // 1) 确定性切题
-    const split = Extractor.splitQuestions(text);
+    // 1) 确定性切题（可选自定义正则）
+    const split = Extractor.splitQuestions(text, customSrc);
 
     // 2) 本地正则解析（毫秒级、零费用）——透传节题型/节键
     const questions = [];
@@ -1286,3 +1286,4 @@ const LLM = (() => {
 
   return { getConfig, saveConfig, costOf, parseDocument, parseAnswerMap, matchAnswers, parseAnswerDocument, matchAnswersStructured, aiMatchAnswers, answerLineRatio, findAnswerTable, findAnswerTableSpan, looseLetters, fileToCanon, fileToCanonLite, visionCanon, solveMissing, getLastUsage, testConnection, chat };
 })();
+

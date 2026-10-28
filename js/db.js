@@ -368,3 +368,4 @@ const DB = (() => {
   api.fallbackPersistent = () => state.fallback && memApi.persist();
   return api;
 })();
+
