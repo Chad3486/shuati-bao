@@ -47,6 +47,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      # 防「仓库里的产物落后源码」：v1.8.19 发版后 apk-src/app/src/main/assets/app.html
+      # 就曾落后一个版本（缺 answerLettersOf 那套答案解析修复）。CI 因为下面会先重建再打包，
+      # 所以发出去的 APK 没受影响；但本地直接 gradle assembleDebug 会打出缺修复的旧包。
+      # 这里用「不带 tag 版本号」重建，等价于开发者本地跑 node build-single.mjs 的结果
+      # （VERSION_NAME 置空 -> build-single.mjs 回退到 build.gradle 的 fallbackName），
+      # 与仓库里那份有任何字节差异就判失败。构建确定性已验证：同一份源码两次构建哈希相同。
+      - name: Check committed bundle is up to date
+        env:
+          VERSION_NAME: ''
+          VERSION_CODE: ''
+        run: |
+          node build-single.mjs
+          if ! git diff --quiet -- apk-src/app/src/main/assets/app.html; then
+            echo "::error::apk-src/app/src/main/assets/app.html 与源码不一致，请在本地跑 node build-single.mjs 后把产物一起提交"
+            git diff --stat -- apk-src/app/src/main/assets/app.html
+            git diff -- apk-src/app/src/main/assets/app.html | head -40
+            exit 1
+          fi
+          echo "仓库产物与源码一致 ✅"
+
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
