@@ -48,9 +48,18 @@ jobs:
         with:
           node-version: '20'
 
+      # 解析器回归测试：canon.js / extract.js 合计 70KB 正则，历史上每次发版都在修导入 bug，
+      # 一个正则回退肉眼看不出来，用户要导完 1000 题发现全判错才知道。零依赖、0.2 秒跑完。
+      - name: Parser regression tests
+        run: node --test scripts/parse-regression.test.js
+
+      # 冒烟测试：AI 标注装配链路 + 产物可被 Canon.parse 导入（桩掉 fetch/DB）
+      - name: Smoke test
+        run: node scripts/smoke-lite.test.js
+
       # 防「仓库里的产物落后源码」：v1.8.19 发版后 apk-src/app/src/main/assets/app.html
       # 就曾落后一个版本（缺 answerLettersOf 那套答案解析修复）。CI 因为下面会先重建再打包，
-      # 所以发出去的 APK 没受影响；但本地直接 gradle assembleDebug 会打出缺修复的旧包。
+      # 所以发出去的 APK 没受影响；但本地直接 gradle assembleRelease 会打出缺修复的旧包。
       # 这里用「不带 tag 版本号」重建，等价于开发者本地跑 node build-single.mjs 的结果
       # （VERSION_NAME 置空 -> build-single.mjs 回退到 build.gradle 的 fallbackName），
       # 与仓库里那份有任何字节差异就判失败。构建确定性已验证：同一份源码两次构建哈希相同。
@@ -108,11 +117,13 @@ jobs:
             exit 1
           fi
 
-      - name: Assemble Debug APK
-        run: gradle -p apk-src :app:assembleDebug --no-daemon
+      # 发 release 变体：签名仍沿用仓库里固定的 debug keystore（老用户能覆盖升级），
+      # 但 debuggable=false，不再发可调试包（debug 包能被 adb run-as 读走题库数据）。
+      - name: Assemble Release APK
+        run: gradle -p apk-src :app:assembleRelease --no-daemon
 
       - name: Rename APK
-        run: cp apk-src/app/build/outputs/apk/debug/app-debug.apk "shuati-bao-v${VERSION_NAME}.apk"
+        run: cp apk-src/app/build/outputs/apk/release/app-release.apk "shuati-bao-v${VERSION_NAME}.apk"
 
       # 卡住「versionName 与内嵌 app.html 版本不一致」这种坏包（见 scripts/verify-apk.py 注释）
       - name: Verify APK version consistency

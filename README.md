@@ -44,7 +44,21 @@ AI 功能均为可选（配 Key 才用）：缺答案的题让 AI 解、答案�
 
 ```bash
 node build-single.mjs                 # 重建单文件版，并把产物拷进 apk-src（脚本自己拷，无需手 cp）
-gradle -p apk-src :app:assembleDebug
+gradle -p apk-src :app:assembleRelease
+# 产物：apk-src/app/build/outputs/apk/release/app-release.apk
+```
+
+打包用 release 变体，但签名沿用仓库里固定的 `apk-src/app/debug.keystore`——这样做只是为了老用户
+能直接覆盖升级（换 keystore 会签名冲突，必须卸载重装）；`debuggable` 已显式关掉，不会发可调试包。
+
+改完 `js/`/`css/` 记得重跑 `node build-single.mjs` 并提交 `apk-src/app/src/main/assets/app.html`，
+否则 CI 的 `Check committed bundle is up to date` 会拦下来（历史上就是这份产物落后一个版本）。
+
+测试（零依赖，Node 18+ 直接跑）：
+
+```bash
+node --test scripts/parse-regression.test.js   # 解析器回归：答案污染 / 卷末答案表 / 判断题等
+node scripts/smoke-lite.test.js                # 冒烟：AI 标注装配链路
 ```
 
 发版只靠 tag，不用手改 versionCode：

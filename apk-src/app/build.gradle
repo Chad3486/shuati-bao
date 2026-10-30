@@ -36,6 +36,13 @@ android {
     }
     buildTypes {
         release {
+            // 沿用仓库里这把固定的 debug keystore 签名（见上面 signingConfigs 注释）：
+            // 用户从历史的 debug 包升级过来签名不变，可以直接覆盖安装，不用卸载重装。
+            // 真要换 release keystore，会让所有老用户签名冲突，必须配一次「请卸载重装」的公告。
+            signingConfig signingConfigs.debug
+            // 显式关掉可调试：debug 变体 debuggable=true，同机开 USB 调试后
+            // 能被 adb run-as 直接读走 WebView 里的 IndexedDB（题库、练习记录）。
+            debuggable false
             minifyEnabled false
         }
     }
