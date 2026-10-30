@@ -648,3 +648,90 @@ body {
 .me-label { flex: 0 0 auto; font-weight: 650; }
 .me-entry .muted { flex: 1 1 auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .me-chev { flex: 0 0 auto; color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; }
+
+/* ========== ⑤ 题库体检 / 能力估分 / 每日一练 ========== */
+/* 新增语义色（告警）：日间 / 夜间两套主题都要有，避免深色模式下刺眼 */
+:root {
+  --warn: #b7791f;
+  --warn-bg: #fdf3e3;
+}
+html.dark {
+  --warn: #e0a33a;
+  --warn-bg: #3a2e1a;
+}
+
+/* ---- 每日一练卡片（首页） ---- */
+.daily-card {
+  position: relative; overflow: hidden;
+  background: var(--grad-primary); color: var(--on-primary);
+  border-radius: var(--radius); padding: 16px 18px;
+  box-shadow: var(--shadow-card);
+}
+.daily-top { display: flex; align-items: center; gap: 8px; font-size: 13px; opacity: .9; }
+.daily-streak { margin-left: auto; font-weight: 700; }
+.daily-title { font-size: 20px; font-weight: 800; margin: 6px 0 2px; letter-spacing: .3px; }
+.daily-sub { font-size: 13px; opacity: .88; }
+.daily-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.daily-bar { flex: 1; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .28); overflow: hidden; }
+.daily-bar i { display: block; height: 100%; border-radius: 99px; background: #fff; transition: width .3s; }
+.daily-btn {
+  border: 0; border-radius: 999px; padding: 9px 16px; font-weight: 700; font-size: 14px;
+  background: #fff; color: var(--primary-dark); cursor: pointer;
+}
+.daily-btn:active { transform: scale(.97); }
+
+/* ---- 体检 ---- */
+.audit-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.audit-stat { background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 6px; text-align: center; }
+.audit-stat b { display: block; font-size: 22px; line-height: 1.2; }
+.audit-stat span { font-size: 12px; color: var(--muted); }
+.audit-stat.error b { color: var(--bad); }
+.audit-stat.warn b { color: var(--warn); }
+.audit-stat.info b { color: var(--muted); }
+
+.audit-group { margin-top: 14px; }
+.audit-group-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+.audit-group-title .muted { font-weight: 400; }
+.audit-item {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.audit-item:last-child { border-bottom: 0; }
+.audit-item:active { background: var(--surface-2); }
+.audit-badge {
+  flex: 0 0 auto; font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 4px 7px; border-radius: 999px; margin-top: 2px;
+}
+.audit-badge.error { background: var(--bad-bg); color: var(--bad); }
+.audit-badge.warn { background: var(--warn-bg); color: var(--warn); }
+.audit-badge.info { background: var(--surface-2); color: var(--muted); }
+.audit-body { flex: 1; min-width: 0; }
+.audit-msg { font-size: 14px; }
+.audit-hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.audit-no { font-size: 12px; color: var(--muted); flex: 0 0 auto; margin-top: 2px; }
+
+/* ---- 能力估分 ---- */
+.ability-hero { text-align: center; padding: 6px 0 2px; }
+.ability-score { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -1px; }
+.ability-score small { font-size: 18px; font-weight: 600; color: var(--muted); }
+.ability-range { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.ability-pass { margin-top: 10px; font-size: 14px; }
+.ability-line { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.ability-line i { display: block; height: 100%; border-radius: 99px; background: var(--grad-primary); }
+
+/* ---- 通用底部弹层（题目编辑） ---- */
+.sheet-mask {
+  position: fixed; inset: 0; z-index: 90; background: rgba(10, 16, 30, .5);
+  display: flex; align-items: flex-end; animation: sheet-fade .16s ease;
+}
+@keyframes sheet-fade { from { opacity: 0 } to { opacity: 1 } }
+.sheet-panel {
+  width: 100%; max-height: 88vh; overflow: auto; background: var(--card);
+  border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -10px 30px rgba(10, 16, 30, .18);
+  animation: sheet-up .2s ease;
+}
+@keyframes sheet-up { from { transform: translateY(24px) } to { transform: translateY(0) } }
+.sheet-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.sheet-head b { flex: 1; font-size: 15px; }
+.sheet-close { border: 0; background: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 6px; }

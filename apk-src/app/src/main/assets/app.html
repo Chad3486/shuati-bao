@@ -657,6 +657,93 @@ body {
 .me-entry .muted { flex: 1 1 auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .me-chev { flex: 0 0 auto; color: var(--muted); font-size: 22px; line-height: 1; font-weight: 300; }
 
+/* ========== ⑤ 题库体检 / 能力估分 / 每日一练 ========== */
+/* 新增语义色（告警）：日间 / 夜间两套主题都要有，避免深色模式下刺眼 */
+:root {
+  --warn: #b7791f;
+  --warn-bg: #fdf3e3;
+}
+html.dark {
+  --warn: #e0a33a;
+  --warn-bg: #3a2e1a;
+}
+
+/* ---- 每日一练卡片（首页） ---- */
+.daily-card {
+  position: relative; overflow: hidden;
+  background: var(--grad-primary); color: var(--on-primary);
+  border-radius: var(--radius); padding: 16px 18px;
+  box-shadow: var(--shadow-card);
+}
+.daily-top { display: flex; align-items: center; gap: 8px; font-size: 13px; opacity: .9; }
+.daily-streak { margin-left: auto; font-weight: 700; }
+.daily-title { font-size: 20px; font-weight: 800; margin: 6px 0 2px; letter-spacing: .3px; }
+.daily-sub { font-size: 13px; opacity: .88; }
+.daily-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.daily-bar { flex: 1; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .28); overflow: hidden; }
+.daily-bar i { display: block; height: 100%; border-radius: 99px; background: #fff; transition: width .3s; }
+.daily-btn {
+  border: 0; border-radius: 999px; padding: 9px 16px; font-weight: 700; font-size: 14px;
+  background: #fff; color: var(--primary-dark); cursor: pointer;
+}
+.daily-btn:active { transform: scale(.97); }
+
+/* ---- 体检 ---- */
+.audit-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.audit-stat { background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 6px; text-align: center; }
+.audit-stat b { display: block; font-size: 22px; line-height: 1.2; }
+.audit-stat span { font-size: 12px; color: var(--muted); }
+.audit-stat.error b { color: var(--bad); }
+.audit-stat.warn b { color: var(--warn); }
+.audit-stat.info b { color: var(--muted); }
+
+.audit-group { margin-top: 14px; }
+.audit-group-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+.audit-group-title .muted { font-weight: 400; }
+.audit-item {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.audit-item:last-child { border-bottom: 0; }
+.audit-item:active { background: var(--surface-2); }
+.audit-badge {
+  flex: 0 0 auto; font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 4px 7px; border-radius: 999px; margin-top: 2px;
+}
+.audit-badge.error { background: var(--bad-bg); color: var(--bad); }
+.audit-badge.warn { background: var(--warn-bg); color: var(--warn); }
+.audit-badge.info { background: var(--surface-2); color: var(--muted); }
+.audit-body { flex: 1; min-width: 0; }
+.audit-msg { font-size: 14px; }
+.audit-hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.audit-no { font-size: 12px; color: var(--muted); flex: 0 0 auto; margin-top: 2px; }
+
+/* ---- 能力估分 ---- */
+.ability-hero { text-align: center; padding: 6px 0 2px; }
+.ability-score { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -1px; }
+.ability-score small { font-size: 18px; font-weight: 600; color: var(--muted); }
+.ability-range { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.ability-pass { margin-top: 10px; font-size: 14px; }
+.ability-line { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.ability-line i { display: block; height: 100%; border-radius: 99px; background: var(--grad-primary); }
+
+/* ---- 通用底部弹层（题目编辑） ---- */
+.sheet-mask {
+  position: fixed; inset: 0; z-index: 90; background: rgba(10, 16, 30, .5);
+  display: flex; align-items: flex-end; animation: sheet-fade .16s ease;
+}
+@keyframes sheet-fade { from { opacity: 0 } to { opacity: 1 } }
+.sheet-panel {
+  width: 100%; max-height: 88vh; overflow: auto; background: var(--card);
+  border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -10px 30px rgba(10, 16, 30, .18);
+  animation: sheet-up .2s ease;
+}
+@keyframes sheet-up { from { transform: translateY(24px) } to { transform: translateY(0) } }
+.sheet-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.sheet-head b { flex: 1; font-size: 15px; }
+.sheet-close { border: 0; background: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+
 </style>
 </head>
 <body>
@@ -3870,6 +3957,1168 @@ C. IGBT
 
 </script>
   <script>
+/* ========== 题库体检 · 纯本地规则扫描（零依赖，浏览器 / Node 共用） ==========
+   解决的问题：题库来自 Word/PDF/各种导入渠道，脏数据肉眼看不出来（答案字母越界、
+   选项字母跳号、答案解析对不上、题干没写完、同一道题重复导入两遍……），等刷到才发现就晚了。
+   这里用一组纯函数规则做一次全量体检，产出「可直接改」的清单，不联网、不写库、不改题。
+
+   API：
+   - bank(questions, opts)  题库 → { summary: { error, warn, info, total, questions }, issues: [...] }
+   - report(issues, meta)   issues → Markdown 体检报告（meta = { bankName, date, total }）
+   - LEVELS                 级别顺序：['error', 'warn', 'info']
+
+   issue = { code, level, qid, no, message, hint }
+   · message / hint 一律中文短句，说清「哪里错、怎么改」；qid 取题目 id，no 取题号
+   · issues 排序：error→warn→info → 同级别按题号升序 → 同一题内按规则执行先后
+
+   规则（code / level）：
+   - ans-out-of-range            error  答案字母不在选项键集合里（判断题按 A/B 校验）
+   - dup-option-text             error  同一题两个选项文本完全相同（去空白后比较）
+   - missing-option-key          warn   选项字母跳号（如只有 A、C 没有 B）
+   - single-multi-mismatch       warn   单选却有 ≥2 个答案字母；多选却只有 1 个
+   - answer-explanation-conflict warn   解析里「答案：X / 选 X / 正确的是 X / 答案是 X」与 answer 不一致
+   - judge-shape                 warn   判断题 answer 不是 A/B，或 options 不是「正确/错误」
+   - stem-truncated              info   题干以（ ( ， , 、 ：结尾，或长度 < 6
+   - empty-explanation           info   有答案但没有解析（opts.checkExplanation === false 时不报）
+   - duplicate-question          warn   题干归一化后 3-gram Jaccard ≥ 0.85（按更小的题号报，一对只报一次）
+
+   几个「宁可不报也不误报」的取舍（都有注释）：
+   · 答案解析冲突只在「解析字母不是答案字母子集」时报：多选题解析写「答案：A（C 也正确）」
+     这种部分表述不算冲突；「不选A」「错误的是A」不会被当成答案声明。
+   · 判重先按「归一化题干前 2 字 + 长度每 8 字一桶」分桶，桶内两两比较；单桶上限 200、
+     总比较上限 200000，超限直接跳过判重（绝不 O(n²) 全量比）。
+   · 通用题干（下列说法 / 以下说法 / 下列各项 / 关于…的说法 / 以下…中 等）必须先过题干
+     相似度，再要求选项也高度相似才报——否则 2000 题能刷出几十条「下列说法」互相重复的噪音。
+   · 只差数字的题干（220V / 380V 这类同模板参数题）同样要求选项相似才报，避免把计算题
+     的不同参数当成重复题。
+   · 题号前缀只认「1.」「第 1 题」「（1）」这类带标点的写法，避免把「220V 电源」的 220 吃掉后
+     误判成和「380V 电源」重复。
+   · 历史脏数据（答案小写 / 全角字母 / 带标点分隔）先归一化再校验，所以不会误报。
+====================================================================== */
+const Audit = (() => {
+  'use strict';
+
+  const LEVELS = Object.freeze(['error', 'warn', 'info']);
+  const LEVEL_RANK = { error: 0, warn: 1, info: 2 };
+  const LEVEL_LABEL = { error: '错误', warn: '警告', info: '提示' };
+
+  const CODE_ORDER = [
+    'ans-out-of-range',
+    'dup-option-text',
+    'missing-option-key',
+    'single-multi-mismatch',
+    'answer-explanation-conflict',
+    'judge-shape',
+    'stem-truncated',
+    'empty-explanation',
+    'duplicate-question'
+  ];
+  const CODE_LABEL = {
+    'ans-out-of-range': '答案超出选项',
+    'dup-option-text': '选项内容重复',
+    'missing-option-key': '选项字母跳号',
+    'single-multi-mismatch': '题型与答案不符',
+    'answer-explanation-conflict': '答案与解析冲突',
+    'judge-shape': '判断题格式异常',
+    'stem-truncated': '题干疑似截断',
+    'empty-explanation': '缺少解析',
+    'duplicate-question': '题目重复'
+  };
+
+  const MAX_TABLE_ROWS = 50;      // 报告中每个 code 最多展示的行数
+  const DUP_THRESHOLD = 0.85;     // 3-gram Jaccard 判重阈值
+  const DUP_MIN_LEN = 8;          // 归一化题干至少 8 字符才参与判重
+  const DUP_BUCKET_CAP = 200;     // 单个桶最多 200 题
+  const DUP_MAX_COMPARE = 200000; // 本次体检判重比较次数总上限
+  const DUP_LEN_BUCKET = 8;       // 题干长度分桶粒度
+
+  /* ---------------- 文本归一化 ---------------- */
+
+  /* 全角转半角（数字/字母/标点），全角空格照常变普通空格。
+   绝大多数题都不含全角字符，先做一次快速判断，避免每题都逐字符重建字符串。 */
+  const FULLWIDTH_RE = /[\uFF01-\uFF5E\u3000]/;
+  function toHalf(value) {
+    const s = String(value == null ? '' : value);
+    if (!FULLWIDTH_RE.test(s)) return s;
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code === 0x3000) out += ' ';
+      else if (code >= 0xFF01 && code <= 0xFF5E) out += String.fromCharCode(code - 0xFEE0);
+      else out += s[i];
+    }
+    return out;
+  }
+
+  /* 去所有空白（含全角空格），用于选项文本查重 */
+  const SPACE_RE = /\s/;
+  function collapseSpace(value) {
+    const s = toHalf(value);
+    return SPACE_RE.test(s) ? s.replace(/\s+/g, '') : s;
+  }
+
+  /* 只留字母 / 数字 / 汉字，再转大写；用于题干与选项的相似度比对 */
+  function normalizeText(value) {
+    return toHalf(value).replace(/[^\p{L}\p{N}]+/gu, '').toUpperCase();
+  }
+
+  /* 题干归一化：去题型标记、去带标点的序号前缀、去标点空白、转大写 */
+  function normalizeStem(value) {
+    let s = toHalf(value);
+    const first = s.charCodeAt(0);
+    // 行首可能是空白 / 数字 / 第 / （ / ( / [ / 【 时才需要清序号，普通中文题干直接跳过
+    const maybePrefix = first === 0x3000 || first === 0x20 || first === 0x09 || first === 0x0a
+      || first === 0x0d || (first >= 0x30 && first <= 0x39) || first === 0x7B2C
+      || first === 0x0028 || first === 0xFF08 || first === 0x005B || first === 0x3010;
+    if (maybePrefix) {
+      s = s.replace(/^\s*(?:【[^】]{1,8}】|\[[^\]]{1,8}\])+\s*/, '');
+      // 只吃「1. / 第1题 / （1）」这类明显是序号的写法；「1.5倍」这种小数不动
+      s = s.replace(/^\s*(?:第\s*\d+\s*题\s*[.、:：]?|[(（]\s*\d+\s*[)）]|\d+\s*[.、,，:：)）](?!\d))\s*/, '');
+    }
+    return normalizeText(s);
+  }
+
+  function isBlank(value) {
+    return value == null || String(value).trim() === '';
+  }
+
+  function displayText(value, max) {
+    const s = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    const limit = max || 20;
+    return s.length > limit ? s.slice(0, limit) + '…' : s;
+  }
+
+  /* ---------------- 题目字段解析 ---------------- */
+
+  function noOf(q, index) {
+    const n = Number(q && q.no);
+    return Number.isFinite(n) ? n : index + 1;
+  }
+
+  function qidOf(q) {
+    if (!q) return null;
+    if (q.id != null) return q.id;
+    if (q.key != null) return q.key;
+    return null;
+  }
+
+  /* options 规范成「按字母排序的条目 + 大写键集合」；null / 数组一律视为没有可用选项 */
+  function readOptions(q) {
+    const raw = q && q.options;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const entries = [];
+    for (const rawKey of Object.keys(raw)) {
+      const key = toHalf(rawKey).trim().toUpperCase();
+      if (!key) continue;
+      entries.push({ key: key, text: raw[rawKey] });
+    }
+    entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return { entries: entries, keySet: new Set(entries.map(e => e.key)) };
+  }
+
+  /* answer 里的字母（大写、去重、保留顺序）：'aｃ' → ['A','C']，填空文字 → [] */
+  function answerLetters(value) {
+    const s = toHalf(value);
+    const out = [];
+    const re = /[A-Za-z]/g;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      const letter = m[0].toUpperCase();
+      if (!out.includes(letter)) out.push(letter);
+    }
+    return out;
+  }
+
+  /* ---------------- 答案解析冲突：只认第一个「答案声明」 ---------------- */
+
+  /* 在解析里找第一处像「答案：C」的声明，返回 { letters, text }；找不到返回 null。
+     每条模式都跳过「不 / 非 / 错 / 误」开头的否定式（不选A、错误的是A、不正确答案是C）。
+     只取紧跟关键字的那一个连续字母串：「答案：A，B项错误」只当解析在说 A，不会把后面的
+     B 也算进答案，避免中文逗号后的正文被误伤。 */
+  function firstAnswerMention(text) {
+    const src = String(text == null ? '' : text);
+    const t = toHalf(src);
+    const patterns = [
+      { re: /(?:正确答案|参考答案|答案)\s*[:：]\s*([A-Za-z]{1,4})/g, neg: /[不非错误]/ },
+      { re: /(?:正确答案|参考答案|答案)\s*[是为]\s*([A-Za-z]{1,4})/g, neg: /[不非错误]/ },
+      { re: /正确的是\s*([A-Za-z]{1,4})/g, neg: /[不非]/ },
+      { re: /选\s*([A-Za-z]{1,4})/g, neg: /[不勿别]/ }
+    ];
+    for (const p of patterns) {
+      p.re.lastIndex = 0;
+      let m;
+      while ((m = p.re.exec(t)) !== null) {
+        const before = t[m.index - 1] || '';
+        if (p.neg.test(before)) continue;
+        const letters = answerLetters(m[1]);
+        // 命中片段从原文里截（toHalf 是 1:1 换字符，下标可对齐），保留「：」这类中文标点的原样
+        if (letters.length) return { letters: letters, text: src.slice(m.index, m.index + m[0].length).trim() };
+      }
+    }
+    return null;
+  }
+
+  /* ---------------- 判重：3-gram + 分桶 ---------------- */
+
+  /* 3-gram：编码成整数（charCode 组合）比字符串切片快很多，也不产生垃圾。
+   进制取 65536，保证三个 charCode 一一对应、不撞车（最大约 2.8e14，double 能精确表示）。 */
+  function grams3(s) {
+    const set = new Set();
+    for (let i = 0; i + 3 <= s.length; i++) {
+      set.add(s.charCodeAt(i) * 4294967296 + s.charCodeAt(i + 1) * 65536 + s.charCodeAt(i + 2));
+    }
+    return set;
+  }
+
+  /* Jaccard 相似度；先用「大小比例」做剪枝（Jaccard 不可能超过短集合/长集合） */
+  function jaccard(a, b) {
+    if (!a || !b || !a.size || !b.size) return 0;
+    const aSmall = a.size <= b.size;
+    const small = aSmall ? a : b;
+    const big = aSmall ? b : a;
+    if (small.size < big.size * DUP_THRESHOLD) return 0;
+    let inter = 0;
+    for (const g of small) if (big.has(g)) inter++;
+    if (!inter) return 0;
+    return inter / (a.size + b.size - inter);
+  }
+
+  /* 选项签名：文本归一化后排序拼接，用于「通用题干」场景的二次确认 */
+  function optionSignature(options) {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) return '';
+    return Object.keys(options)
+      .map(k => normalizeText(options[k]))
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }
+
+  /* 通用题干白名单：说法/叙述/各项/关于…的说法/以下…中，这类题干天然长得像 */
+  function isGenericStem(norm) {
+    if (!/^(?:下列|以下|下述|如下|下面|有关|关于)/.test(norm)) return false;
+    return /(?:说法|叙述|表述|描述|各项|选项|内容|中|的是|正确|错误)/.test(norm);
+  }
+
+  function optionsSimilar(a, b) {
+    const ga = optionGramsOf(a);
+    const gb = optionGramsOf(b);
+    return !!ga && !!gb && jaccard(ga, gb) >= DUP_THRESHOLD;
+  }
+
+  /* 以下三个都是惰性求值：绝大多数题不会进到比较环节，没必要先算 */
+  function gramsOf(c) {
+    return c.grams || (c.grams = grams3(c.norm));
+  }
+
+  function optionGramsOf(c) {
+    if (c.optGrams === undefined) {
+      const sig = optionSignature(c.rawOptions);
+      c.optGrams = sig.length >= 3 ? grams3(sig) : null;
+    }
+    return c.optGrams;
+  }
+
+  function genericOf(c) {
+    return c.generic === undefined ? (c.generic = isGenericStem(c.norm)) : c.generic;
+  }
+
+  /* 去掉数字后的「题干骨架」：只差数字的两题（220V / 380V）多半是同一模板的不同参数题，
+   不能当重复；只有选项也高度相似时才报（见 findDuplicates）。 */
+  function stripDigits(s) {
+    return s.replace(/\d+/g, '');
+  }
+
+  /* 判重主流程：分桶 → 桶内两两比较 → 记录「题号小的一题」和谁重复（一对只记一次） */
+  function findDuplicates(list) {
+    const cands = [];
+    for (let i = 0; i < list.length; i++) {
+      const norm = normalizeStem(list[i].stem);
+      if (norm.length < DUP_MIN_LEN) continue;
+      cands.push({
+        index: i,
+        no: noOf(list[i], i),
+        norm: norm,
+        rawOptions: list[i].options,
+        bucket: norm.slice(0, 2) + '#' + Math.floor(norm.length / DUP_LEN_BUCKET),
+        grams: null,
+        generic: undefined,
+        optGrams: undefined
+      });
+    }
+    if (cands.length < 2) return [];
+
+    const buckets = new Map();
+    const dupMap = new Map(); // 锚点题下标 → { partners: [候选], best: 最高相似度 }
+    let comparisons = 0;
+    let stopped = false;
+
+    for (const c of cands) {
+      if (stopped) break;
+      const arr = buckets.get(c.bucket);
+      if (!arr) {
+        buckets.set(c.bucket, [c]);
+        continue;
+      }
+      if (arr.length >= DUP_BUCKET_CAP) continue; // 单桶超限：这一题跳过判重
+      for (const p of arr) {
+        comparisons++;
+        if (comparisons > DUP_MAX_COMPARE) {
+          stopped = true;
+          break;
+        }
+        const sim = jaccard(gramsOf(c), gramsOf(p));
+        if (sim < DUP_THRESHOLD) continue;
+        // 「下列说法」这类通用题干、以及只差数字的同模板参数题，都要选项也像才算重复
+        const genericOrParam = genericOf(c) || genericOf(p)
+          || (c.norm !== p.norm && stripDigits(c.norm) === stripDigits(p.norm));
+        if (genericOrParam && !optionsSimilar(c, p)) continue;
+        const anchor = c.no <= p.no ? c : p;
+        const partner = anchor === c ? p : c;
+        let rec = dupMap.get(anchor.index);
+        if (!rec) {
+          rec = { partners: [], best: 0 };
+          dupMap.set(anchor.index, rec);
+        }
+        rec.partners.push(partner);
+        if (sim > rec.best) rec.best = sim;
+      }
+      if (!stopped) arr.push(c);
+    }
+
+    const out = [];
+    for (const [anchorIndex, rec] of dupMap) {
+      const q = list[anchorIndex];
+      const partnerNos = [];
+      for (const p of rec.partners) {
+        if (!partnerNos.includes(p.no)) partnerNos.push(p.no);
+      }
+      if (!partnerNos.length) continue;
+      partnerNos.sort((a, b) => a - b);
+      const ref = partnerNos.length <= 3
+        ? `第 ${partnerNos.join('、')} 题`
+        : `第 ${partnerNos.slice(0, 3).join('、')} 题等 ${partnerNos.length} 题`;
+      out.push({
+        code: 'duplicate-question',
+        level: 'warn',
+        qid: qidOf(q),
+        no: noOf(q, anchorIndex),
+        message: `题干与${ref}高度相似（约 ${Math.round(rec.best * 100)}%），疑似重复`,
+        hint: '保留一题，删掉重复的那道'
+      });
+    }
+    return out;
+  }
+
+  /* ---------------- 规则扫描 ---------------- */
+
+  function bank(questions, opts) {
+    const options = opts || {};
+    const list = Array.isArray(questions)
+      ? questions.filter(q => q && typeof q === 'object')
+      : [];
+    const checkExplanation = options.checkExplanation !== false;
+    const issues = [];
+
+    for (let index = 0; index < list.length; index++) {
+      const q = list[index];
+      const no = noOf(q, index);
+      const qid = qidOf(q);
+      const opt = readOptions(q);
+      const answerRaw = q.answer;
+      const hasAnswer = !isBlank(answerRaw);
+      const ansLetters = hasAnswer ? answerLetters(answerRaw) : [];
+      const ansSet = new Set(ansLetters);
+      const type = typeof q.type === 'string' ? q.type.trim() : '';
+      const explanation = q.explanation == null ? '' : String(q.explanation);
+      // 选择题/判断题显示归一化后的字母；填空/未知题型显示原文（避免把英文答案拆成「字母」）
+      const answerDisplay = (type === 'single' || type === 'multi' || type === 'judge') && ansLetters.length
+        ? ansLetters.join('')
+        : displayText(answerRaw, 16);
+
+      const push = (code, level, message, hint) => {
+        issues.push({ code: code, level: level, qid: qid, no: no, message: message, hint: hint });
+      };
+
+      /* 1. 答案超出选项范围（选项缺失/为空时不校验，避免把「没有选项的填空」误报） */
+      if (hasAnswer && opt && opt.entries.length && ansLetters.length) {
+        const out = ansLetters.filter(l => !opt.keySet.has(l));
+        if (out.length) {
+          push(
+            'ans-out-of-range', 'error',
+            `答案「${answerDisplay}」含选项之外的字母 ${out.join('、')}（可选：${opt.entries.map(e => e.key).join('/')}）`,
+            '改成选项里存在的字母，或补上对应选项'
+          );
+        }
+      }
+
+      /* 2. 同一题选项文本重复（只去空白后比较，标点差异不报） */
+      if (opt && opt.entries.length) {
+        const groups = new Map();
+        for (const e of opt.entries) {
+          const v = collapseSpace(e.text);
+          if (!v) continue;
+          if (!groups.has(v)) groups.set(v, []);
+          groups.get(v).push(e.key);
+        }
+        const duplicated = [...groups.entries()].filter(x => x[1].length > 1);
+        if (duplicated.length) {
+          const desc = duplicated.slice(0, 2)
+            .map(x => `选项 ${x[1].join('、')} 内容相同：「${displayText(x[0], 18)}」`)
+            .join('；') + (duplicated.length > 2 ? ' 等' : '');
+          push(
+            'dup-option-text', 'error',
+            desc,
+            '删掉重复选项，或把内容改成不同选项'
+          );
+        }
+
+        /* 3. 选项字母跳号（从 A 开始连续） */
+        const keys = opt.entries.map(e => e.key);
+        const expected = keys.map((x, i) => String.fromCharCode(65 + i));
+        const missing = expected.filter(k => !opt.keySet.has(k));
+        const weird = keys.filter(k => !/^[A-Z]$/.test(k));
+        if (missing.length || weird.length) {
+          const parts = [];
+          if (missing.length) parts.push(`缺少 ${missing.join('、')}`);
+          if (weird.length) parts.push(`出现非字母键 ${weird.slice(0, 3).map(k => `「${k}」`).join('、')}`);
+          push(
+            'missing-option-key', 'warn',
+            `选项字母不连续：${parts.join('，')}`,
+            '补齐缺少的选项，或按 A/B/C 连续重排'
+          );
+        }
+      }
+
+      /* 4. 题型与答案个数不符 */
+      if (type === 'single' && ansLetters.length >= 2) {
+        push(
+          'single-multi-mismatch', 'warn',
+          `题型标为单选，但答案有 ${ansLetters.length} 个字母（${answerDisplay}）`,
+          '改成多选，或只保留一个答案字母'
+        );
+      } else if (type === 'multi' && ansLetters.length === 1) {
+        push(
+          'single-multi-mismatch', 'warn',
+          `题型标为多选，但答案只有 1 个字母（${ansLetters[0]}）`,
+          '确认是否漏选；只有一个答案时改为单选'
+        );
+      }
+
+      /* 5. 答案解析冲突（解析字母不是答案字母的子集才算冲突，保守） */
+      if (hasAnswer && ansSet.size && explanation.trim() && /答案|选|正确/.test(explanation)) {
+        const mention = firstAnswerMention(explanation);
+        if (mention) {
+          const extra = mention.letters.filter(l => !ansSet.has(l));
+          if (extra.length) {
+            push(
+              'answer-explanation-conflict', 'warn',
+              `解析写「${displayText(mention.text, 22)}」，与答案「${answerDisplay}」不一致`,
+              '核对答案，保留一个正确说法'
+            );
+          }
+        }
+      }
+
+      /* 6. 判断题格式（答案 A/B、选项 正确/错误） */
+      if (type === 'judge') {
+        const problems = [];
+        if (hasAnswer) {
+          const ok = ansLetters.length === 1 && (ansLetters[0] === 'A' || ansLetters[0] === 'B');
+          if (!ok) problems.push(`答案应为 A/B（当前「${displayText(answerRaw, 12)}」）`);
+        }
+        const optOk = !!opt && opt.entries.length === 2 && opt.keySet.size === 2
+          && opt.keySet.has('A') && opt.keySet.has('B')
+          && collapseSpace(opt.entries.find(e => e.key === 'A').text).replace(/[。.!！]+$/, '') === '正确'
+          && collapseSpace(opt.entries.find(e => e.key === 'B').text).replace(/[。.!！]+$/, '') === '错误';
+        if (!optOk) problems.push('选项应为 A=正确、B=错误');
+        if (problems.length) {
+          push(
+            'judge-shape', 'warn',
+            `判断题格式异常：${problems.join('；')}`,
+            '按 A=正确、B=错误 的标准判断题格式修正'
+          );
+        }
+      }
+
+      /* 7. 题干疑似截断 / 过短 */
+      const stem = q.stem == null ? '' : String(q.stem);
+      const trimmed = stem.replace(/\s+$/, '');
+      const stemLen = trimmed.length; // 题干基本是中文/ASCII（BMP），length 足够且比 spread 快
+      const tail = trimmed.slice(-1);
+      const badTail = '（(，,、：:'.includes(tail);
+      if (!trimmed) {
+        push('stem-truncated', 'info', '题干为空', '补上题干后重新导入');
+      } else if (stemLen < 6 && badTail) {
+        push('stem-truncated', 'info', `题干过短（${stemLen} 字）且以「${tail}」结尾，疑似没写完`, '补全题干后重新导入');
+      } else if (stemLen < 6) {
+        push('stem-truncated', 'info', `题干过短（${stemLen} 字），可能没写完`, '补全题干后重新导入');
+      } else if (badTail) {
+        push('stem-truncated', 'info', `题干以「${tail}」结尾，疑似没写完（缺选项或补充内容）`, '补全题干后重新导入');
+      }
+
+      /* 8. 有答案但没解析（可关） */
+      if (checkExplanation && hasAnswer && isBlank(explanation)) {
+        push(
+          'empty-explanation', 'info',
+          `答案已填（${answerDisplay}），但没有解析`,
+          '补一句解析，方便复习时理解为什么选它'
+        );
+      }
+    }
+
+    /* 9. 题干重复（最后统一做，需要全量视图） */
+    for (const it of findDuplicates(list)) issues.push(it);
+
+    const summary = { error: 0, warn: 0, info: 0, total: 0, questions: list.length };
+    for (const it of issues) {
+      if (summary[it.level] != null) summary[it.level]++;
+    }
+    summary.total = summary.error + summary.warn + summary.info;
+
+    return { summary: summary, issues: sortIssues(issues) };
+  }
+
+  /* 排序：级别 → 题号升序 → 同题内按规则执行先后（稳定） */
+  function sortIssues(issues) {
+    const wrapped = issues.map((issue, seq) => {
+      const rank = LEVEL_RANK[issue.level] != null ? LEVEL_RANK[issue.level] : 3;
+      const n = Number(issue.no);
+      return { issue: issue, seq: seq, rank: rank, noVal: Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER };
+    });
+    wrapped.sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.noVal !== b.noVal) return a.noVal - b.noVal;
+      return a.seq - b.seq;
+    });
+    return wrapped.map(w => w.issue);
+  }
+
+  /* ---------------- Markdown 报告 ---------------- */
+
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  function formatDate(value) {
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return value.getFullYear() + '-' + pad2(value.getMonth() + 1) + '-' + pad2(value.getDate());
+    }
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const d = new Date(value);
+      if (!isNaN(d.getTime())) return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+    const now = new Date();
+    return now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
+  }
+
+  function escapeCell(value) {
+    return String(value == null ? '' : value).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+  }
+
+  function report(issues, meta) {
+    const list = Array.isArray(issues) ? issues : [];
+    const m = meta || {};
+    const counts = { error: 0, warn: 0, info: 0 };
+    for (const it of list) {
+      if (it && counts[it.level] != null) counts[it.level]++;
+    }
+    const total = counts.error + counts.warn + counts.info;
+    const bankName = m.bankName == null || String(m.bankName).trim() === ''
+      ? '未命名题库'
+      : String(m.bankName).trim();
+    const lines = [];
+
+    lines.push(`# 题库体检报告 · ${escapeCell(bankName)}`);
+    lines.push('');
+    const metaBits = [`日期：${formatDate(m.date)}`];
+    if (m.total != null && Number.isFinite(Number(m.total))) metaBits.push(`题目：${Number(m.total)} 道`);
+    metaBits.push(`问题：${total} 条`);
+    lines.push(`> ${metaBits.join(' · ')}`);
+    lines.push('');
+
+    lines.push('## 概览');
+    lines.push('');
+    lines.push('| 级别 | 数量 |');
+    lines.push('| --- | ---: |');
+    for (const level of LEVELS) lines.push(`| ${LEVEL_LABEL[level]} | ${counts[level]} |`);
+    lines.push('');
+
+    if (!total) {
+      lines.push('## 结论');
+      lines.push('');
+      lines.push('未发现需要处理的问题 ✅');
+      return lines.join('\n');
+    }
+
+    lines.push('## 问题清单');
+    lines.push('');
+    for (const level of LEVELS) {
+      const levelIssues = list.filter(it => it && it.level === level);
+      if (!levelIssues.length) continue;
+      const codes = CODE_ORDER.filter(code => levelIssues.some(it => it.code === code));
+      const unknown = [...new Set(levelIssues.map(it => it.code))]
+        .filter(code => !CODE_ORDER.includes(code))
+        .sort();
+      for (const code of codes.concat(unknown)) {
+        const group = levelIssues.filter(it => it.code === code);
+        const label = CODE_LABEL[code] || code || '其他问题';
+        lines.push(`### ${LEVEL_LABEL[level]} · ${label}（${group.length} 条）`);
+        lines.push('');
+        lines.push('| 题号 | 问题 | 建议 |');
+        lines.push('| ---: | --- | --- |');
+        for (const it of group.slice(0, MAX_TABLE_ROWS)) {
+          lines.push(`| ${escapeCell(it.no)} | ${escapeCell(it.message)} | ${escapeCell(it.hint)} |`);
+        }
+        lines.push('');
+        if (group.length > MAX_TABLE_ROWS) {
+          lines.push(`> 已省略 ${group.length - MAX_TABLE_ROWS} 条同类问题（每组最多展示 ${MAX_TABLE_ROWS} 条）。`);
+          lines.push('');
+        }
+      }
+    }
+    return lines.join('\n');
+  }
+
+  return { bank: bank, report: report, LEVELS: LEVELS };
+})();
+
+if (typeof module !== 'undefined' && module.exports) module.exports = Audit;
+</script>
+  <script>
+/* ========== 本地能力估分（1PL / Elo 风格）· 纯函数、无依赖、不碰 DB ==========
+   解决的问题：练习记录里只有「对/错」，看不出「我现在能考多少分」。
+   这里把 history 拍平后的逐题作答当成一串观测，回放一遍单参数逻辑模型（1PL），
+   估出能力值 theta（题目难度 b 顺手也估出来），再拿题库里的一份「预测卷」算预计分。
+
+   API：
+   - estimate({ questions, rows, examShape, opts })
+       → { insufficient, n, theta, predicted, sections, items }
+   - DEFAULT_SHAPE   缺省卷型 { single:6, multi:2, judge:1, fill:1 }
+   - PASS_LINE       及格线 60（通过概率用这条线）
+
+   算法（确定性、可复现，两次调用结果必然一致）：
+   - 1PL：p = 1/(1+exp(-(theta - b)))；theta 与每题 b 初始 0
+   - 按 rows 时间升序逐条回放：y = status==='ok' ? 1 : 0
+       lr = 0.5/(1 + seen/20)，下限 0.08（seen = 该题此前已作答次数）
+       theta += lr*(y - p) ；b -= lr/2*(y - p)
+   - 回放完把 b 去均值（按每题作答次数加权），theta 同步减去同一个均值：
+        theta' - b' = theta - b 不变，但 b 变成「相对本题库」的难度，
+        theta 也就不再随题库整体偏难/偏易而漂移
+   - 预测卷抽题必须确定性：按 (bankId, no, id) 排序，每个题型取前 k 题，
+     该题型不够就从其他题型补，总题量 = sum(examShape)
+   - 预计分 = round(100 × 平均 p)；区间用二项方差近似；及格概率用正态近似（erf）
+
+   边界（一律不抛错，insufficient 时也返回数值，UI 自己决定展不展示）：
+   - rows 为空 / questions 为空 / qid 在题库里找不到 / answer 为 null / 题量不够一张卷
+   - rows 里 status 不是 ok|bad（如未作答 'none'）不计入能力更新：未作答不是「答错」
+   - rows.length < opts.minRows（默认 30）→ insufficient = true，n 仍是 rows.length ========== */
+const Ability = (() => {
+
+  /* ---- 缺省卷型与及格线（调用方可用 examShape / PASS_LINE 覆盖展示口径） ---- */
+  const DEFAULT_SHAPE = { single: 6, multi: 2, judge: 1, fill: 1 };
+  const PASS_LINE = 60;
+  const TYPES = ['single', 'multi', 'judge', 'fill'];
+
+  /* ---- 学习率与区间参数（调过：单遍足够收敛，lr 下限防止老题学不动） ---- */
+  const LR_BASE = 0.5;      // 首答学习率
+  const LR_SEEN = 20;       // 答过 20 次后学习率减半
+  const LR_MIN = 0.08;      // 学习率下限（老题也要能微调）
+  const MIN_ROWS = 30;      // 判「数据不足」的默认阈值
+  const MAX_PAPER = 200;    // 一张预测卷最多抽这么多题（防呆）
+  const Z_BAND = 1.28;      // ≈80% 区间半宽系数
+  const MAX_BAND = 8;       // 区间半宽上限（分）
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function num(v, d) { const x = Number(v); return Number.isFinite(x) ? x : d; }
+  /* 逻辑函数（夹一下指数，避免极端 theta 时溢出） */
+  function sig(x) { return 1 / (1 + Math.exp(-clamp(x, -40, 40))); }
+
+  /* ---- erf / 正态 CDF（Abramowitz-Stegun 7.1.26，误差 < 1.5e-7） ---- */
+  function erf(x) {
+    const sign = x < 0 ? -1 : 1;
+    const a = Math.abs(x);
+    const t = 1 / (1 + 0.3275911 * a);
+    const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+      - 0.284496736) * t + 0.254829592) * t * Math.exp(-a * a);
+    return sign * y;
+  }
+  function normCdf(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
+
+  /* ---- 确定性排序键：数字按数值、文字按码点（不用 localeCompare，跨环境才稳定） ---- */
+  function cmp(a, b) {
+    const an = Number(a), bn = Number(b);
+    const aNum = String(a).trim() !== '' && Number.isFinite(an);
+    const bNum = String(b).trim() !== '' && Number.isFinite(bn);
+    if (aNum && bNum && an !== bn) return an - bn;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    const sa = String(a), sb = String(b);
+    return sa < sb ? -1 : (sa > sb ? 1 : 0);
+  }
+  /* 题目排序：bankId → no → id（抽预测卷、补题都靠它保证同一份题库永远抽同一张卷） */
+  function qcmp(a, b) {
+    return cmp(a.bankId, b.bankId) || cmp(a.no, b.no) || cmp(a.id, b.id) || 0;
+  }
+
+  /* ---- 卷型归一：缺省/全 0/非法 → DEFAULT_SHAPE；单题型最多 MAX_PAPER 题 ---- */
+  function normShape(examShape) {
+    const src = (examShape && typeof examShape === 'object') ? examShape : null;
+    const shape = {};
+    let total = 0;
+    for (const t of TYPES) {
+      const k = src ? Math.min(MAX_PAPER, Math.max(0, Math.floor(num(src[t], 0)))) : DEFAULT_SHAPE[t];
+      shape[t] = k;
+      total += k;
+    }
+    if (!total) {                       // 传了但全是 0 / 传了奇怪对象 → 退回默认卷型
+      total = 0;
+      for (const t of TYPES) { shape[t] = DEFAULT_SHAPE[t]; total += shape[t]; }
+    }
+    return { shape, total };
+  }
+
+  /* ---- 抽预测卷：先按题型各取前 k，缺的从其他题型补；结果完全由题库决定 ---- */
+  function pickPaper(questions, shape, total) {
+    const pools = {};
+    for (const t of TYPES) pools[t] = [];
+    for (const q of questions) {
+      const t = TYPES.indexOf(q.type) >= 0 ? q.type : 'fill';   // 未知题型按填空兜底
+      pools[t].push(q);
+    }
+    for (const t of TYPES) pools[t].sort(qcmp);
+
+    const picked = [];
+    const used = new Set();
+    for (const t of TYPES) {
+      const k = shape[t];
+      for (let i = 0; i < k && i < pools[t].length; i++) {
+        picked.push(pools[t][i]);
+        used.add(pools[t][i]);
+      }
+    }
+    if (picked.length < total) {        // 某题型不够 → 按同一排序从剩余题里补
+      const spare = [];
+      for (const t of TYPES) for (const q of pools[t]) if (!used.has(q)) spare.push(q);
+      spare.sort(qcmp);
+      for (let i = 0; i < spare.length && picked.length < total; i++) picked.push(spare[i]);
+    }
+    return picked;
+  }
+
+  /* ---- 章节标题：key 与 app.js 一致（bankId:secIdx），优先用 opts.sectionTitle ---- */
+  function secKey(q) { return String(q.bankId) + ':' + String(q.secIdx == null ? '' : q.secIdx); }
+  function titleOf(key, q, map) {
+    let t = null;
+    if (map && typeof map.get === 'function') t = map.get(key);
+    else if (map && typeof map === 'object') t = map[key];
+    if (t) return String(t);
+    const s = q.secIdx;
+    return (s == null || s === '') ? '未分节' : ('第 ' + s + ' 节');
+  }
+
+  /** 估算能力。
+   *  @param {{questions?:Array, rows?:Array, examShape?:object, opts?:object}} input
+   *  @returns {{insufficient:boolean, n:number, theta:number,
+   *             predicted:{score:number, low:number, high:number, passRate:number, paperSize:number},
+   *             sections:Array<{key:string,title:string,bankId:string,secIdx:any,score:number,n:number}>,
+   *             items:Object<string,{b:number,n:number}>}}
+   */
+  function estimate(input) {
+    const inp = input || {};
+    const src = Array.isArray(inp.questions) ? inp.questions : [];
+    const rows = Array.isArray(inp.rows) ? inp.rows : [];
+    const opts = (inp.opts && typeof inp.opts === 'object') ? inp.opts : {};
+    const minRows = Math.max(0, Math.floor(num(opts.minRows, MIN_ROWS)));
+    const passes = clamp(Math.floor(num(opts.passes, 1)) || 1, 1, 6);
+
+    /* ---- 1. 建 qid → 题目索引（id 是主键，重复的只认第一次），逐条回放作答 ---- */
+    const byId = new Map();
+    const questions = [];
+    for (const q of src) {
+      if (!q || q.id == null) continue;
+      const id = String(q.id);
+      if (byId.has(id)) continue;
+      byId.set(id, q);
+      questions.push(q);
+    }
+
+    const diffs = new Map();   // qid → b（相对难度）
+    const seen = new Map();    // qid → 已作答次数
+    const graded = [];         // 有效观测 {id, y}
+    for (const r of rows) {
+      if (!r) continue;
+      const q = byId.get(String(r.qid));
+      if (!q) continue;                              // 题被删了 / id 对不上 → 跳过，不抛错
+      if (r.status !== 'ok' && r.status !== 'bad') continue;  // 未作答不算答错
+      const id = String(q.id);
+      if (!diffs.has(id)) { diffs.set(id, 0); seen.set(id, 0); }
+      graded.push({ id, y: r.status === 'ok' ? 1 : 0 });
+    }
+
+    let theta = 0;
+    for (let pass = 0; pass < passes; pass++) {
+      for (const g of graded) {
+        const b = diffs.get(g.id);
+        const n = seen.get(g.id) || 0;
+        const p = sig(theta - b);
+        const lr = Math.max(LR_MIN, LR_BASE / (1 + n / LR_SEEN));
+        theta += lr * (g.y - p);
+        diffs.set(g.id, b - lr / 2 * (g.y - p));
+        seen.set(g.id, n + 1);
+      }
+    }
+
+    /* ---- 2. b 去均值（按作答次数加权），theta 同步补偿 → 能力值相对本题库 ---- */
+    let wsum = 0, wcnt = 0;
+    diffs.forEach((b, id) => { const n = seen.get(id) || 0; wsum += b * n; wcnt += n; });
+    const meanB = wcnt ? wsum / wcnt : 0;
+    diffs.forEach((b, id) => diffs.set(id, b - meanB));
+    theta -= meanB;
+
+    /* ---- 3. 预测卷：同一份 questions + examShape 永远抽出同一张卷 ---- */
+    const { shape, total } = normShape(inp.examShape);
+    const paper = pickPaper(questions, shape, total);
+    const bOf = (q) => { const v = diffs.get(String(q.id)); return v == null ? 0 : v; };  // 未作答按题库平均难度
+
+    let pSum = 0, vSum = 0;
+    for (const q of paper) {
+      const p = sig(theta - bOf(q));
+      pSum += p;
+      vSum += p * (1 - p);
+    }
+    const N = paper.length;
+    let score, sd;
+    if (N > 0) {
+      score = clamp(Math.round(100 * pSum / N), 0, 100);
+      sd = 100 * Math.sqrt(vSum) / N;
+    } else {
+      // 题量不够一张卷（甚至题库为空）：拿「平均水平的一道题」给个数值，不抛错
+      const p = sig(theta);
+      score = clamp(Math.round(100 * p), 0, 100);
+      sd = 100 * Math.sqrt(p * (1 - p));
+    }
+    const band = Math.min(Math.round(Z_BAND * sd), MAX_BAND);
+    const predicted = {
+      score,
+      low: clamp(score - band, 0, 100),
+      high: clamp(score + band, 0, 100),
+      // P(分数 ≥ PASS_LINE)：X ~ N(score, sd²)，正态近似；clamp 到 0.01~0.99 免得出现 0%/100%
+      passRate: clamp(normCdf((score - PASS_LINE) / Math.max(sd, 1e-6)), 0.01, 0.99),
+      paperSize: N
+    };
+
+    /* ---- 4. 章节：按 bankId:secIdx 分组，分数 = 该组题目 p 的均值，n = 该组作答题数 ---- */
+    const groups = new Map();
+    for (const q of questions) {
+      const key = secKey(q);
+      let g = groups.get(key);
+      if (!g) {
+        g = { key, bankId: q.bankId, secIdx: q.secIdx == null ? '' : q.secIdx, pSum: 0, cnt: 0, n: 0 };
+        groups.set(key, g);
+      }
+      g.pSum += sig(theta - bOf(q));
+      g.cnt += 1;
+    }
+    for (const g of graded) {
+      const q = byId.get(g.id);
+      const grp = groups.get(secKey(q));
+      if (grp) grp.n += 1;
+    }
+    const sections = [];
+    for (const g of groups.values()) {
+      if (!g.n) continue;               // 没作答过的章节不出分（避免大题库刷出一屏 0 题章节）
+      sections.push({
+        key: g.key,
+        title: titleOf(g.key, { secIdx: g.secIdx }, opts.sectionTitle),
+        bankId: g.bankId,
+        secIdx: g.secIdx,
+        score: clamp(Math.round(100 * g.pSum / Math.max(1, g.cnt)), 0, 100),
+        n: g.n
+      });
+    }
+    sections.sort((a, b) => cmp(a.bankId, b.bankId) || cmp(a.secIdx, b.secIdx) || cmp(a.key, b.key));
+
+    /* ---- 5. 每题难度（只回作答过的题：没作答的 b 就是 0，列出来只是噪声） ---- */
+    const items = {};
+    diffs.forEach((b, id) => { items[id] = { b, n: seen.get(id) || 0 }; });
+
+    return {
+      insufficient: rows.length < minRows,
+      n: rows.length,
+      theta,
+      predicted,
+      sections,
+      items
+    };
+  }
+
+  return { estimate, DEFAULT_SHAPE, PASS_LINE };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = Ability;
+</script>
+  <script>
+/* ========== 每日一练 · 选题与连续天数（纯函数：不碰 DB、不读时钟以外的外界状态） ==========
+   解决的问题：每天打开 App 不用自己挑题——自动混一组「错题 + 薄弱章节 + 没练过的题 + 该复习的题」；
+   同一天中途退出、过一会儿再进，题目和顺序都不变（否则做一半的进度就废了）。
+
+   API：
+   - dateKey(ts)              本地日期 'YYYY-MM-DD'（本地时区，不用 UTC）
+   - plan({...})              每日题单 → { qids, breakdown, size }
+   - streak(history, today)   连续天数 → { days, todayDone, lastDate }
+   - MODES                    三档配额（standard / easy / devil）
+
+   plan 的入参（都由调用方传进来，这里不查库）：
+   - questions  [{ id, bankId, no, secIdx, type, stem, options, answer }]
+   - latest     { [qid]: { correct, time } }   每题最近一次作答（DB.latestByQuestion()）
+   - dateKey    'YYYY-MM-DD'
+   - size       题量，默认 8
+   - bankId     只从该题库选题，默认 null = 全部题库
+   - mode       'standard' | 'easy' | 'devil'，默认 standard
+
+   配额与回填规则（都能在 scripts/daily.test.js 里逐条对上）：
+   1. 先按 mode 的三档配额（wrong / fresh / review）按 size 比例换算；size 和配额和不一致时，
+      零头按 fresh → wrong → review 的顺序补（新题弹性最大）。
+   2. 某一类不够（比如错题只有 2 道、配额要 3 道）时，按 wrong → weak → fresh → review 的顺序
+      从其它类别补：先把当前优先级最高的一类余量取完，不够再取下一类，直到取满 size 或题全部取完。
+   3. weak（答对过但所在章节最近正确率 < 60%）不单独占配额，只在回填时顶上——
+      这类题是「半会不会」，紧跟在错题后面补位，别让每天 8 题里塞满同一类。
+   4. breakdown 记的是**实际**各类取了几道，四项之和 == qids.length；size 也是实际题量
+      （题不够时 size < 请求的题量；questions 为空时 size = 0）。
+
+   确定性（关键）：seed = hash(dateKey | bankId | mode | size)，xmur3 出种子 → mulberry32 PRNG
+   → 每个类别先按 id 排序、再用 seeded Fisher-Yates 洗牌、再按配额取。因为先排序，
+   题目在入参数组里的先后不影响结果（DB 遍历顺序波动也不会换题）；因为种子只取这四个参数，
+   同一天同一档位永远同一套题。
+===================================================================== */
+const Daily = (() => {
+
+  /* ---- 三档配额：和都是 8；weak 不设配额（只在回填时顶上） ---- */
+  const MODES = {
+    standard: { wrong: 3, fresh: 4, review: 1 },
+    easy:     { wrong: 2, fresh: 5, review: 1 },
+    devil:    { wrong: 4, fresh: 3, review: 1 }
+  };
+  const QUOTA_KEYS = ['wrong', 'fresh', 'review'];            // 按配额取题的顺序
+  const REFILL_ORDER = ['wrong', 'weak', 'fresh', 'review'];  // 不够时从其它类回填的优先级
+  const SPILL_ORDER = ['fresh', 'wrong', 'review'];           // 配额零头先补谁
+  const CATS = ['wrong', 'weak', 'fresh', 'review'];
+  const WEAK_RATE = 0.6;            // 章节最近正确率低于这个值 → 该章节里答对的题算 weak
+  const LABEL_DAILY = '每日一练';    // 只在历史里认这个 label 的练习记录
+
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  const pad2 = (n) => (n < 10 ? '0' + n : '' + n);
+
+  /* ---- 本地日期键：本地时区，不是 toISOString()（后者是 UTC，凌晨会差一天） ---- */
+  function dateKey(ts) {
+    if (typeof ts === 'string') {
+      const s = ts.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;   // 已经是日期键，原样返回
+    }
+    let d;
+    if (ts == null) d = new Date();
+    else if (ts instanceof Date) d = ts;
+    else if (typeof ts === 'number') d = new Date(ts);
+    else d = new Date(String(ts));
+    if (!d || isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  /* ---- 日期键 ±1 天：用 UTC 历法算，绕开夏令时/闰秒 ---- */
+  function shiftDay(key, delta) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
+    if (!m) return String(key);
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) + delta * 86400000);
+    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  }
+
+  /* ---- 字符串 hash：xmur3（给 PRNG 出 32 位种子，同串同种子） ---- */
+  function xmur3(str) {
+    let h = 1779033703 ^ str.length;
+    for (let i = 0; i < str.length; i++) {
+      h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    return function () {
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      h ^= h >>> 16;
+      return h >>> 0;
+    };
+  }
+
+  /* ---- PRNG：mulberry32（32 位状态，快、跨平台同结果） ---- */
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---- 洗牌：seeded Fisher-Yates（不改原数组） ---- */
+  function shuffle(list, rng) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  /* ---- 章节键：bankId:secIdx（章节正确率按它聚合） ---- */
+  function secKey(q) {
+    return String(q.bankId == null ? '' : q.bankId) + ':' + String(q.secIdx == null ? '' : q.secIdx);
+  }
+
+  /* ---- size 与配额和不等时按比例换算：先取整，零头按 SPILL_ORDER 补 ---- */
+  function scaledQuota(mode, size) {
+    const base = MODES[mode] || MODES.standard;
+    const quota = { wrong: 0, weak: 0, fresh: 0, review: 0 };
+    if (!(size > 0)) return quota;
+    const sum = base.wrong + base.fresh + base.review;
+    const ratio = size / sum;
+    let used = 0;
+    for (const k of QUOTA_KEYS) {
+      quota[k] = Math.floor(base[k] * ratio);
+      used += quota[k];
+    }
+    let rest = size - used;
+    for (let i = 0; rest > 0; i++) {
+      quota[SPILL_ORDER[i % SPILL_ORDER.length]]++;
+      rest--;
+    }
+    return quota;
+  }
+
+  function emptyPlan() {
+    return { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 }, size: 0 };
+  }
+
+  /* ---- 每日选题 ---- */
+  function plan(opts) {
+    const o = opts || {};
+    const questions = Array.isArray(o.questions) ? o.questions : [];
+    const latest = o.latest && typeof o.latest === 'object' ? o.latest : {};
+    const mode = has(MODES, o.mode) ? o.mode : 'standard';
+    const bankId = o.bankId == null ? null : o.bankId;
+    const dk = o.dateKey == null ? dateKey(null) : String(o.dateKey);
+    let size = o.size == null ? 8 : Number(o.size);
+    if (!isFinite(size) || size < 0) size = 8;
+    size = Math.floor(size);
+
+    if (!questions.length || size <= 0) return emptyPlan();
+
+    /* 0. 按 id 去重（同一道题被重复传进来不该占两个名额，也会污染章节正确率） */
+    const list = [];
+    const seenQ = new Set();
+    for (const q of questions) {
+      if (!q || q.id == null || seenQ.has(q.id)) continue;
+      seenQ.add(q.id);
+      list.push(q);
+    }
+    if (!list.length) return emptyPlan();
+
+    /* 1. 章节最近正确率（用传进来的全部题目算，bankId 过滤不影响：章节键里带 bankId） */
+    const chapter = Object.create(null);
+    for (const q of list) {
+      const key = secKey(q);
+      const st = chapter[key] || (chapter[key] = { total: 0, correct: 0 });
+      const rec = has(latest, q.id) ? latest[q.id] : null;
+      if (!rec) continue;
+      st.total++;
+      if (rec.correct) st.correct++;
+    }
+
+    /* 2. 分类（bankId 过滤） */
+    const pools = { wrong: [], weak: [], fresh: [], review: [] };
+    for (const q of list) {
+      const id = q.id;
+      if (bankId != null && q.bankId !== bankId) continue;
+      const rec = has(latest, id) ? latest[id] : null;
+      if (!rec) pools.fresh.push(id);
+      else if (!rec.correct) pools.wrong.push(id);
+      else {
+        const st = chapter[secKey(q)];
+        const rate = st && st.total ? st.correct / st.total : 0;
+        (rate < WEAK_RATE ? pools.weak : pools.review).push(id);
+      }
+    }
+
+    const poolTotal = CATS.reduce((n, k) => n + pools[k].length, 0);
+    if (!poolTotal) return emptyPlan();
+
+    /* 3. 种子只管 (dateKey, bankId, mode, size)：同一天同一档位洗出来的题固定
+          —— 先按 id 排序再洗，题目在入参数的顺序（DB 遍历顺序）变了也不换题 */
+    const seedBase = dk + '|' + (bankId == null ? '' : String(bankId)) + '|' + mode + '|' + size;
+    for (const k of REFILL_ORDER) {
+      pools[k].sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
+      pools[k] = shuffle(pools[k], mulberry32(xmur3(seedBase + '|' + k)()));
+    }
+
+    /* 4. 按配额取，不够的按 REFILL_ORDER 从其它类别回填 */
+    const quota = scaledQuota(mode, size);
+    const picked = { wrong: [], weak: [], fresh: [], review: [] };
+    let need = size;
+    for (const k of QUOTA_KEYS) {
+      const take = Math.min(quota[k], pools[k].length, need);
+      if (take > 0) {
+        picked[k] = pools[k].splice(0, take);
+        need -= take;
+      }
+    }
+    for (const k of REFILL_ORDER) {
+      if (need <= 0) break;
+      if (!pools[k].length) continue;          // 这一类没余量了，看下一类
+      const take = Math.min(need, pools[k].length);
+      picked[k] = picked[k].concat(pools[k].splice(0, take));
+      need -= take;
+    }
+
+    /* 5. 拼题单：按 wrong → weak → fresh → review 的段序（错题先做），段内即洗牌后的顺序 */
+    const qids = [].concat(picked.wrong, picked.weak, picked.fresh, picked.review);
+    const breakdown = {
+      wrong: picked.wrong.length,
+      weak: picked.weak.length,
+      fresh: picked.fresh.length,
+      review: picked.review.length
+    };
+    return { qids, breakdown, size: qids.length };
+  }
+
+  /* ---- 连续天数：只认 label === '每日一练'；一个日期有一条就算完成 ----
+     今天还没做但昨天做了 → days 保留之前的连续数（不归零），todayDone = false。
+     入参 history 最新在前/在后都无所谓，这里按 at 归日、用集合去重。 */
+  function streak(history, todayKey) {
+    const list = Array.isArray(history) ? history : [];
+    const today = todayKey == null ? dateKey(null) : (dateKey(todayKey) || String(todayKey));
+    const doneDays = new Set();
+    let lastDate = null;
+    for (const rec of list) {
+      if (!rec || rec.label !== LABEL_DAILY) continue;
+      const d = dateKey(rec.at);
+      if (!d) continue;
+      doneDays.add(d);
+      if (lastDate == null || d > lastDate) lastDate = d;
+    }
+    if (!doneDays.size) return { days: 0, todayDone: false, lastDate: null };
+    const todayDone = doneDays.has(today);
+    let cursor = todayDone ? today : shiftDay(today, -1);
+    let days = 0;
+    while (doneDays.has(cursor)) {
+      days++;
+      cursor = shiftDay(cursor, -1);
+    }
+    return { days, todayDone, lastDate };
+  }
+
+  return { plan, streak, dateKey, MODES };
+})();
+
+if (typeof module !== 'undefined' && module.exports) module.exports = Daily;
+</script>
+  <script>
 /* ========== 答题会话逻辑 ========== */
 class QuizSession {
   /**
@@ -4149,7 +5398,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.19'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.20'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4175,6 +5424,9 @@ const App = (() => {
     'search': pageSearch,
     'history': pageHistory,
     'stats': pageStats,
+    'audit': pageAudit,
+    'ability': pageAbility,
+    'daily': pageDaily,
     'me': pageMe,
     'settings': pageSettings
   };
@@ -4659,12 +5911,25 @@ const App = (() => {
     const last = await DB.metaGet('lastSession');
     const recycle = await DB.recycleList();
 
-    // 每库缺答案数 + 章节数（各一次遍历）
+    // 每库缺答案数 + 章节数（各一次遍历）；顺带收集全部题目给「每日一练」用
     const info = {};
+    const allQ = [];
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
+      allQ.push(...qs);
       info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
     }));
+
+    // 每日一练：今天这一组（首次进首页时生成并落库，同一天不再变）+ 连续天数
+    let daily = null, streak = { days: 0, todayDone: false };
+    if (allQ.length) {
+      try {
+        daily = await dailyPlan(allQ);
+        streak = Daily.streak(await historyList(), todayKey()) || streak;
+      } catch (e) {
+        console.error('[daily] 首页卡片生成失败', e);
+      }
+    }
 
     // 列表工具状态：题库多时不用一直往下翻（搜索 + 排序 + 折叠）
     let sortBy = 'recent', keyword = '', expanded = false;
@@ -4683,6 +5948,18 @@ const App = (() => {
         </div>
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
+      </div>` : ''}
+      ${daily ? `
+      <div class="daily-card" onclick="App.navigate('#/daily')">
+        <div class="daily-top"><span>每日一练</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
+        <div class="daily-title">${daily.done ? '今天已完成 ✓' : '今天练 ' + (daily.total || 0) + ' 题'}</div>
+        <div class="daily-sub">${daily.done
+          ? `答对 ${daily.correct ?? 0} / ${daily.total || 0} 题，点开看小结`
+          : '错题 + 新题 + 复习，一点就开'}</div>
+        <div class="daily-foot">
+          <div class="daily-bar"><i style="width:${daily.done ? 100 : 0}%"></i></div>
+          <span class="daily-btn">${daily.done ? '看小结' : '开始'}</span>
+        </div>
       </div>` : ''}
       <div class="quick-grid">
         <button class="quick-tile" onclick="App.navigate('#/import')">
@@ -5048,7 +6325,7 @@ const App = (() => {
       await DB.questionAddMany(qs);
       await DB.bankAdd(bank);
       const noAns = qs.filter(q => !q.answer).length;
-      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`;
+      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}，可在题库页点「🩺 体检」查一遍`;
       toast(`已导入 ${qs.length} 题`);
       navigate('#/home');
     };
@@ -5629,6 +6906,7 @@ const App = (() => {
         <div class="btn-row">
           <button class="btn ghost" id="sel-all">全选可见</button>
           <button class="btn ghost" id="sel-none">清空选择</button>
+          <button class="btn ghost" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
         </div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
         <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
@@ -7830,10 +9108,30 @@ const App = (() => {
       id: DB.uid(), at: Date.now(), exam: !!s.exam,
       label: s.exam ? '模拟考试' : (s.opts && s.opts.mode === 'wrong' ? '错题重做'
         : s.opts && s.opts.mode === 'star' ? '收藏练习'
-        : s.opts && s.opts.mode === 'search' ? '搜索练习' : '练习'),
+        : s.opts && s.opts.mode === 'search' ? '搜索练习'
+        : s.opts && s.opts.mode === 'daily' ? '每日一练'
+        : s.opts && s.opts.mode === 'ability' ? '能力预测卷' : '练习'),
       total: r.total, answered: r.answered, correct: r.correct, wrong: r.wrong,
       unanswered: r.unanswered, acc, timeUsed: r.timeUsed, rows
     });
+    // 每日一练：把今天的这一组标记为已完成（连续天数从练习记录推导，不再单独存）
+    if (s._daily) {
+      try {
+        const cur = (await DB.metaGet('daily')) || {};
+        await DB.metaSet('daily', {
+          ...cur,
+          date: s._daily.date,
+          done: true,
+          correct: r.correct,
+          total: s._daily.total || r.total,
+          answered: r.answered,
+          acc,
+          at: Date.now()
+        });
+      } catch (e) {
+        console.error('[daily] 标记完成失败', e);
+      }
+    }
   }
 
   async function pageHistory(params) {
@@ -7928,12 +9226,37 @@ const App = (() => {
     let onlyWeak = false;
     const LIMIT = 12;
 
+    // 能力估分（本地 1PL/Elo，全量重算，不新增存储）；数据不足时只显示入口
+    let ab = null, abWeak = null;
+    try {
+      ab = (await abilityCompute()).est || null;
+      if (ab) {
+        abWeak = (ab.sections || [])
+          .filter(x => (x.n || 0) >= 2)
+          .sort((a, b) => (a.score || 0) - (b.score || 0))[0] || null;
+      }
+    } catch (e) {
+      console.error('[ability] 统计页估分失败', e);
+    }
+    const abPred = (ab && ab.predicted) || {};
+    const abScore = Number.isFinite(abPred.score) ? Math.round(abPred.score) : null;
+
     $view().innerHTML = `
       <div class="stats-row">
         <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
       </div>
+      ${abScore != null ? `
+      <div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
+        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">按题目难度推算 · 点开详情</span></div>
+        <div class="audit-sum" style="margin:0">
+          <div class="audit-stat"><b>${abScore}</b><span>预计卷面分</span></div>
+          <div class="audit-stat"><b>${Math.round((abPred.passRate || 0) * 100)}%</b><span>及格概率</span></div>
+          <div class="audit-stat"><b>${abWeak ? Math.round(abWeak.score) : '—'}</b><span>${abWeak ? '最弱章节' : '暂无一章'}</span></div>
+        </div>
+      </div>` : `
+      <button class="btn ghost big" onclick="App.navigate('#/ability')">📈 能力估分（再多练几题就更准）</button>`}
       <button class="btn ghost big" onclick="App.navigate('#/history')">📋 练习记录${histCount ? `（${histCount}）` : ''}</button>
       <div class="card">
         <div class="card-title">章节正确率（薄弱在前）</div>
@@ -8305,7 +9628,466 @@ const App = (() => {
     }
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, toast };
+  /* ================= 题库体检（Audit）/ 能力估分（Ability）/ 每日一练（Daily） ================= */
+  const QTYPE_NAME = { single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题' };
+  const AUDIT_LEVEL_NAME = { error: '错误', warn: '警告', info: '提示' };
+  const AUDIT_GROUP_TITLE = {
+    'ans-out-of-range': '答案不在选项里',
+    'dup-option-text': '选项文本重复',
+    'missing-option-key': '选项字母跳号',
+    'single-multi-mismatch': '题型与答案数量不符',
+    'answer-explanation-conflict': '解析与答案矛盾',
+    'judge-shape': '判断题格式异常',
+    'stem-truncated': '题干疑似被截断',
+    'empty-explanation': '缺解析',
+    'duplicate-question': '疑似重复题'
+  };
+
+  async function allBanksQuestions() {
+    const banks = await DB.bankList();
+    const questions = [];
+    for (const b of banks) questions.push(...await DB.questionsByBank(b.id));
+    return { banks, questions };
+  }
+
+  function todayKey() {
+    return (typeof Daily !== 'undefined' && Daily.dateKey)
+      ? Daily.dateKey(Date.now())
+      : new Date().toISOString().slice(0, 10);
+  }
+
+  /* ---------- 页面：题库体检 ---------- */
+  async function pageAudit(params) {
+    const bankId = params && params[0];
+    const bank = bankId ? await DB.bankGet(bankId) : null;
+    if (bankId && !bank) return navigate('#/home');
+    topbar(bank ? '体检 · ' + String(bank.name).slice(0, 8) : '题库体检', bankId ? '#/bank/' + bankId : '#/home');
+
+    const qs = bankId ? await DB.questionsByBank(bankId) : (await allBanksQuestions()).questions;
+    if (!qs.length) {
+      $view().innerHTML = '<div class="empty" style="padding:40px 0">这里还没有题目，先导入题库再体检</div>';
+      return;
+    }
+    const res = Audit.bank(qs) || { summary: {}, issues: [] };
+    const sum = res.summary || {};
+    const nErr = Number(sum.error) || 0, nWarn = Number(sum.warn) || 0, nInfo = Number(sum.info) || 0;
+    const issues = Array.isArray(res.issues) ? res.issues : [];
+    let filter = nErr ? 'error' : 'all';
+
+    $view().innerHTML = `
+      <div class="audit-sum">
+        <div class="audit-stat error"><b>${nErr}</b><span>必须修</span></div>
+        <div class="audit-stat warn"><b>${nWarn}</b><span>建议看</span></div>
+        <div class="audit-stat info"><b>${nInfo}</b><span>可忽略</span></div>
+      </div>
+      <div class="muted small" style="margin:2px 0 4px">
+        体检只判断机器能确定的问题：答案与选项/题型对不上、选项重复、题干重复、解析与答案矛盾。
+        「解析写得对不对」这类语义问题不判。点任意一条可直接改题。
+      </div>
+      <div class="chips" id="audit-filter">
+        <button class="chip" data-v="all">全部 ${issues.length}</button>
+        <button class="chip" data-v="error">错误 ${nErr}</button>
+        <button class="chip" data-v="warn">警告 ${nWarn}</button>
+        <button class="chip" data-v="info">提示 ${nInfo}</button>
+      </div>
+      <div id="audit-list"></div>
+      <button class="btn ghost big" id="audit-export" style="margin-top:14px">导出体检报告（.md）</button>`;
+
+    const listEl = document.getElementById('audit-list');
+    const filterEl = document.getElementById('audit-filter');
+    const chips = [...filterEl.querySelectorAll('button[data-v]')];
+    const syncChips = () => chips.forEach(b => b.classList.toggle('on', b.dataset.v === filter));
+
+    const draw = () => {
+      syncChips();
+      const cur = issues.filter(it => filter === 'all' || it.level === filter);
+      if (!cur.length) {
+        listEl.innerHTML = `<div class="empty" style="padding:30px 0">${filter === 'all' ? '✓ 没查出问题' : '这一档没有条目'}</div>`;
+        return;
+      }
+      const groups = new Map();
+      for (const it of cur) {
+        if (!groups.has(it.code)) groups.set(it.code, []);
+        groups.get(it.code).push(it);
+      }
+      listEl.innerHTML = [...groups].map(([code, list]) => `
+        <div class="audit-group">
+          <div class="audit-group-title">${escapeHtml(AUDIT_GROUP_TITLE[code] || code)}<span class="muted small">${list.length} 条</span></div>
+          ${list.slice(0, 60).map(it => `
+            <div class="audit-item" data-qid="${escapeHtml(String(it.qid || ''))}">
+              <span class="audit-badge ${it.level}">${AUDIT_LEVEL_NAME[it.level] || it.level}</span>
+              <div class="audit-body">
+                <div class="audit-msg">${escapeHtml(String(it.message || ''))}</div>
+                ${it.hint ? `<div class="audit-hint">${escapeHtml(String(it.hint))}</div>` : ''}
+              </div>
+              <span class="audit-no">${it.no != null ? '第 ' + escapeHtml(String(it.no)) + ' 题' : ''}</span>
+            </div>`).join('')}
+          ${list.length > 60 ? `<div class="muted small" style="padding:8px 0">还有 ${list.length - 60} 条（导出报告看全部）</div>` : ''}
+        </div>`).join('');
+      listEl.querySelectorAll('[data-qid]').forEach(el => {
+        el.onclick = () => {
+          if (!el.dataset.qid) return;
+          openQuestionEditor(el.dataset.qid, () => render());
+        };
+      });
+    };
+
+    filterEl.onclick = e => {
+      const b = e.target.closest('button[data-v]');
+      if (!b) return;
+      filter = b.dataset.v;
+      draw();
+    };
+    document.getElementById('audit-export').onclick = async () => {
+      try {
+        const md = Audit.report(issues, {
+          bankName: bank ? bank.name : '全部题库',
+          date: new Date().toLocaleString(),
+          total: qs.length
+        });
+        const safe = String(bank ? bank.name : '全部题库').replace(/[\\/:*?"<>|]/g, '_').slice(0, 20);
+        const r = await saveTextFile(`体检报告-${safe}-${todayKey()}.md`, md, 'text/markdown');
+        toast('已导出：' + r.path);
+      } catch (e) {
+        toast('导出失败：' + String(e.message || e).slice(0, 60));
+      }
+    };
+    draw();
+  }
+
+  /* 入口：从题库页点「体检」进来 */
+  function openAudit(bankId) {
+    navigate(bankId ? '#/audit/' + bankId : '#/audit');
+  }
+
+  /* ---------- 能力估分 ---------- */
+  async function abilityCompute() {
+    const { banks, questions } = await allBanksQuestions();
+    const hist = await historyList();
+    const rows = [];
+    for (let i = hist.length - 1; i >= 0; i--) {
+      for (const row of (hist[i].rows || [])) {
+        if (row && row.qid) rows.push({ qid: row.qid, status: row.status });
+      }
+    }
+    const byId = new Map(questions.map(q => [q.id, q]));
+    let examShape = null;
+    const lastExam = hist.find(r => r.exam && (r.rows || []).length);
+    if (lastExam) {
+      examShape = {};
+      for (const row of lastExam.rows) {
+        const q = byId.get(row.qid);
+        if (q) examShape[q.type] = (examShape[q.type] || 0) + 1;
+      }
+    }
+    const sectionTitle = new Map();
+    for (const b of banks) {
+      for (const s of (b.sections || [])) sectionTitle.set(b.id + ':' + String(s.secIdx), s.title);
+    }
+    let est;
+    try {
+      est = Ability.estimate({ questions, rows, examShape, opts: { sectionTitle } });
+    } catch (e) {
+      console.error('[ability]', e);
+      est = { insufficient: true, n: rows.length, predicted: {}, sections: [], items: {} };
+    }
+    return { est: est || {}, questions, banks, rows, sectionTitle };
+  }
+
+  async function pageAbility() {
+    topbar('能力估分', '#/stats');
+    const { est, questions } = await abilityCompute();
+    const pred = est.predicted || {};
+    const score = Number.isFinite(pred.score) ? Math.round(pred.score) : null;
+    const low = Number.isFinite(pred.low) ? Math.round(pred.low) : null;
+    const high = Number.isFinite(pred.high) ? Math.round(pred.high) : null;
+    const passRate = Number.isFinite(pred.passRate) ? Math.round(pred.passRate * 100) : null;
+    const n = Number(est.n) || 0;
+    const sections = (est.sections || []).filter(s => (s.n || 0) >= 2).slice().sort((a, b) => (a.score || 0) - (b.score || 0)).slice(0, 5);
+    const canDrill = questions.length > 0;
+
+    $view().innerHTML = `
+      <div class="card">
+        ${score != null ? `
+        <div class="ability-hero">
+          <div class="ability-score">${score}<small> / 100</small></div>
+          <div class="ability-range">预计区间 ${low}–${high} · 基于 ${n} 次作答</div>
+          ${passRate != null ? `<div class="ability-pass">及格（60 分）概率 <b style="color:${passRate >= 60 ? 'var(--ok)' : 'var(--bad)'}">${passRate}%</b></div>` : ''}
+          <div class="ability-line"><i style="width:${Math.max(2, Math.min(100, score))}%"></i></div>
+        </div>` : `
+        <div class="empty" style="padding:20px 0">还在攒数据</div>`}
+        <div class="muted small" style="margin-top:10px">
+          ${n < 30
+            ? `已作答 ${n} 题，再多练 ${30 - n} 题估分会更准（现在的结果波动较大）。`
+            : '这个分数是根据你做过的题、按题目难度推算的「这套题库的卷面分」，不等于官方考试分。'}
+        </div>
+      </div>
+      ${sections.length ? `
+      <div class="card">
+        <div class="card-title">最该补的章节</div>
+        ${sections.map(s => `
+          <div class="audit-item" style="cursor:default">
+            <span class="audit-badge ${s.score >= 60 ? 'info' : 'error'}">${Math.round(s.score)}</span>
+            <div class="audit-body"><div class="audit-msg">${escapeHtml(String(s.title || '未分节'))}</div>
+            <div class="audit-hint">预计正确率 · 该章作答 ${s.n || 0} 次</div></div>
+          </div>`).join('')}
+      </div>` : ''}
+      ${canDrill ? `<button class="btn primary big" id="ability-drill">按当前水平练 10 题</button>` : ''}`;
+
+    const drill = document.getElementById('ability-drill');
+    if (drill) drill.onclick = () => startAbilityDrill(questions);
+  }
+
+  async function startAbilityDrill(questions) {
+    const ok = await guardUnfinishedSession();
+    if (!ok) return;
+    const shape = (typeof Ability !== 'undefined' && Ability.DEFAULT_SHAPE) || { single: 6, multi: 2, judge: 1, fill: 1 };
+    const pool = questions.filter(q => q.answer);
+    const picked = [];
+    const used = new Set();
+    for (const [type, want] of Object.entries(shape)) {
+      let got = 0;
+      for (const q of pool) {
+        if (got >= want) break;
+        if (q.type !== type || used.has(q.id)) continue;
+        used.add(q.id); picked.push(q); got++;
+      }
+    }
+    for (const q of pool) {
+      if (picked.length >= 10) break;
+      if (used.has(q.id)) continue;
+      used.add(q.id); picked.push(q);
+    }
+    if (!picked.length) return toast('题库里还没有带答案的题');
+    session = new QuizSession(picked, { shuffle: false, mode: 'ability' });
+    navigate('#/quiz');
+  }
+
+  /* ---------- 每日一练 ---------- */
+  async function dailyState() {
+    return (await DB.metaGet('daily')) || null;
+  }
+
+  async function dailyPlan(questions) {
+    const dateKey = todayKey();
+    const saved = await dailyState();
+    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length) {
+      const ids = new Set(questions.map(q => q.id));
+      if (saved.qids.every(id => ids.has(id))) return saved;
+    }
+    const latest = await DB.latestByQuestion();
+    const mode = (await DB.metaGet('dailyMode')) || 'standard';
+    let plan = null;
+    try {
+      plan = Daily.plan({ questions, latest, dateKey, size: 8, mode });
+    } catch (e) {
+      console.error('[daily]', e);
+      plan = { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 } };
+    }
+    const meta = {
+      date: dateKey,
+      qids: plan.qids || [],
+      breakdown: plan.breakdown || { wrong: 0, weak: 0, fresh: 0, review: 0 },
+      done: false,
+      total: (plan.qids || []).length,
+      at: Date.now()
+    };
+    await DB.metaSet('daily', meta);
+    return meta;
+  }
+
+  async function pageDaily() {
+    topbar('每日一练', '#/home');
+    const { questions } = await allBanksQuestions();
+    if (!questions.length) {
+      $view().innerHTML = `<div class="empty" style="padding:40px 0">还没有题库<br><span class="muted small">先导入一份题库，明天就有题可练</span></div>
+        <button class="btn primary big" onclick="App.navigate('#/import')">去导入</button>`;
+      return;
+    }
+    const meta = await dailyPlan(questions);
+    const hist = await historyList();
+    let st = { days: 0, todayDone: false };
+    try { st = Daily.streak(hist, todayKey()) || st; } catch (e) { console.error('[streak]', e); }
+    const bd = meta.breakdown || {};
+    const done = !!meta.done;
+    const parts = [
+      bd.wrong ? `错题 ${bd.wrong}` : '',
+      bd.fresh ? `新题 ${bd.fresh}` : '',
+      bd.review ? `复习 ${bd.review}` : ''
+    ].filter(Boolean).join(' · ');
+
+    $view().innerHTML = `
+      <div class="daily-card">
+        <div class="daily-top"><span>每天一组 · ${escapeHtml(meta.date || todayKey())}</span><span class="daily-streak">🔥 连续 ${st.days || 0} 天</span></div>
+        <div class="daily-title">${done ? '今天已完成' : '今天练 ' + (meta.total || 0) + ' 题'}</div>
+        <div class="daily-sub">${done
+          ? `答对 ${meta.correct ?? 0} / ${meta.total || 0} 题${parts ? ' · ' + parts : ''}`
+          : (parts || '按你的错题和新题自动配比')}</div>
+        <div class="daily-foot">
+          <div class="daily-bar"><i style="width:${done ? 100 : 0}%"></i></div>
+          <button class="daily-btn" id="daily-go">${done ? '再来一组' : '开始'}</button>
+        </div>
+      </div>
+      <div class="muted small" style="margin-top:10px">
+        每天打开 App 就能点一次：优先补错题，再掺新题和已掌握的复习题。同一天的题不会变，做一半退出还能接着做。
+      </div>`;
+
+    document.getElementById('daily-go').onclick = () => startDaily(questions, done);
+  }
+
+  async function startDaily(questions, again) {
+    const byId = new Map(questions.map(q => [q.id, q]));
+    let meta;
+    if (again) {
+      const latest = await DB.latestByQuestion();
+      let plan = null;
+      try {
+        plan = Daily.plan({ questions, latest, dateKey: todayKey() + '-again-' + Date.now(), size: 8 });
+      } catch (e) {
+        console.error('[daily again]', e);
+        plan = { qids: [] };
+      }
+      meta = { date: todayKey(), qids: plan.qids || [], total: (plan.qids || []).length, done: false, again: true };
+    } else {
+      meta = await dailyPlan(questions);
+    }
+    const list = (meta.qids || []).map(id => byId.get(id)).filter(Boolean);
+    if (!list.length) return toast('题目可能已被删除，请重新生成');
+    const ok = await guardUnfinishedSession();
+    if (!ok) return;
+    session = new QuizSession(list, { shuffle: false, mode: 'daily' });
+    if (!again) session._daily = { date: meta.date, total: list.length };
+    navigate('#/quiz');
+  }
+
+  /* ---------- 通用：题目编辑弹层（体检/估分页复用） ---------- */
+  async function openQuestionEditor(qid, onSaved) {
+    const q = await DB.questionGet(qid);
+    if (!q) return toast('题目已经不存在了');
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    const st = {
+      type: q.type || 'single',
+      sel: new Set(String(q.answer || '').toUpperCase().match(/[A-H]/g) || []),
+      ansText: String(q.answer || '').replace(/\|\|\|/g, '/'),
+      optsText: q.options && q.type !== 'judge'
+        ? Object.entries(q.options).map(([k, v]) => k + '. ' + v).join('\n')
+        : '',
+      exp: q.explanation || ''
+    };
+    const parseOpts = text => {
+      const out = {};
+      let auto = 0;
+      for (const line of String(text || '').split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        const m = t.match(/^([A-Ha-h])\s*[.、．:：)）]?\s*(.*)$/);
+        if (m) out[m[1].toUpperCase()] = m[2].trim();
+        else out[String.fromCharCode(65 + (auto++))] = t;
+      }
+      return out;
+    };
+
+    const readInputs = () => {
+      const a = mask.querySelector('#qe-ans');
+      const o = mask.querySelector('#qe-opts');
+      const e = mask.querySelector('#qe-exp');
+      if (a) st.ansText = a.value;
+      if (o) st.optsText = o.value;
+      if (e) st.exp = e.value;
+    };
+
+    const draw = () => {
+      const isFill = st.type === 'fill';
+      const isJudge = st.type === 'judge';
+      const isChoice = st.type === 'single' || st.type === 'multi';
+      const keys = isJudge ? ['A', 'B'] : (isChoice ? Object.keys(parseOpts(st.optsText)) : []);
+      const types = [['single', '单选'], ['multi', '多选'], ['judge', '判断'], ['fill', '填空']];
+      mask.innerHTML = `
+        <div class="sheet-panel">
+          <div class="sheet-head">
+            <b>修改第 ${escapeHtml(String(q.no ?? '?'))} 题</b>
+            <button class="sheet-close" id="qe-close">×</button>
+          </div>
+          <div class="field"><span>题型</span>
+            <div class="seg" style="flex-wrap:wrap">
+              ${types.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:62px;padding:8px 12px">${n}</button>`).join('')}
+            </div>
+          </div>
+          <div class="field"><span>答案${isFill ? '（多空用 / 分隔）' : ''}</span>
+            ${isFill
+              ? `<input type="text" id="qe-ans" value="${escapeHtml(st.ansText)}" placeholder="标准答案">`
+              : `<div class="seg" id="qe-letters" style="flex-wrap:wrap">
+                  ${keys.length
+                    ? keys.map(k => `<button data-k="${k}" class="${st.sel.has(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:50px;padding:8px 12px">${isJudge ? (k === 'A' ? '正确' : '错误') : k}</button>`).join('')
+                    : '<span class="muted small">先填写选项</span>'}
+                </div>`}
+          </div>
+          ${isChoice ? `
+          <div class="field"><span>选项（每行一个，A. 文本）</span>
+            <textarea id="qe-opts" rows="4" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.optsText)}</textarea>
+          </div>` : ''}
+          <div class="field"><span>解析（可空）</span>
+            <textarea id="qe-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.exp)}</textarea>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="qe-cancel">取消</button>
+            <button class="btn primary" id="qe-save">保存</button>
+          </div>
+        </div>`;
+
+      mask.querySelector('#qe-close').onclick = () => mask.remove();
+      mask.querySelector('#qe-cancel').onclick = () => mask.remove();
+      mask.onclick = e => { if (e.target === mask) mask.remove(); };
+      mask.querySelectorAll('button[data-t]').forEach(b => {
+        b.onclick = () => {
+          readInputs();
+          const nt = b.dataset.t;
+          if (nt === st.type) return;
+          st.type = nt;
+          if (nt === 'judge') st.sel = new Set([...st.sel].filter(k => k === 'A' || k === 'B'));
+          if (nt === 'fill' && !st.ansText) st.ansText = '';
+          draw();
+        };
+      });
+      mask.querySelectorAll('button[data-k]').forEach(b => {
+        b.onclick = () => {
+          const k = b.dataset.k;
+          if (st.type === 'single' || st.type === 'judge') st.sel = new Set([k]);
+          else st.sel.has(k) ? st.sel.delete(k) : st.sel.add(k);
+          draw();
+        };
+      });
+      mask.querySelector('#qe-save').onclick = async () => {
+        readInputs();
+        const opts = st.type === 'judge' ? { A: '正确', B: '错误' }
+          : (st.type === 'fill' ? null : parseOpts(st.optsText));
+        let answer;
+        if (st.type === 'fill') {
+          answer = st.ansText.split('/').map(s => s.trim()).filter(Boolean).join('|||');
+        } else {
+          answer = [...st.sel].sort().join('');
+        }
+        if (st.type !== 'fill') {
+          const ks = Object.keys(opts || {});
+          if (!ks.length) return toast('请先填写选项');
+          const bad = answer.split('').filter(k => !ks.includes(k));
+          if (bad.length) return toast('答案 ' + bad.join('') + ' 不在选项里，请检查');
+          if (st.type === 'single' && answer.length > 1) return toast('单选题只能有一个答案');
+          if (st.type === 'multi' && !answer) return toast('多选题至少要选一个答案');
+        }
+        await DB.questionPut({ ...q, type: st.type, answer: answer || null, options: opts, explanation: st.exp.trim() || null });
+        mask.remove();
+        toast('已保存');
+        if (onSaved) onSaved();
+      };
+    };
+
+    draw();
+    document.body.appendChild(mask);
+  }
+
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

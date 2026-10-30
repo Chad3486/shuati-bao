@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.18'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.20'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -26,6 +26,9 @@ const App = (() => {
     'search': pageSearch,
     'history': pageHistory,
     'stats': pageStats,
+    'audit': pageAudit,
+    'ability': pageAbility,
+    'daily': pageDaily,
     'me': pageMe,
     'settings': pageSettings
   };
@@ -510,12 +513,25 @@ const App = (() => {
     const last = await DB.metaGet('lastSession');
     const recycle = await DB.recycleList();
 
-    // 每库缺答案数 + 章节数（各一次遍历）
+    // 每库缺答案数 + 章节数（各一次遍历）；顺带收集全部题目给「每日一练」用
     const info = {};
+    const allQ = [];
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
+      allQ.push(...qs);
       info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
     }));
+
+    // 每日一练：今天这一组（首次进首页时生成并落库，同一天不再变）+ 连续天数
+    let daily = null, streak = { days: 0, todayDone: false };
+    if (allQ.length) {
+      try {
+        daily = await dailyPlan(allQ);
+        streak = Daily.streak(await historyList(), todayKey()) || streak;
+      } catch (e) {
+        console.error('[daily] 首页卡片生成失败', e);
+      }
+    }
 
     // 列表工具状态：题库多时不用一直往下翻（搜索 + 排序 + 折叠）
     let sortBy = 'recent', keyword = '', expanded = false;
@@ -534,6 +550,18 @@ const App = (() => {
         </div>
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
+      </div>` : ''}
+      ${daily ? `
+      <div class="daily-card" onclick="App.navigate('#/daily')">
+        <div class="daily-top"><span>每日一练</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
+        <div class="daily-title">${daily.done ? '今天已完成 ✓' : '今天练 ' + (daily.total || 0) + ' 题'}</div>
+        <div class="daily-sub">${daily.done
+          ? `答对 ${daily.correct ?? 0} / ${daily.total || 0} 题，点开看小结`
+          : '错题 + 新题 + 复习，一点就开'}</div>
+        <div class="daily-foot">
+          <div class="daily-bar"><i style="width:${daily.done ? 100 : 0}%"></i></div>
+          <span class="daily-btn">${daily.done ? '看小结' : '开始'}</span>
+        </div>
       </div>` : ''}
       <div class="quick-grid">
         <button class="quick-tile" onclick="App.navigate('#/import')">
@@ -899,7 +927,7 @@ const App = (() => {
       await DB.questionAddMany(qs);
       await DB.bankAdd(bank);
       const noAns = qs.filter(q => !q.answer).length;
-      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}`;
+      importStatus.textContent = `✓ 已导入「${name}」共 ${qs.length} 题${noAns ? `（${noAns} 题缺答案）` : ''}，可在题库页点「🩺 体检」查一遍`;
       toast(`已导入 ${qs.length} 题`);
       navigate('#/home');
     };
@@ -1480,6 +1508,7 @@ const App = (() => {
         <div class="btn-row">
           <button class="btn ghost" id="sel-all">全选可见</button>
           <button class="btn ghost" id="sel-none">清空选择</button>
+          <button class="btn ghost" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
         </div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
         <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
@@ -3681,10 +3710,30 @@ const App = (() => {
       id: DB.uid(), at: Date.now(), exam: !!s.exam,
       label: s.exam ? '模拟考试' : (s.opts && s.opts.mode === 'wrong' ? '错题重做'
         : s.opts && s.opts.mode === 'star' ? '收藏练习'
-        : s.opts && s.opts.mode === 'search' ? '搜索练习' : '练习'),
+        : s.opts && s.opts.mode === 'search' ? '搜索练习'
+        : s.opts && s.opts.mode === 'daily' ? '每日一练'
+        : s.opts && s.opts.mode === 'ability' ? '能力预测卷' : '练习'),
       total: r.total, answered: r.answered, correct: r.correct, wrong: r.wrong,
       unanswered: r.unanswered, acc, timeUsed: r.timeUsed, rows
     });
+    // 每日一练：把今天的这一组标记为已完成（连续天数从练习记录推导，不再单独存）
+    if (s._daily) {
+      try {
+        const cur = (await DB.metaGet('daily')) || {};
+        await DB.metaSet('daily', {
+          ...cur,
+          date: s._daily.date,
+          done: true,
+          correct: r.correct,
+          total: s._daily.total || r.total,
+          answered: r.answered,
+          acc,
+          at: Date.now()
+        });
+      } catch (e) {
+        console.error('[daily] 标记完成失败', e);
+      }
+    }
   }
 
   async function pageHistory(params) {
@@ -3779,12 +3828,37 @@ const App = (() => {
     let onlyWeak = false;
     const LIMIT = 12;
 
+    // 能力估分（本地 1PL/Elo，全量重算，不新增存储）；数据不足时只显示入口
+    let ab = null, abWeak = null;
+    try {
+      ab = (await abilityCompute()).est || null;
+      if (ab) {
+        abWeak = (ab.sections || [])
+          .filter(x => (x.n || 0) >= 2)
+          .sort((a, b) => (a.score || 0) - (b.score || 0))[0] || null;
+      }
+    } catch (e) {
+      console.error('[ability] 统计页估分失败', e);
+    }
+    const abPred = (ab && ab.predicted) || {};
+    const abScore = Number.isFinite(abPred.score) ? Math.round(abPred.score) : null;
+
     $view().innerHTML = `
       <div class="stats-row">
         <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
       </div>
+      ${abScore != null ? `
+      <div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
+        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">按题目难度推算 · 点开详情</span></div>
+        <div class="audit-sum" style="margin:0">
+          <div class="audit-stat"><b>${abScore}</b><span>预计卷面分</span></div>
+          <div class="audit-stat"><b>${Math.round((abPred.passRate || 0) * 100)}%</b><span>及格概率</span></div>
+          <div class="audit-stat"><b>${abWeak ? Math.round(abWeak.score) : '—'}</b><span>${abWeak ? '最弱章节' : '暂无一章'}</span></div>
+        </div>
+      </div>` : `
+      <button class="btn ghost big" onclick="App.navigate('#/ability')">📈 能力估分（再多练几题就更准）</button>`}
       <button class="btn ghost big" onclick="App.navigate('#/history')">📋 练习记录${histCount ? `（${histCount}）` : ''}</button>
       <div class="card">
         <div class="card-title">章节正确率（薄弱在前）</div>
@@ -4156,7 +4230,466 @@ const App = (() => {
     }
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, toast };
+  /* ================= 题库体检（Audit）/ 能力估分（Ability）/ 每日一练（Daily） ================= */
+  const QTYPE_NAME = { single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题' };
+  const AUDIT_LEVEL_NAME = { error: '错误', warn: '警告', info: '提示' };
+  const AUDIT_GROUP_TITLE = {
+    'ans-out-of-range': '答案不在选项里',
+    'dup-option-text': '选项文本重复',
+    'missing-option-key': '选项字母跳号',
+    'single-multi-mismatch': '题型与答案数量不符',
+    'answer-explanation-conflict': '解析与答案矛盾',
+    'judge-shape': '判断题格式异常',
+    'stem-truncated': '题干疑似被截断',
+    'empty-explanation': '缺解析',
+    'duplicate-question': '疑似重复题'
+  };
+
+  async function allBanksQuestions() {
+    const banks = await DB.bankList();
+    const questions = [];
+    for (const b of banks) questions.push(...await DB.questionsByBank(b.id));
+    return { banks, questions };
+  }
+
+  function todayKey() {
+    return (typeof Daily !== 'undefined' && Daily.dateKey)
+      ? Daily.dateKey(Date.now())
+      : new Date().toISOString().slice(0, 10);
+  }
+
+  /* ---------- 页面：题库体检 ---------- */
+  async function pageAudit(params) {
+    const bankId = params && params[0];
+    const bank = bankId ? await DB.bankGet(bankId) : null;
+    if (bankId && !bank) return navigate('#/home');
+    topbar(bank ? '体检 · ' + String(bank.name).slice(0, 8) : '题库体检', bankId ? '#/bank/' + bankId : '#/home');
+
+    const qs = bankId ? await DB.questionsByBank(bankId) : (await allBanksQuestions()).questions;
+    if (!qs.length) {
+      $view().innerHTML = '<div class="empty" style="padding:40px 0">这里还没有题目，先导入题库再体检</div>';
+      return;
+    }
+    const res = Audit.bank(qs) || { summary: {}, issues: [] };
+    const sum = res.summary || {};
+    const nErr = Number(sum.error) || 0, nWarn = Number(sum.warn) || 0, nInfo = Number(sum.info) || 0;
+    const issues = Array.isArray(res.issues) ? res.issues : [];
+    let filter = nErr ? 'error' : 'all';
+
+    $view().innerHTML = `
+      <div class="audit-sum">
+        <div class="audit-stat error"><b>${nErr}</b><span>必须修</span></div>
+        <div class="audit-stat warn"><b>${nWarn}</b><span>建议看</span></div>
+        <div class="audit-stat info"><b>${nInfo}</b><span>可忽略</span></div>
+      </div>
+      <div class="muted small" style="margin:2px 0 4px">
+        体检只判断机器能确定的问题：答案与选项/题型对不上、选项重复、题干重复、解析与答案矛盾。
+        「解析写得对不对」这类语义问题不判。点任意一条可直接改题。
+      </div>
+      <div class="chips" id="audit-filter">
+        <button class="chip" data-v="all">全部 ${issues.length}</button>
+        <button class="chip" data-v="error">错误 ${nErr}</button>
+        <button class="chip" data-v="warn">警告 ${nWarn}</button>
+        <button class="chip" data-v="info">提示 ${nInfo}</button>
+      </div>
+      <div id="audit-list"></div>
+      <button class="btn ghost big" id="audit-export" style="margin-top:14px">导出体检报告（.md）</button>`;
+
+    const listEl = document.getElementById('audit-list');
+    const filterEl = document.getElementById('audit-filter');
+    const chips = [...filterEl.querySelectorAll('button[data-v]')];
+    const syncChips = () => chips.forEach(b => b.classList.toggle('on', b.dataset.v === filter));
+
+    const draw = () => {
+      syncChips();
+      const cur = issues.filter(it => filter === 'all' || it.level === filter);
+      if (!cur.length) {
+        listEl.innerHTML = `<div class="empty" style="padding:30px 0">${filter === 'all' ? '✓ 没查出问题' : '这一档没有条目'}</div>`;
+        return;
+      }
+      const groups = new Map();
+      for (const it of cur) {
+        if (!groups.has(it.code)) groups.set(it.code, []);
+        groups.get(it.code).push(it);
+      }
+      listEl.innerHTML = [...groups].map(([code, list]) => `
+        <div class="audit-group">
+          <div class="audit-group-title">${escapeHtml(AUDIT_GROUP_TITLE[code] || code)}<span class="muted small">${list.length} 条</span></div>
+          ${list.slice(0, 60).map(it => `
+            <div class="audit-item" data-qid="${escapeHtml(String(it.qid || ''))}">
+              <span class="audit-badge ${it.level}">${AUDIT_LEVEL_NAME[it.level] || it.level}</span>
+              <div class="audit-body">
+                <div class="audit-msg">${escapeHtml(String(it.message || ''))}</div>
+                ${it.hint ? `<div class="audit-hint">${escapeHtml(String(it.hint))}</div>` : ''}
+              </div>
+              <span class="audit-no">${it.no != null ? '第 ' + escapeHtml(String(it.no)) + ' 题' : ''}</span>
+            </div>`).join('')}
+          ${list.length > 60 ? `<div class="muted small" style="padding:8px 0">还有 ${list.length - 60} 条（导出报告看全部）</div>` : ''}
+        </div>`).join('');
+      listEl.querySelectorAll('[data-qid]').forEach(el => {
+        el.onclick = () => {
+          if (!el.dataset.qid) return;
+          openQuestionEditor(el.dataset.qid, () => render());
+        };
+      });
+    };
+
+    filterEl.onclick = e => {
+      const b = e.target.closest('button[data-v]');
+      if (!b) return;
+      filter = b.dataset.v;
+      draw();
+    };
+    document.getElementById('audit-export').onclick = async () => {
+      try {
+        const md = Audit.report(issues, {
+          bankName: bank ? bank.name : '全部题库',
+          date: new Date().toLocaleString(),
+          total: qs.length
+        });
+        const safe = String(bank ? bank.name : '全部题库').replace(/[\\/:*?"<>|]/g, '_').slice(0, 20);
+        const r = await saveTextFile(`体检报告-${safe}-${todayKey()}.md`, md, 'text/markdown');
+        toast('已导出：' + r.path);
+      } catch (e) {
+        toast('导出失败：' + String(e.message || e).slice(0, 60));
+      }
+    };
+    draw();
+  }
+
+  /* 入口：从题库页点「体检」进来 */
+  function openAudit(bankId) {
+    navigate(bankId ? '#/audit/' + bankId : '#/audit');
+  }
+
+  /* ---------- 能力估分 ---------- */
+  async function abilityCompute() {
+    const { banks, questions } = await allBanksQuestions();
+    const hist = await historyList();
+    const rows = [];
+    for (let i = hist.length - 1; i >= 0; i--) {
+      for (const row of (hist[i].rows || [])) {
+        if (row && row.qid) rows.push({ qid: row.qid, status: row.status });
+      }
+    }
+    const byId = new Map(questions.map(q => [q.id, q]));
+    let examShape = null;
+    const lastExam = hist.find(r => r.exam && (r.rows || []).length);
+    if (lastExam) {
+      examShape = {};
+      for (const row of lastExam.rows) {
+        const q = byId.get(row.qid);
+        if (q) examShape[q.type] = (examShape[q.type] || 0) + 1;
+      }
+    }
+    const sectionTitle = new Map();
+    for (const b of banks) {
+      for (const s of (b.sections || [])) sectionTitle.set(b.id + ':' + String(s.secIdx), s.title);
+    }
+    let est;
+    try {
+      est = Ability.estimate({ questions, rows, examShape, opts: { sectionTitle } });
+    } catch (e) {
+      console.error('[ability]', e);
+      est = { insufficient: true, n: rows.length, predicted: {}, sections: [], items: {} };
+    }
+    return { est: est || {}, questions, banks, rows, sectionTitle };
+  }
+
+  async function pageAbility() {
+    topbar('能力估分', '#/stats');
+    const { est, questions } = await abilityCompute();
+    const pred = est.predicted || {};
+    const score = Number.isFinite(pred.score) ? Math.round(pred.score) : null;
+    const low = Number.isFinite(pred.low) ? Math.round(pred.low) : null;
+    const high = Number.isFinite(pred.high) ? Math.round(pred.high) : null;
+    const passRate = Number.isFinite(pred.passRate) ? Math.round(pred.passRate * 100) : null;
+    const n = Number(est.n) || 0;
+    const sections = (est.sections || []).filter(s => (s.n || 0) >= 2).slice().sort((a, b) => (a.score || 0) - (b.score || 0)).slice(0, 5);
+    const canDrill = questions.length > 0;
+
+    $view().innerHTML = `
+      <div class="card">
+        ${score != null ? `
+        <div class="ability-hero">
+          <div class="ability-score">${score}<small> / 100</small></div>
+          <div class="ability-range">预计区间 ${low}–${high} · 基于 ${n} 次作答</div>
+          ${passRate != null ? `<div class="ability-pass">及格（60 分）概率 <b style="color:${passRate >= 60 ? 'var(--ok)' : 'var(--bad)'}">${passRate}%</b></div>` : ''}
+          <div class="ability-line"><i style="width:${Math.max(2, Math.min(100, score))}%"></i></div>
+        </div>` : `
+        <div class="empty" style="padding:20px 0">还在攒数据</div>`}
+        <div class="muted small" style="margin-top:10px">
+          ${n < 30
+            ? `已作答 ${n} 题，再多练 ${30 - n} 题估分会更准（现在的结果波动较大）。`
+            : '这个分数是根据你做过的题、按题目难度推算的「这套题库的卷面分」，不等于官方考试分。'}
+        </div>
+      </div>
+      ${sections.length ? `
+      <div class="card">
+        <div class="card-title">最该补的章节</div>
+        ${sections.map(s => `
+          <div class="audit-item" style="cursor:default">
+            <span class="audit-badge ${s.score >= 60 ? 'info' : 'error'}">${Math.round(s.score)}</span>
+            <div class="audit-body"><div class="audit-msg">${escapeHtml(String(s.title || '未分节'))}</div>
+            <div class="audit-hint">预计正确率 · 该章作答 ${s.n || 0} 次</div></div>
+          </div>`).join('')}
+      </div>` : ''}
+      ${canDrill ? `<button class="btn primary big" id="ability-drill">按当前水平练 10 题</button>` : ''}`;
+
+    const drill = document.getElementById('ability-drill');
+    if (drill) drill.onclick = () => startAbilityDrill(questions);
+  }
+
+  async function startAbilityDrill(questions) {
+    const ok = await guardUnfinishedSession();
+    if (!ok) return;
+    const shape = (typeof Ability !== 'undefined' && Ability.DEFAULT_SHAPE) || { single: 6, multi: 2, judge: 1, fill: 1 };
+    const pool = questions.filter(q => q.answer);
+    const picked = [];
+    const used = new Set();
+    for (const [type, want] of Object.entries(shape)) {
+      let got = 0;
+      for (const q of pool) {
+        if (got >= want) break;
+        if (q.type !== type || used.has(q.id)) continue;
+        used.add(q.id); picked.push(q); got++;
+      }
+    }
+    for (const q of pool) {
+      if (picked.length >= 10) break;
+      if (used.has(q.id)) continue;
+      used.add(q.id); picked.push(q);
+    }
+    if (!picked.length) return toast('题库里还没有带答案的题');
+    session = new QuizSession(picked, { shuffle: false, mode: 'ability' });
+    navigate('#/quiz');
+  }
+
+  /* ---------- 每日一练 ---------- */
+  async function dailyState() {
+    return (await DB.metaGet('daily')) || null;
+  }
+
+  async function dailyPlan(questions) {
+    const dateKey = todayKey();
+    const saved = await dailyState();
+    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length) {
+      const ids = new Set(questions.map(q => q.id));
+      if (saved.qids.every(id => ids.has(id))) return saved;
+    }
+    const latest = await DB.latestByQuestion();
+    const mode = (await DB.metaGet('dailyMode')) || 'standard';
+    let plan = null;
+    try {
+      plan = Daily.plan({ questions, latest, dateKey, size: 8, mode });
+    } catch (e) {
+      console.error('[daily]', e);
+      plan = { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 } };
+    }
+    const meta = {
+      date: dateKey,
+      qids: plan.qids || [],
+      breakdown: plan.breakdown || { wrong: 0, weak: 0, fresh: 0, review: 0 },
+      done: false,
+      total: (plan.qids || []).length,
+      at: Date.now()
+    };
+    await DB.metaSet('daily', meta);
+    return meta;
+  }
+
+  async function pageDaily() {
+    topbar('每日一练', '#/home');
+    const { questions } = await allBanksQuestions();
+    if (!questions.length) {
+      $view().innerHTML = `<div class="empty" style="padding:40px 0">还没有题库<br><span class="muted small">先导入一份题库，明天就有题可练</span></div>
+        <button class="btn primary big" onclick="App.navigate('#/import')">去导入</button>`;
+      return;
+    }
+    const meta = await dailyPlan(questions);
+    const hist = await historyList();
+    let st = { days: 0, todayDone: false };
+    try { st = Daily.streak(hist, todayKey()) || st; } catch (e) { console.error('[streak]', e); }
+    const bd = meta.breakdown || {};
+    const done = !!meta.done;
+    const parts = [
+      bd.wrong ? `错题 ${bd.wrong}` : '',
+      bd.fresh ? `新题 ${bd.fresh}` : '',
+      bd.review ? `复习 ${bd.review}` : ''
+    ].filter(Boolean).join(' · ');
+
+    $view().innerHTML = `
+      <div class="daily-card">
+        <div class="daily-top"><span>每天一组 · ${escapeHtml(meta.date || todayKey())}</span><span class="daily-streak">🔥 连续 ${st.days || 0} 天</span></div>
+        <div class="daily-title">${done ? '今天已完成' : '今天练 ' + (meta.total || 0) + ' 题'}</div>
+        <div class="daily-sub">${done
+          ? `答对 ${meta.correct ?? 0} / ${meta.total || 0} 题${parts ? ' · ' + parts : ''}`
+          : (parts || '按你的错题和新题自动配比')}</div>
+        <div class="daily-foot">
+          <div class="daily-bar"><i style="width:${done ? 100 : 0}%"></i></div>
+          <button class="daily-btn" id="daily-go">${done ? '再来一组' : '开始'}</button>
+        </div>
+      </div>
+      <div class="muted small" style="margin-top:10px">
+        每天打开 App 就能点一次：优先补错题，再掺新题和已掌握的复习题。同一天的题不会变，做一半退出还能接着做。
+      </div>`;
+
+    document.getElementById('daily-go').onclick = () => startDaily(questions, done);
+  }
+
+  async function startDaily(questions, again) {
+    const byId = new Map(questions.map(q => [q.id, q]));
+    let meta;
+    if (again) {
+      const latest = await DB.latestByQuestion();
+      let plan = null;
+      try {
+        plan = Daily.plan({ questions, latest, dateKey: todayKey() + '-again-' + Date.now(), size: 8 });
+      } catch (e) {
+        console.error('[daily again]', e);
+        plan = { qids: [] };
+      }
+      meta = { date: todayKey(), qids: plan.qids || [], total: (plan.qids || []).length, done: false, again: true };
+    } else {
+      meta = await dailyPlan(questions);
+    }
+    const list = (meta.qids || []).map(id => byId.get(id)).filter(Boolean);
+    if (!list.length) return toast('题目可能已被删除，请重新生成');
+    const ok = await guardUnfinishedSession();
+    if (!ok) return;
+    session = new QuizSession(list, { shuffle: false, mode: 'daily' });
+    if (!again) session._daily = { date: meta.date, total: list.length };
+    navigate('#/quiz');
+  }
+
+  /* ---------- 通用：题目编辑弹层（体检/估分页复用） ---------- */
+  async function openQuestionEditor(qid, onSaved) {
+    const q = await DB.questionGet(qid);
+    if (!q) return toast('题目已经不存在了');
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    const st = {
+      type: q.type || 'single',
+      sel: new Set(String(q.answer || '').toUpperCase().match(/[A-H]/g) || []),
+      ansText: String(q.answer || '').replace(/\|\|\|/g, '/'),
+      optsText: q.options && q.type !== 'judge'
+        ? Object.entries(q.options).map(([k, v]) => k + '. ' + v).join('\n')
+        : '',
+      exp: q.explanation || ''
+    };
+    const parseOpts = text => {
+      const out = {};
+      let auto = 0;
+      for (const line of String(text || '').split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        const m = t.match(/^([A-Ha-h])\s*[.、．:：)）]?\s*(.*)$/);
+        if (m) out[m[1].toUpperCase()] = m[2].trim();
+        else out[String.fromCharCode(65 + (auto++))] = t;
+      }
+      return out;
+    };
+
+    const readInputs = () => {
+      const a = mask.querySelector('#qe-ans');
+      const o = mask.querySelector('#qe-opts');
+      const e = mask.querySelector('#qe-exp');
+      if (a) st.ansText = a.value;
+      if (o) st.optsText = o.value;
+      if (e) st.exp = e.value;
+    };
+
+    const draw = () => {
+      const isFill = st.type === 'fill';
+      const isJudge = st.type === 'judge';
+      const isChoice = st.type === 'single' || st.type === 'multi';
+      const keys = isJudge ? ['A', 'B'] : (isChoice ? Object.keys(parseOpts(st.optsText)) : []);
+      const types = [['single', '单选'], ['multi', '多选'], ['judge', '判断'], ['fill', '填空']];
+      mask.innerHTML = `
+        <div class="sheet-panel">
+          <div class="sheet-head">
+            <b>修改第 ${escapeHtml(String(q.no ?? '?'))} 题</b>
+            <button class="sheet-close" id="qe-close">×</button>
+          </div>
+          <div class="field"><span>题型</span>
+            <div class="seg" style="flex-wrap:wrap">
+              ${types.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:62px;padding:8px 12px">${n}</button>`).join('')}
+            </div>
+          </div>
+          <div class="field"><span>答案${isFill ? '（多空用 / 分隔）' : ''}</span>
+            ${isFill
+              ? `<input type="text" id="qe-ans" value="${escapeHtml(st.ansText)}" placeholder="标准答案">`
+              : `<div class="seg" id="qe-letters" style="flex-wrap:wrap">
+                  ${keys.length
+                    ? keys.map(k => `<button data-k="${k}" class="${st.sel.has(k) ? 'on' : ''}" style="flex:0 0 auto;min-width:50px;padding:8px 12px">${isJudge ? (k === 'A' ? '正确' : '错误') : k}</button>`).join('')
+                    : '<span class="muted small">先填写选项</span>'}
+                </div>`}
+          </div>
+          ${isChoice ? `
+          <div class="field"><span>选项（每行一个，A. 文本）</span>
+            <textarea id="qe-opts" rows="4" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.optsText)}</textarea>
+          </div>` : ''}
+          <div class="field"><span>解析（可空）</span>
+            <textarea id="qe-exp" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.exp)}</textarea>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="qe-cancel">取消</button>
+            <button class="btn primary" id="qe-save">保存</button>
+          </div>
+        </div>`;
+
+      mask.querySelector('#qe-close').onclick = () => mask.remove();
+      mask.querySelector('#qe-cancel').onclick = () => mask.remove();
+      mask.onclick = e => { if (e.target === mask) mask.remove(); };
+      mask.querySelectorAll('button[data-t]').forEach(b => {
+        b.onclick = () => {
+          readInputs();
+          const nt = b.dataset.t;
+          if (nt === st.type) return;
+          st.type = nt;
+          if (nt === 'judge') st.sel = new Set([...st.sel].filter(k => k === 'A' || k === 'B'));
+          if (nt === 'fill' && !st.ansText) st.ansText = '';
+          draw();
+        };
+      });
+      mask.querySelectorAll('button[data-k]').forEach(b => {
+        b.onclick = () => {
+          const k = b.dataset.k;
+          if (st.type === 'single' || st.type === 'judge') st.sel = new Set([k]);
+          else st.sel.has(k) ? st.sel.delete(k) : st.sel.add(k);
+          draw();
+        };
+      });
+      mask.querySelector('#qe-save').onclick = async () => {
+        readInputs();
+        const opts = st.type === 'judge' ? { A: '正确', B: '错误' }
+          : (st.type === 'fill' ? null : parseOpts(st.optsText));
+        let answer;
+        if (st.type === 'fill') {
+          answer = st.ansText.split('/').map(s => s.trim()).filter(Boolean).join('|||');
+        } else {
+          answer = [...st.sel].sort().join('');
+        }
+        if (st.type !== 'fill') {
+          const ks = Object.keys(opts || {});
+          if (!ks.length) return toast('请先填写选项');
+          const bad = answer.split('').filter(k => !ks.includes(k));
+          if (bad.length) return toast('答案 ' + bad.join('') + ' 不在选项里，请检查');
+          if (st.type === 'single' && answer.length > 1) return toast('单选题只能有一个答案');
+          if (st.type === 'multi' && !answer) return toast('多选题至少要选一个答案');
+        }
+        await DB.questionPut({ ...q, type: st.type, answer: answer || null, options: opts, explanation: st.exp.trim() || null });
+        mask.remove();
+        toast('已保存');
+        if (onSaved) onSaved();
+      };
+    };
+
+    draw();
+    document.body.appendChild(mask);
+  }
+
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

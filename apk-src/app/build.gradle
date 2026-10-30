@@ -12,8 +12,8 @@ android {
         // 推 main、手动触发、本地直接 gradle 构建时退回下面的 fallback。
         // 发版流程：只改这两行 fallback + 同名 tag，不再手改 versionCode。
         // 先算局部变量再传，避免 Groovy 命令表达式歧义（Value is null）。
-        def fallbackName = '1.8.19'
-        def fallbackCode = 108019
+        def fallbackName = '1.8.20'
+        def fallbackCode = 108020
         def envVerName = System.getenv('VERSION_NAME')
         def envVerCode = System.getenv('VERSION_CODE')
         versionCode((envVerCode ? envVerCode.toInteger() : fallbackCode))

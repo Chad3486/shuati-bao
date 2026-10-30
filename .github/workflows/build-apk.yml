@@ -51,7 +51,7 @@ jobs:
       # 解析器回归测试：canon.js / extract.js 合计 70KB 正则，历史上每次发版都在修导入 bug，
       # 一个正则回退肉眼看不出来，用户要导完 1000 题发现全判错才知道。零依赖、0.2 秒跑完。
       - name: Parser regression tests
-        run: node --test scripts/parse-regression.test.js
+        run: node --test scripts/parse-regression.test.js scripts/audit.test.js scripts/ability.test.js scripts/daily.test.js
 
       # 冒烟测试：AI 标注装配链路 + 产物可被 Canon.parse 导入（桩掉 fetch/DB）
       - name: Smoke test
