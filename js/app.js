@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.20'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.21'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -522,12 +522,16 @@ const App = (() => {
       info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
     }));
 
-    // 每日一练：今天这一组（首次进首页时生成并落库，同一天不再变）+ 连续天数
-    let daily = null, streak = { days: 0, todayDone: false };
+    // 每日一练（按题库）：各库今天一组，卡片显示还没练的库数；点进去选题库
+    let dailyInfo = null, streak = { days: 0, todayDone: false };
     if (allQ.length) {
       try {
-        daily = await dailyPlan(allQ);
-        streak = Daily.streak(await historyList(), todayKey()) || streak;
+        const overview = await dailyOverview(banks, allQ, await historyList());
+        if (overview.length) {
+          const pending = overview.filter(x => !x.meta.done);
+          dailyInfo = { total: overview.length, pending: pending.length, done: overview.length - pending.length };
+          streak = (pending[0] || overview[0]).streak || streak;
+        }
       } catch (e) {
         console.error('[daily] 首页卡片生成失败', e);
       }
@@ -551,16 +555,16 @@ const App = (() => {
         <button class="btn primary" onclick="App.resumeLast()">继续</button>
         <button class="btn ghost" onclick="App.clearProgress()">重来</button>
       </div>` : ''}
-      ${daily ? `
+      ${dailyInfo ? `
       <div class="daily-card" onclick="App.navigate('#/daily')">
-        <div class="daily-top"><span>每日一练</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
-        <div class="daily-title">${daily.done ? '今天已完成 ✓' : '今天练 ' + (daily.total || 0) + ' 题'}</div>
-        <div class="daily-sub">${daily.done
-          ? `答对 ${daily.correct ?? 0} / ${daily.total || 0} 题，点开看小结`
-          : '错题 + 新题 + 复习，一点就开'}</div>
+        <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
+        <div class="daily-title">${dailyInfo.pending ? '还有 ' + dailyInfo.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
+        <div class="daily-sub">${dailyInfo.pending
+          ? '每个题库一组 8 题 · 点进去选题库'
+          : `已完成 ${dailyInfo.done} / ${dailyInfo.total} 个题库，点开可再来一组`}</div>
         <div class="daily-foot">
-          <div class="daily-bar"><i style="width:${daily.done ? 100 : 0}%"></i></div>
-          <span class="daily-btn">${daily.done ? '看小结' : '开始'}</span>
+          <div class="daily-bar"><i style="width:${dailyInfo.total ? Math.round(dailyInfo.done / dailyInfo.total * 100) : 0}%"></i></div>
+          <span class="daily-btn">${dailyInfo.pending ? '开始' : '看小结'}</span>
         </div>
       </div>` : ''}
       <div class="quick-grid">
@@ -1509,6 +1513,7 @@ const App = (() => {
           <button class="btn ghost" id="sel-all">全选可见</button>
           <button class="btn ghost" id="sel-none">清空选择</button>
           <button class="btn ghost" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
+          <button class="btn ghost" onclick="App.dailyBank('${bank.id}')">📅 今日一练</button>
         </div>
         <div class="muted small" id="pick-info" style="margin-top:8px"></div>
         <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
@@ -3719,8 +3724,9 @@ const App = (() => {
     // 每日一练：把今天的这一组标记为已完成（连续天数从练习记录推导，不再单独存）
     if (s._daily) {
       try {
-        const cur = (await DB.metaGet('daily')) || {};
-        await DB.metaSet('daily', {
+        const map = (await DB.metaGet('dailyBanks')) || {};
+        const cur = map[s._daily.bankId] || {};
+        map[s._daily.bankId] = {
           ...cur,
           date: s._daily.date,
           done: true,
@@ -3729,7 +3735,8 @@ const App = (() => {
           answered: r.answered,
           acc,
           at: Date.now()
-        });
+        };
+        await DB.metaSet('dailyBanks', map);
       } catch (e) {
         console.error('[daily] 标记完成失败', e);
       }
@@ -4271,6 +4278,7 @@ const App = (() => {
       return;
     }
     const res = Audit.bank(qs) || { summary: {}, issues: [] };
+    const byId = new Map(qs.map(q => [q.id, q]));
     const sum = res.summary || {};
     const nErr = Number(sum.error) || 0, nWarn = Number(sum.warn) || 0, nInfo = Number(sum.info) || 0;
     const issues = Array.isArray(res.issues) ? res.issues : [];
@@ -4307,6 +4315,11 @@ const App = (() => {
         listEl.innerHTML = `<div class="empty" style="padding:30px 0">${filter === 'all' ? '✓ 没查出问题' : '这一档没有条目'}</div>`;
         return;
       }
+      const stemOf = qid => {
+        const q = byId.get(qid);
+        const t = q ? String(q.stem || '').replace(/\s+/g, ' ') : '';
+        return t.length > 42 ? t.slice(0, 42) + '…' : t;
+      };
       const groups = new Map();
       for (const it of cur) {
         if (!groups.has(it.code)) groups.set(it.code, []);
@@ -4319,6 +4332,7 @@ const App = (() => {
             <div class="audit-item" data-qid="${escapeHtml(String(it.qid || ''))}">
               <span class="audit-badge ${it.level}">${AUDIT_LEVEL_NAME[it.level] || it.level}</span>
               <div class="audit-body">
+                ${stemOf(it.qid) ? `<div class="audit-stem">${escapeHtml(stemOf(it.qid))}</div>` : ''}
                 <div class="audit-msg">${escapeHtml(String(it.message || ''))}</div>
                 ${it.hint ? `<div class="audit-hint">${escapeHtml(String(it.hint))}</div>` : ''}
               </div>
@@ -4360,6 +4374,11 @@ const App = (() => {
   /* 入口：从题库页点「体检」进来 */
   function openAudit(bankId) {
     navigate(bankId ? '#/audit/' + bankId : '#/audit');
+  }
+
+  /* 入口：从题库页点「今日一练」直接开这个库的一组 */
+  function dailyBank(bankId) {
+    startDaily(bankId, false);
   }
 
   /* ---------- 能力估分 ---------- */
@@ -4465,23 +4484,47 @@ const App = (() => {
     navigate('#/quiz');
   }
 
-  /* ---------- 每日一练 ---------- */
-  async function dailyState() {
-    return (await DB.metaGet('daily')) || null;
+  /* ---------- 每日一练（按题库：每个题库每天一组） ---------- */
+  async function dailyBanksMap() {
+    return (await DB.metaGet('dailyBanks')) || {};
   }
 
-  async function dailyPlan(questions) {
+  function bdText(bd) {
+    bd = bd || {};
+    return [bd.wrong ? '错题 ' + bd.wrong : '', bd.fresh ? '新题 ' + bd.fresh : '', bd.review ? '复习 ' + bd.review : '']
+      .filter(Boolean).join(' · ');
+  }
+
+  /** 单题库连续天数：练习记录里挑「每日一练」且含该库题目，按本地日期去重后往回数 */
+  function bankStreak(history, qid2bank, bankId, todayKeyStr) {
+    const days = new Set();
+    for (const h of (history || [])) {
+      if (!h || h.label !== '每日一练' || !h.at) continue;
+      const hit = (h.rows || []).some(r => r && qid2bank.get(r.qid) === bankId);
+      if (hit) days.add(Daily.dateKey(h.at));
+    }
+    const today = new Date(todayKeyStr + 'T00:00:00');
+    const start = days.has(todayKeyStr) ? 0 : 1;   // 今天还没做：从昨天起算，不归零
+    let count = 0;
+    for (let i = start; i < 400; i++) {
+      const k = Daily.dateKey(today.getTime() - i * 86400000);
+      if (days.has(k)) count++; else break;
+    }
+    return { days: count, todayDone: days.has(todayKeyStr) };
+  }
+
+  /** 这个库今天的那一组：首次访问生成并落库，同一天不变，跨天重建 */
+  async function planForBank(bankId, bankQuestions, latest, map) {
     const dateKey = todayKey();
-    const saved = await dailyState();
+    const saved = map[bankId];
     if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length) {
-      const ids = new Set(questions.map(q => q.id));
+      const ids = new Set(bankQuestions.map(q => q.id));
       if (saved.qids.every(id => ids.has(id))) return saved;
     }
-    const latest = await DB.latestByQuestion();
     const mode = (await DB.metaGet('dailyMode')) || 'standard';
     let plan = null;
     try {
-      plan = Daily.plan({ questions, latest, dateKey, size: 8, mode });
+      plan = Daily.plan({ questions: bankQuestions, latest, dateKey, size: 8, mode, bankId });
     } catch (e) {
       console.error('[daily]', e);
       plan = { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 } };
@@ -4494,71 +4537,98 @@ const App = (() => {
       total: (plan.qids || []).length,
       at: Date.now()
     };
-    await DB.metaSet('daily', meta);
+    map[bankId] = meta;
+    await DB.metaSet('dailyBanks', map);
     return meta;
+  }
+
+  /** 每个题库今天的这一组 + 连续天数（未完成在前） */
+  async function dailyOverview(banks, allQ, hist) {
+    const map = await dailyBanksMap();
+    const latest = await DB.latestByQuestion();
+    const qid2bank = new Map(allQ.map(q => [q.id, q.bankId]));
+    const out = [];
+    for (const b of banks) {
+      const qs = allQ.filter(q => q.bankId === b.id && q.answer);
+      if (!qs.length) continue;
+      const meta = await planForBank(b.id, qs, latest, map);
+      let streak = { days: 0, todayDone: false };
+      try { streak = bankStreak(hist || [], qid2bank, b.id, todayKey()); } catch (e) { console.error('[daily] streak', e); }
+      out.push({ bank: b, meta, streak });
+    }
+    out.sort((a, b) => (a.meta.done ? 1 : 0) - (b.meta.done ? 1 : 0) || (b.bank.count || 0) - (a.bank.count || 0));
+    return out;
   }
 
   async function pageDaily() {
     topbar('每日一练', '#/home');
-    const { questions } = await allBanksQuestions();
+    const { banks, questions } = await allBanksQuestions();
     if (!questions.length) {
       $view().innerHTML = `<div class="empty" style="padding:40px 0">还没有题库<br><span class="muted small">先导入一份题库，明天就有题可练</span></div>
         <button class="btn primary big" onclick="App.navigate('#/import')">去导入</button>`;
       return;
     }
-    const meta = await dailyPlan(questions);
     const hist = await historyList();
-    let st = { days: 0, todayDone: false };
-    try { st = Daily.streak(hist, todayKey()) || st; } catch (e) { console.error('[streak]', e); }
-    const bd = meta.breakdown || {};
-    const done = !!meta.done;
-    const parts = [
-      bd.wrong ? `错题 ${bd.wrong}` : '',
-      bd.fresh ? `新题 ${bd.fresh}` : '',
-      bd.review ? `复习 ${bd.review}` : ''
-    ].filter(Boolean).join(' · ');
-
+    const rows = await dailyOverview(banks, questions, hist);
+    if (!rows.length) {
+      $view().innerHTML = `<div class="empty" style="padding:40px 0">题库里还没有带答案的题<br><span class="muted small">补上答案就能生成每日一练</span></div>`;
+      return;
+    }
+    const doneCount = rows.filter(r => r.meta.done).length;
     $view().innerHTML = `
-      <div class="daily-card">
-        <div class="daily-top"><span>每天一组 · ${escapeHtml(meta.date || todayKey())}</span><span class="daily-streak">🔥 连续 ${st.days || 0} 天</span></div>
-        <div class="daily-title">${done ? '今天已完成' : '今天练 ' + (meta.total || 0) + ' 题'}</div>
-        <div class="daily-sub">${done
-          ? `答对 ${meta.correct ?? 0} / ${meta.total || 0} 题${parts ? ' · ' + parts : ''}`
-          : (parts || '按你的错题和新题自动配比')}</div>
-        <div class="daily-foot">
-          <div class="daily-bar"><i style="width:${done ? 100 : 0}%"></i></div>
-          <button class="daily-btn" id="daily-go">${done ? '再来一组' : '开始'}</button>
+      <div class="card" style="padding:12px 14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <b style="flex:1">今天已完成 ${doneCount} / ${rows.length} 个题库</b>
+          <span class="muted small">每个库每天一组</span>
         </div>
+        <div class="muted small" style="margin-top:4px">每组 8 题：错题 3 + 新题 4 + 复习 1（某类不够自动回填）。同一天题集固定，做一半退出再进还是这一组。</div>
       </div>
-      <div class="muted small" style="margin-top:10px">
-        每天打开 App 就能点一次：优先补错题，再掺新题和已掌握的复习题。同一天的题不会变，做一半退出还能接着做。
-      </div>`;
-
-    document.getElementById('daily-go').onclick = () => startDaily(questions, done);
+      ${rows.map(({ bank, meta, streak }) => `
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:8px">
+          <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bank.name)}</b>
+          <span class="muted small">🔥 连续 ${streak.days || 0} 天</span>
+        </div>
+        <div class="muted small" style="margin-top:4px">${meta.done
+          ? `今天已完成 · 答对 ${meta.correct ?? 0} / ${meta.total || 0} 题`
+          : `今天 ${meta.total || 0} 题${bdText(meta.breakdown) ? ' · ' + bdText(meta.breakdown) : ''}`}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <div class="daily-bar" style="background:var(--surface-2)"><i style="width:${meta.done ? 100 : 0}%;background:var(--primary)"></i></div>
+          <button class="btn primary" data-go="${bank.id}" data-again="${meta.done ? 1 : 0}">${meta.done ? '再来一组' : '开始'}</button>
+        </div>
+      </div>`).join('')}`;
+    $view().querySelectorAll('button[data-go]').forEach(btn => {
+      btn.onclick = () => startDaily(btn.dataset.go, btn.dataset.again === '1');
+    });
   }
 
-  async function startDaily(questions, again) {
-    const byId = new Map(questions.map(q => [q.id, q]));
+  async function startDaily(bankId, again) {
+    const bank = await DB.bankGet(bankId);
+    if (!bank) return toast('题库不存在');
+    const { questions } = await allBanksQuestions();
+    const qs = questions.filter(q => q.bankId === bankId && q.answer);
+    if (!qs.length) return toast('这个题库还没有带答案的题');
+    const latest = await DB.latestByQuestion();
     let meta;
     if (again) {
-      const latest = await DB.latestByQuestion();
       let plan = null;
       try {
-        plan = Daily.plan({ questions, latest, dateKey: todayKey() + '-again-' + Date.now(), size: 8 });
+        plan = Daily.plan({ questions: qs, latest, dateKey: todayKey() + '-again-' + Date.now(), size: 8 });
       } catch (e) {
         console.error('[daily again]', e);
-        plan = { qids: [] };
       }
-      meta = { date: todayKey(), qids: plan.qids || [], total: (plan.qids || []).length, done: false, again: true };
+      meta = { date: todayKey(), qids: (plan && plan.qids) || [], total: ((plan && plan.qids) || []).length, done: false, again: true };
     } else {
-      meta = await dailyPlan(questions);
+      const map = await dailyBanksMap();
+      meta = await planForBank(bankId, qs, latest, map);
     }
+    const byId = new Map(qs.map(q => [q.id, q]));
     const list = (meta.qids || []).map(id => byId.get(id)).filter(Boolean);
-    if (!list.length) return toast('题目可能已被删除，请重新生成');
+    if (!list.length) return toast('这一组题可能已被删除，重试一次');
     const ok = await guardUnfinishedSession();
     if (!ok) return;
     session = new QuizSession(list, { shuffle: false, mode: 'daily' });
-    if (!again) session._daily = { date: meta.date, total: list.length };
+    if (!again) session._daily = { bankId, date: meta.date, total: list.length };
     navigate('#/quiz');
   }
 
@@ -4570,6 +4640,7 @@ const App = (() => {
     mask.className = 'sheet-mask';
     const st = {
       type: q.type || 'single',
+      stem: q.stem || '',
       sel: new Set(String(q.answer || '').toUpperCase().match(/[A-H]/g) || []),
       ansText: String(q.answer || '').replace(/\|\|\|/g, '/'),
       optsText: q.options && q.type !== 'judge'
@@ -4591,9 +4662,11 @@ const App = (() => {
     };
 
     const readInputs = () => {
+      const stemEl = mask.querySelector('#qe-stem');
       const a = mask.querySelector('#qe-ans');
       const o = mask.querySelector('#qe-opts');
       const e = mask.querySelector('#qe-exp');
+      if (stemEl) st.stem = stemEl.value;
       if (a) st.ansText = a.value;
       if (o) st.optsText = o.value;
       if (e) st.exp = e.value;
@@ -4610,6 +4683,9 @@ const App = (() => {
           <div class="sheet-head">
             <b>修改第 ${escapeHtml(String(q.no ?? '?'))} 题</b>
             <button class="sheet-close" id="qe-close">×</button>
+          </div>
+          <div class="field"><span>题干</span>
+            <textarea id="qe-stem" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.5;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.stem)}</textarea>
           </div>
           <div class="field"><span>题型</span>
             <div class="seg" style="flex-wrap:wrap">
@@ -4654,6 +4730,7 @@ const App = (() => {
       });
       mask.querySelectorAll('button[data-k]').forEach(b => {
         b.onclick = () => {
+          readInputs();          // 先收回已输入的题干/选项/解析，避免重绘把它们冲掉
           const k = b.dataset.k;
           if (st.type === 'single' || st.type === 'judge') st.sel = new Set([k]);
           else st.sel.has(k) ? st.sel.delete(k) : st.sel.add(k);
@@ -4678,7 +4755,9 @@ const App = (() => {
           if (st.type === 'single' && answer.length > 1) return toast('单选题只能有一个答案');
           if (st.type === 'multi' && !answer) return toast('多选题至少要选一个答案');
         }
-        await DB.questionPut({ ...q, type: st.type, answer: answer || null, options: opts, explanation: st.exp.trim() || null });
+        const stem = st.stem.trim();
+        if (!stem) return toast('题干不能为空');
+        await DB.questionPut({ ...q, stem, type: st.type, answer: answer || null, options: opts, explanation: st.exp.trim() || null });
         mask.remove();
         toast('已保存');
         if (onSaved) onSaved();
@@ -4689,7 +4768,7 @@ const App = (() => {
     document.body.appendChild(mask);
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, toast };
+  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, dailyBank, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
