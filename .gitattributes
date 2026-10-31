@@ -1,0 +1,18 @@
+# 统一换行，避免 Windows 上克隆/构建出现 CRLF，破坏 assets/app.html 的产物一致性校验
+* text=auto eol=lf
+
+# 二进制文件不参与换行转换与文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.keystore binary
+*.apk binary
+*.docx binary
+*.jar binary
+
+# 生成物与第三方库：GitHub 语言统计里不计入，diff 仍可正常查看
+apk-src/app/src/main/assets/app.html linguist-generated=true
+libs/mammoth.browser.min.js linguist-vendored=true
+dist/* linguist-generated=true
