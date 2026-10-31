@@ -6193,12 +6193,12 @@ const App = (() => {
           <button class="sheet-close" id="bm-close">×</button>
         </div>
         <div class="sheet-sub">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
-        <button class="menu-row" data-a="answers"><span>${na ? `补答案 <b class="menu-num">${na}</b>` : '答案校验'}</span><i>›</i></button>
-        <button class="menu-row" data-a="audit"><span>题库体检</span><i>›</i></button>
-        <button class="menu-row" data-a="daily"><span>今日一练</span><i>›</i></button>
-        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '解冻题库' : '冻结题库'}</span><i>›</i></button>
-        <button class="menu-row" data-a="rename"><span>改名</span><i>›</i></button>
-        <button class="menu-row danger" data-a="del"><span>删除题库</span><i>›</i></button>
+        <button class="menu-row" data-a="answers"><span>${na ? `🩹 补答案 <b class="menu-num">${na}</b>` : '✅ 答案校验'}</span><i>›</i></button>
+        <button class="menu-row" data-a="audit"><span>🩺 题库体检</span><i>›</i></button>
+        <button class="menu-row" data-a="daily"><span>📅 今日一练</span><i>›</i></button>
+        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '☀️ 解冻题库' : '❄️ 冻结题库'}</span><i>›</i></button>
+        <button class="menu-row" data-a="rename"><span>✏️ 改名</span><i>›</i></button>
+        <button class="menu-row danger" data-a="del"><span>🗑 删除题库</span><i>›</i></button>
       </div>`;
     const close = () => mask.remove();
     mask.onclick = e => { if (e.target === mask) close(); };
