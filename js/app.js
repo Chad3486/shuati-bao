@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.22'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.23'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -540,32 +540,31 @@ const App = (() => {
     // 列表工具状态：题库多时不用一直往下翻（搜索 + 排序 + 折叠）
     let sortBy = 'recent', keyword = '', expanded = false;
     const LIMIT = 6;
+    const secTotal = banks.reduce((s, b) => s + (info[b.id]?.secs || 0), 0);
 
     $view().innerHTML = `
-      <div class="hero">
-        <div class="hero-num">${total}</div>
-        <div class="hero-label">总题量 · ${banks.length} 个来源文件</div>
-      </div>
-      ${last ? `
-      <div class="card" style="display:flex;align-items:center;gap:10px;border-left:4px solid var(--primary)">
-        <div style="flex:1">
-          <b>上次练习</b>
-          <div class="muted small">第 ${Math.min(last.index + 1, last.ids.length)} / ${last.ids.length} 题，点右侧继续</div>
+      <div class="ov-card">
+        <div class="ov-main">
+          <div class="ov-num">${total}<span>题</span></div>
+          <div class="ov-meta">${banks.length} 个题库${secTotal ? ` · ${secTotal} 章` : ''}</div>
         </div>
-        <button class="btn primary" onclick="App.resumeLast()">继续</button>
-        <button class="btn ghost" onclick="App.clearProgress()">重来</button>
-      </div>` : ''}
+        ${last ? `
+        <div class="ov-act">
+          <div class="ov-last">上次 ${Math.min(last.index + 1, last.ids.length)}/${last.ids.length} 题<a onclick="App.clearProgress()">重来</a></div>
+          <button class="ov-btn" onclick="App.resumeLast()">继续</button>
+        </div>` : ''}
+      </div>
       ${dailyInfo ? `
       <div class="daily-card" onclick="App.navigate('#/daily')">
-        <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
-        <div class="daily-title">${dailyInfo.pending ? '还有 ' + dailyInfo.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
-        <div class="daily-sub">${dailyInfo.pending
-          ? '每个题库一组 8 题 · 点进去选题库'
-          : `已完成 ${dailyInfo.done} / ${dailyInfo.total} 个题库，点开可再来一组`}</div>
-        <div class="daily-foot">
-          <div class="daily-bar"><i style="width:${dailyInfo.total ? Math.round(dailyInfo.done / dailyInfo.total * 100) : 0}%"></i></div>
-          <span class="daily-btn">${dailyInfo.pending ? '开始' : '看小结'}</span>
+        <div class="daily-body">
+          <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
+          <div class="daily-title">${dailyInfo.pending ? '还有 ' + dailyInfo.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
+          <div class="daily-sub">${dailyInfo.pending
+            ? `每库 8 题 · 已完成 ${dailyInfo.done}/${dailyInfo.total}`
+            : `完成 ${dailyInfo.total} 个题库 · 点开可再来一组`}</div>
         </div>
+        <span class="daily-btn">${dailyInfo.pending ? '开始' : '看小结'}</span>
+        <div class="daily-bar"><i style="width:${dailyInfo.total ? Math.round(dailyInfo.done / dailyInfo.total * 100) : 0}%"></i></div>
       </div>` : ''}
       <div class="quick-grid">
         <button class="quick-tile" onclick="App.navigate('#/import')">
@@ -628,10 +627,7 @@ const App = (() => {
             <div class="bank-name">${escapeHtml(b.name)}</div>
             <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
           </div>
-          ${b.count ? `<button class="bank-del" style="color:var(--primary)" onclick="App.navigate('#/bank/${b.id}')">选题</button>` : ''}
-          ${b.count ? `<button class="bank-del" style="color:${na ? 'var(--bad)' : 'var(--primary)'}" onclick="App.navigate('#/answers/${b.id}')">${na ? '补答案' : '答案校验'}</button>` : ''}
-          <button class="bank-del" onclick="App.renameBank('${b.id}')">改名</button>
-          <button class="bank-del" onclick="App.delBank('${b.id}')">删除</button>
+          <button class="bank-menu" aria-label="题库操作" onclick="event.stopPropagation();App.bankMenu('${b.id}')">⋯</button>
         </div>`;
     }
 
@@ -690,6 +686,48 @@ const App = (() => {
     await DB.bankRename(id, n);
     render();
     toast('已改名');
+  }
+
+  /* 题库操作菜单（首页卡片右侧 ⋯）：把原来挤在一行的 4 个文字按钮收进底部弹层 */
+  async function bankMenu(id) {
+    const b = await DB.bankGet(id);
+    if (!b) return toast('题库不存在');
+    const qs = await DB.questionsByBank(id);
+    const na = qs.filter(q => !q.answer).length;
+    const secs = (b.sections || []).length;
+    const count = b.count || qs.length || 0;
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    mask.innerHTML = `
+      <div class="sheet-panel">
+        <div class="sheet-head">
+          <b>${escapeHtml(b.name)}</b>
+          <button class="sheet-close" id="bm-close">×</button>
+        </div>
+        <div class="muted small" style="margin:-8px 0 8px">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
+        <button class="menu-row" data-a="pick"><span>📑 按章节选题</span><i>›</i></button>
+        <button class="menu-row" data-a="answers"><span>${na ? `🩹 补答案（${na} 题）` : '✅ 答案校验'}</span><i>›</i></button>
+        <button class="menu-row" data-a="audit"><span>🩺 题库体检</span><i>›</i></button>
+        <button class="menu-row" data-a="daily"><span>📅 今日一练</span><i>›</i></button>
+        <button class="menu-row" data-a="rename"><span>✏️ 改名</span><i>›</i></button>
+        <button class="menu-row danger" data-a="del"><span>🗑 删除题库</span><i>›</i></button>
+      </div>`;
+    const close = () => mask.remove();
+    mask.onclick = e => { if (e.target === mask) close(); };
+    mask.querySelector('#bm-close').onclick = close;
+    mask.querySelectorAll('.menu-row').forEach(btn => {
+      btn.onclick = () => {
+        const a = btn.dataset.a;
+        close();
+        if (a === 'pick') navigate('#/bank/' + id);
+        else if (a === 'answers') navigate('#/answers/' + id);
+        else if (a === 'audit') openAudit(id);
+        else if (a === 'daily') dailyBank(id);
+        else if (a === 'rename') renameBank(id);
+        else if (a === 'del') delBank(id);
+      };
+    });
+    document.body.appendChild(mask);
   }
 
   /* ================= 页面：范式导入（零对齐 · 一题一块答案随题） ================= */
@@ -4894,7 +4932,7 @@ const App = (() => {
     document.body.appendChild(mask);
   }
 
-  return { init, navigate, startBank, delBank, renameBank, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, dailyBank, toast };
+  return { init, navigate, startBank, delBank, renameBank, bankMenu, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, dailyBank, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
