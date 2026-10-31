@@ -5402,7 +5402,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.21'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.22'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -6951,7 +6951,7 @@ const App = (() => {
           background:var(--surface-2, #f7f9fc); border:1.5px solid transparent; border-left:3px solid transparent;
           border-radius:9px; font-size:13px; font-weight:600; color:var(--text);
           cursor:pointer; user-select:none; -webkit-user-select:none;
-          transition:background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
+          transition:background .12s, border-color .12s, transform .1s;
         }
         .no-cell:active { transform:scale(.94); }
         .no-cell input { position:absolute; opacity:0; width:0; height:0; margin:0; }
@@ -6999,47 +6999,83 @@ const App = (() => {
       return f ? f[2](q) : true;
     }
 
+    let shownCount = 0;
+
     function update(shown) {
-      const n = shown != null ? shown : grid.querySelectorAll('input[data-id]').length;
+      const n = shown != null ? shown : shownCount;
       info.textContent = `共 ${qs.length} 题 · 当前显示 ${n} 题 · 已选 ${sel.size} 题`;
       goBtn.textContent = `练习选中题（${sel.size}）`;
     }
 
+    function cellHtml(q, i) {
+      return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}${sel.has(q.id) ? ' on' : ''}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
+        <input type="checkbox" data-id="${q.id}" ${sel.has(q.id) ? 'checked' : ''}>
+        <span>${q.no ?? i + 1}</span>
+      </label>`;
+    }
+
+    /* 只画某一节的格子（含分页与「显示更多」）；展开/翻页时按节局部重建，
+       不再整页重排——846 题整页重渲染一次要几百毫秒，是「点一下卡一下」的主因 */
+    function sectionBodyHtml(g) {
+      const idxs = g.idxs.filter(i => matchQ(qs[i]));
+      const lim = secShown.get(g.sec) || PAGE;
+      const shownIdxs = idxs.slice(0, lim);
+      const hidden = idxs.length - shownIdxs.length;
+      return `<div class="no-grid">${shownIdxs.map(i => cellHtml(qs[i], i)).join('')}</div>` +
+        (hidden > 0 ? `<button class="btn ghost" data-more="${escapeHtml(g.sec)}" style="margin-top:6px">显示更多（还有 ${hidden} 题）</button>` : '');
+    }
+
+    function recountShown() {
+      let n = 0;
+      for (const g of groups) {
+        if (collapsed.has(g.sec)) continue;
+        const idxs = g.idxs.filter(i => matchQ(qs[i]));
+        n += Math.min(idxs.length, secShown.get(g.sec) || PAGE);
+      }
+      shownCount = n;
+      update(n);
+    }
+
     function renderGrid() {
-      let shown = 0;
       const html = groups.map(g => {
         const idxs = g.idxs.filter(i => matchQ(qs[i]));
         if (!idxs.length) return '';
-        shown += idxs.length;
         const isCollapsed = collapsed.has(g.sec);
         const secIds = idxs.map(i => qs[i].id);
         const allOn = secIds.length > 0 && secIds.every(id => sel.has(id));
-        // 分页：每节先画前 secShown.get(sec)||PAGE 题，其余藏进「显示更多」
-        const lim = secShown.get(g.sec) || PAGE;
-        const shownIdxs = idxs.slice(0, lim);
-        const hidden = idxs.length - shownIdxs.length;
         return `
-          <div class="sec-group">
+          <div class="sec-group" data-sec="${escapeHtml(g.sec)}">
             <div class="sec-head">
               <button class="sec-toggle" data-fold="${escapeHtml(g.sec)}">${isCollapsed ? '▸' : '▾'}</button>
               <b>${escapeHtml(g.title)}${g.type && !String(g.title).includes(TYPE_NAME[g.type] || '\u0000') ? ` · ${TYPE_NAME[g.type] || ''}` : ''}</b>
               <span class="muted small">${idxs.length}${idxs.length !== g.idxs.length ? '/' + g.idxs.length : ''} 题</span>
               <button class="chip ${allOn ? 'on' : ''}" data-sec="${escapeHtml(g.sec)}">${allOn ? '取消本节' : '本节全选'}</button>
             </div>
-            ${isCollapsed ? '' : `<div class="no-grid">
-              ${shownIdxs.map(i => {
-                const q = qs[i];
-                return `<label class="no-cell ${q.answer ? '' : 'no-ans'} st-${stateOf(q)}${sel.has(q.id) ? ' on' : ''}" title="${q.answer ? '有答案' : '缺答案（可勾选，练习时自己填）'}${q.explanation ? ' · 有解析' : ''}">
-                  <input type="checkbox" data-id="${q.id}" ${sel.has(q.id) ? 'checked' : ''}>
-                  <span>${q.no ?? i + 1}</span>
-                </label>`;
-              }).join('')}
-            </div>
-            ${hidden > 0 ? `<button class="btn ghost" data-more="${escapeHtml(g.sec)}" style="margin-top:6px">显示更多（还有 ${hidden} 题）</button>` : ''}`}
+            <div class="sec-body">${isCollapsed ? '' : sectionBodyHtml(g)}</div>
           </div>`;
       }).join('');
       grid.innerHTML = html || '<div class="muted small" style="padding:12px 0">没有匹配的题（换个关键词或筛选试试）</div>';
-      update(shown);
+      recountShown();
+    }
+
+    /* 同步选中态到已渲染的格子与节按钮（不重排 DOM），选几百题也不用整页重渲染 */
+    function syncCells(root) {
+      const scope = root || grid;
+      scope.querySelectorAll('input[data-id]').forEach(b => {
+        const on = sel.has(b.dataset.id);
+        if (b.checked !== on) b.checked = on;
+        const cell = b.closest('.no-cell');
+        if (cell) cell.classList.toggle('on', on);
+      });
+      scope.querySelectorAll('button[data-sec]').forEach(btn => {
+        const g = groups.find(x => String(x.sec) === btn.dataset.sec);
+        if (!g) return;
+        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const allOn = ids.length > 0 && ids.every(id => sel.has(id));
+        btn.classList.toggle('on', allOn);
+        btn.textContent = allOn ? '取消本节' : '本节全选';
+      });
+      update(shownCount);
     }
 
     // 事件委托：innerHTML 重写不失效，也不再每次渲染循环重绑上千个 onchange
@@ -7050,21 +7086,47 @@ const App = (() => {
       on ? sel.add(box.dataset.id) : sel.delete(box.dataset.id);
       const cell = box.closest('.no-cell');
       if (cell) cell.classList.toggle('on', on);
-      update();
+      update(shownCount);
+      // 本节「全选/取消」按钮文案跟着变，但不重排
+      const grp = box.closest('.sec-group');
+      const g = grp && groups.find(x => String(x.sec) === (grp.dataset.sec || ''));
+      const btn = grp && grp.querySelector('button[data-sec]');
+      if (g && btn) {
+        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const allOn = ids.length > 0 && ids.every(id => sel.has(id));
+        btn.classList.toggle('on', allOn);
+        btn.textContent = allOn ? '取消本节' : '本节全选';
+      }
     });
     grid.addEventListener('click', (e) => {
       const more = e.target.closest('button[data-more]');
       if (more) {
         const sec = more.dataset.more;
         secShown.set(sec, (secShown.get(sec) || PAGE) + PAGE);
-        renderGrid();
+        const grp = more.closest('.sec-group');
+        const g = groups.find(x => String(x.sec) === sec);
+        const body = grp && grp.querySelector('.sec-body');
+        if (g && body) body.innerHTML = sectionBodyHtml(g);
+        recountShown();
         return;
       }
       const fold = e.target.closest('[data-fold]');
       if (fold) {
-        const s = fold.dataset.fold;
-        collapsed.has(s) ? collapsed.delete(s) : collapsed.add(s);
-        renderGrid();
+        const sec = fold.dataset.fold;
+        const grp = fold.closest('.sec-group');
+        const body = grp && grp.querySelector('.sec-body');
+        const wasFolded = collapsed.has(sec);
+        if (wasFolded) {
+          collapsed.delete(sec);
+          const g = groups.find(x => String(x.sec) === sec);
+          if (g && body) body.innerHTML = sectionBodyHtml(g);
+          fold.textContent = '▾';
+        } else {
+          collapsed.add(sec);
+          if (body) body.innerHTML = '';
+          fold.textContent = '▸';
+        }
+        recountShown();
         return;
       }
       const secBtn = e.target.closest('button[data-sec]');
@@ -7072,11 +7134,13 @@ const App = (() => {
         const g = groups.find(x => String(x.sec) === secBtn.dataset.sec);
         if (!g) return;
         const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
-        const allOn = ids.length && ids.every(id => sel.has(id));
+        const allOn = ids.length > 0 && ids.every(id => sel.has(id));
         ids.forEach(id => allOn ? sel.delete(id) : sel.add(id));
-        renderGrid();
+        const grp = secBtn.closest('.sec-group');
+        syncCells(grp || grid);
       }
     });
+
 
     // ===== AI 答案逐题核对（采纳 / 修改 / 重跑）=====
     const aiBtnEl = document.getElementById('ai-review-btn');
@@ -7197,21 +7261,21 @@ const App = (() => {
     // 批量选择必须重渲染，让格子的 .on 选中态跟着变（只改数据不改视觉会「选了却看不出来」）
     document.getElementById('sel-all').onclick = () => {
       grid.querySelectorAll('input[data-id]').forEach(b => sel.add(b.dataset.id));
-      renderGrid();
+      syncCells();
     };
     document.getElementById('sel-none').onclick = () => {
       sel.clear();
-      renderGrid();
+      syncCells();
     };
     document.getElementById('sel-noans').onclick = () => {
       sel.clear();
       qs.filter(q => q.answer).forEach(q => sel.add(q.id));
-      renderGrid();
+      syncCells();
     };
     document.getElementById('sel-unans').onclick = () => {
       sel.clear();
       qs.filter(q => !q.answer).forEach(q => sel.add(q.id));
-      renderGrid();
+      syncCells();
     };
 
     goBtn.onclick = async () => {
@@ -9200,20 +9264,54 @@ const App = (() => {
   }
 
   /* ================= 页面：统计 ================= */
+  /* 能力估分卡片（统计页用）：有结果直接画，没结果先画「计算中」占位 */
+  function abilityCardHtml(est, total) {
+    const pred = (est && est.predicted) || {};
+    const score = Number.isFinite(pred.score) ? Math.round(pred.score) : null;
+    const weak = est
+      ? (est.sections || []).filter(x => (x.n || 0) >= 2).sort((a, b) => (a.score || 0) - (b.score || 0))[0]
+      : null;
+    if (score == null) {
+      if (!total) return `<button class="btn ghost big" onclick="App.navigate('#/ability')">📈 能力估分（先答几题）</button>`;
+      return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
+        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">正在计算…</span></div>
+        <div class="audit-sum" style="margin:0">
+          <div class="audit-stat"><b>…</b><span>预计卷面分</span></div>
+          <div class="audit-stat"><b>…</b><span>及格概率</span></div>
+          <div class="audit-stat"><b>…</b><span>最弱章节</span></div>
+        </div>
+      </div>`;
+    }
+    return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
+      <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">按题目难度推算 · 点开详情</span></div>
+      <div class="audit-sum" style="margin:0">
+        <div class="audit-stat"><b>${score}</b><span>预计卷面分</span></div>
+        <div class="audit-stat"><b>${Math.round((pred.passRate || 0) * 100)}%</b><span>及格概率</span></div>
+        <div class="audit-stat"><b>${weak ? Math.round(weak.score) : '—'}</b><span>${weak ? '最弱章节' : '暂无一章'}</span></div>
+      </div>
+    </div>`;
+  }
+
   async function pageStats() {
     topbar('学习统计');
-    const s = await DB.stats();
+    /* 一次全表扫描拿到统计所需全部数据：原来 stats + wrongQuestions + latestByQuestion 扫了三遍 */
+    const summary = await recordsSummary();
+    const s = { total: summary.total, correct: summary.correct, byDay: summary.byDay };
     const days = Object.entries(s.byDay).sort().slice(-14);
     const max = Math.max(1, ...days.map(([, v]) => v.total));
     const acc = s.total ? Math.round(s.correct / s.total * 100) : 0;
-    const wrongCount = (await DB.wrongQuestions()).length;
-    const histCount = (await historyList()).length;
+    const wrongCount = summary.wrongCount;
+    const hist = await historyList();
+    const histCount = hist.length;
 
     /* ---- 章节正确率：题目 → 章节 → 最近一次作答（薄弱章节置顶） ---- */
     const banks = await DB.bankList();
     const qById = new Map();
-    for (const b of banks) (await DB.questionsByBank(b.id)).forEach(q => qById.set(q.id, q));
-    const latest = await DB.latestByQuestion();
+    const allQ = [];
+    for (const b of banks) {
+      for (const q of await DB.questionsByBank(b.id)) { qById.set(q.id, q); allQ.push(q); }
+    }
+    const latest = summary.latest;
     const secTitle = new Map();
     for (const b of banks) for (const sec of (b.sections || [])) secTitle.set(b.id + ':' + String(sec.secIdx), sec.title);
     const bankName = new Map(banks.map(b => [b.id, b.name]));
@@ -9237,20 +9335,8 @@ const App = (() => {
     let onlyWeak = false;
     const LIMIT = 12;
 
-    // 能力估分（本地 1PL/Elo，全量重算，不新增存储）；数据不足时只显示入口
-    let ab = null, abWeak = null;
-    try {
-      ab = (await abilityCompute()).est || null;
-      if (ab) {
-        abWeak = (ab.sections || [])
-          .filter(x => (x.n || 0) >= 2)
-          .sort((a, b) => (a.score || 0) - (b.score || 0))[0] || null;
-      }
-    } catch (e) {
-      console.error('[ability] 统计页估分失败', e);
-    }
-    const abPred = (ab && ab.predicted) || {};
-    const abScore = Number.isFinite(abPred.score) ? Math.round(abPred.score) : null;
+    /* 能力估分：命中缓存就立刻出卡；没缓存先画「计算中」，让页面先出来再算 */
+    const cachedEst = (abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
 
     $view().innerHTML = `
       <div class="stats-row">
@@ -9258,16 +9344,7 @@ const App = (() => {
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
       </div>
-      ${abScore != null ? `
-      <div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
-        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">按题目难度推算 · 点开详情</span></div>
-        <div class="audit-sum" style="margin:0">
-          <div class="audit-stat"><b>${abScore}</b><span>预计卷面分</span></div>
-          <div class="audit-stat"><b>${Math.round((abPred.passRate || 0) * 100)}%</b><span>及格概率</span></div>
-          <div class="audit-stat"><b>${abWeak ? Math.round(abWeak.score) : '—'}</b><span>${abWeak ? '最弱章节' : '暂无一章'}</span></div>
-        </div>
-      </div>` : `
-      <button class="btn ghost big" onclick="App.navigate('#/ability')">📈 能力估分（再多练几题就更准）</button>`}
+      <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
       <button class="btn ghost big" onclick="App.navigate('#/history')">📋 练习记录${histCount ? `（${histCount}）` : ''}</button>
       <div class="card">
         <div class="card-title">章节正确率（薄弱在前）</div>
@@ -9302,6 +9379,21 @@ const App = (() => {
         <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`
         : '<div class="muted">暂无答题记录</div>'}
       </div>`;
+
+    /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
+    if (!cachedEst && s.total > 0) {
+      setTimeout(async () => {
+        const el = document.getElementById('ability-card');
+        if (!el || !el.isConnected) return;
+        try {
+          const est = (await abilityCompute(allQ, hist)).est;
+          const live = document.getElementById('ability-card');
+          if (live) live.innerHTML = abilityCardHtml(est, s.total);
+        } catch (e) {
+          console.error('[ability] 统计页估分失败', e);
+        }
+      }, 0);
+    }
 
     if (!rows.length) return;
     let expanded = false;
@@ -9784,9 +9876,41 @@ const App = (() => {
   }
 
   /* ---------- 能力估分 ---------- */
-  async function abilityCompute() {
-    const { banks, questions } = await allBanksQuestions();
-    const hist = await historyList();
+  /* 一次读全部作答记录，同时算出统计页要的所有东西（总数/正确/按日/每题最近一次/错题数）。
+     原来是 DB.stats + DB.wrongQuestions + DB.latestByQuestion 三次全表扫描，记录一多就是三倍开销。 */
+  async function recordsSummary() {
+    const recs = await DB.recordsAll();
+    const byDay = {};
+    const latest = {};
+    let correct = 0;
+    for (const r of recs) {
+      const t = r.time || 0;
+      const day = new Date(t).toISOString().slice(0, 10);
+      const cell = byDay[day] || (byDay[day] = { total: 0, correct: 0 });
+      cell.total++;
+      if (r.correct) { correct++; cell.correct++; }
+      const p = latest[r.questionId];
+      if (!p || t > p.time) latest[r.questionId] = { correct: !!r.correct, time: t };
+    }
+    let wrongCount = 0;
+    for (const qid in latest) if (!latest[qid].correct) wrongCount++;
+    return { total: recs.length, correct, wrong: recs.length - correct, byDay, latest, wrongCount };
+  }
+
+  /* 估分缓存：同样的题目/作答不变就复用，避免每次进统计页都重算（3000 题约 80~200ms） */
+  let abilityCache = null;
+  function abilityKey(questions, hist) {
+    let nRows = 0;
+    for (const h of hist) nRows += (h.rows || []).length;
+    return [questions.length, nRows, hist.length, hist[0] ? hist[0].at : 0].join('|');
+  }
+
+  async function abilityCompute(questionsArg, histArg) {
+    const banks = questionsArg ? null : (await DB.bankList());
+    const questions = questionsArg || (await allBanksQuestions()).questions;
+    const hist = histArg || await historyList();
+    const key = abilityKey(questions, hist);
+    if (abilityCache && abilityCache.key === key) return { est: abilityCache.est, questions, banks };
     const rows = [];
     for (let i = hist.length - 1; i >= 0; i--) {
       for (const row of (hist[i].rows || [])) {
@@ -9804,7 +9928,8 @@ const App = (() => {
       }
     }
     const sectionTitle = new Map();
-    for (const b of banks) {
+    const banksForSections = banks || (await DB.bankList());
+    for (const b of banksForSections) {
       for (const s of (b.sections || [])) sectionTitle.set(b.id + ':' + String(s.secIdx), s.title);
     }
     let est;
@@ -9814,6 +9939,7 @@ const App = (() => {
       console.error('[ability]', e);
       est = { insufficient: true, n: rows.length, predicted: {}, sections: [], items: {} };
     }
+    abilityCache = { key, est: est || {} };
     return { est: est || {}, questions, banks, rows, sectionTitle };
   }
 
