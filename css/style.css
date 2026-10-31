@@ -172,6 +172,10 @@ body {
   transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
 }
 .chip:active { transform: scale(.96); }
+/* 筛选条：单行横向滚动，题库页 8 个筛选不再折成三行 */
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll .chip { flex: 0 0 auto; }
 .chip.on {
   background: var(--grad-primary); border-color: transparent; color: var(--on-primary);
   font-weight: 600; box-shadow: 0 3px 10px var(--primary-glow);
@@ -246,6 +250,39 @@ body {
   cursor: pointer; padding: 0;
 }
 .bank-menu:active { background: var(--surface-2); }
+.bank-pick {
+  flex: 0 0 auto; background: none; border: 0; color: var(--primary);
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 0 10px; align-self: stretch; cursor: pointer;
+}
+.bank-pick:active { background: var(--surface-2); }
+.bank-tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px;
+  font-size: 10px; font-weight: 600; vertical-align: 2px;
+  color: var(--muted); background: var(--surface-2); border: 1px solid var(--line);
+}
+.bank-card.frozen { opacity: .55; }
+.bank-card.frozen .bank-name { font-weight: 500; }
+/* 选题页：已选信息 + 折叠/展开 同一行 */
+.pick-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.pick-row #pick-info { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-fold { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
+.pick-fold button {
+  border: 0; background: none; color: var(--primary); font-family: inherit;
+  font-size: 12px; font-weight: 600; padding: 2px 2px; cursor: pointer;
+}
+/* 题目详情弹层：选项列表（正确项高亮） */
+.sheet-opts { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+.sheet-opt {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border-radius: 10px; background: var(--surface-2);
+  font-size: 13.5px; line-height: 1.5;
+}
+.sheet-opt b { flex: 0 0 16px; color: var(--muted); font-weight: 700; }
+.sheet-opt span { flex: 1; min-width: 0; }
+.sheet-opt i { flex: 0 0 auto; font-style: normal; color: var(--ok); font-weight: 700; }
+.sheet-opt.hit { background: var(--ok-bg); }
+.sheet-opt.hit b { color: var(--ok); }
 
 /* 题库操作弹层 */
 .menu-row {

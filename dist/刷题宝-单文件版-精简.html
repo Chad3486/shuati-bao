@@ -180,6 +180,10 @@ body {
   transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
 }
 .chip:active { transform: scale(.96); }
+/* 筛选条：单行横向滚动，题库页 8 个筛选不再折成三行 */
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll .chip { flex: 0 0 auto; }
 .chip.on {
   background: var(--grad-primary); border-color: transparent; color: var(--on-primary);
   font-weight: 600; box-shadow: 0 3px 10px var(--primary-glow);
@@ -254,6 +258,39 @@ body {
   cursor: pointer; padding: 0;
 }
 .bank-menu:active { background: var(--surface-2); }
+.bank-pick {
+  flex: 0 0 auto; background: none; border: 0; color: var(--primary);
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 0 10px; align-self: stretch; cursor: pointer;
+}
+.bank-pick:active { background: var(--surface-2); }
+.bank-tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px;
+  font-size: 10px; font-weight: 600; vertical-align: 2px;
+  color: var(--muted); background: var(--surface-2); border: 1px solid var(--line);
+}
+.bank-card.frozen { opacity: .55; }
+.bank-card.frozen .bank-name { font-weight: 500; }
+/* 选题页：已选信息 + 折叠/展开 同一行 */
+.pick-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.pick-row #pick-info { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-fold { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
+.pick-fold button {
+  border: 0; background: none; color: var(--primary); font-family: inherit;
+  font-size: 12px; font-weight: 600; padding: 2px 2px; cursor: pointer;
+}
+/* 题目详情弹层：选项列表（正确项高亮） */
+.sheet-opts { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+.sheet-opt {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border-radius: 10px; background: var(--surface-2);
+  font-size: 13.5px; line-height: 1.5;
+}
+.sheet-opt b { flex: 0 0 16px; color: var(--muted); font-weight: 700; }
+.sheet-opt span { flex: 1; min-width: 0; }
+.sheet-opt i { flex: 0 0 auto; font-style: normal; color: var(--ok); font-weight: 700; }
+.sheet-opt.hit { background: var(--ok-bg); }
+.sheet-opt.hit b { color: var(--ok); }
 
 /* 题库操作弹层 */
 .menu-row {
@@ -5401,7 +5438,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.23'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.24'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5930,7 +5967,7 @@ const App = (() => {
         const overview = await dailyOverview(banks, allQ, await historyList());
         if (overview.length) {
           const pending = overview.filter(x => !x.meta.done);
-          dailyInfo = { total: overview.length, pending: pending.length, done: overview.length - pending.length };
+          dailyInfo = { total: overview.length, pending: pending.length, done: overview.length - pending.length, size: (pending[0] || overview[0]).meta.size || 8 };
           streak = (pending[0] || overview[0]).streak || streak;
         }
       } catch (e) {
@@ -5961,7 +5998,7 @@ const App = (() => {
           <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
           <div class="daily-title">${dailyInfo.pending ? '还有 ' + dailyInfo.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
           <div class="daily-sub">${dailyInfo.pending
-            ? `每库 8 题 · 已完成 ${dailyInfo.done}/${dailyInfo.total}`
+            ? `每库 ${dailyInfo.size || 8} 题 · 已完成 ${dailyInfo.done}/${dailyInfo.total}`
             : `完成 ${dailyInfo.total} 个题库 · 点开可再来一组`}</div>
         </div>
         <span class="daily-btn">${dailyInfo.pending ? '开始' : '看小结'}</span>
@@ -6016,18 +6053,20 @@ const App = (() => {
       if (sortBy === 'name') arr = arr.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
       else if (sortBy === 'count') arr = arr.slice().sort((a, b) => (b.count || 0) - (a.count || 0));
       else arr = arr.slice().sort((a, b) => b.createdAt - a.createdAt);
-      return arr;
+      // 冻结的题库永远沉到最后（其它排序在各自内部保持）
+      return arr.slice().sort((a, b) => (a.frozen ? 1 : 0) - (b.frozen ? 1 : 0));
     }
 
     function cardHtml(b) {
       const na = info[b.id]?.noAns || 0;
       const secs = info[b.id]?.secs || 0;
       return `
-        <div class="bank-card">
+        <div class="bank-card${b.frozen ? ' frozen' : ''}">
           <div class="bank-main" onclick="App.startBank('${b.id}')">
-            <div class="bank-name">${escapeHtml(b.name)}</div>
+            <div class="bank-name">${escapeHtml(b.name)}${b.frozen ? '<span class="bank-tag">冻结</span>' : ''}</div>
             <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
           </div>
+          ${b.count ? `<button class="bank-pick" onclick="event.stopPropagation();App.navigate('#/bank/${b.id}')">选题</button>` : ''}
           <button class="bank-menu" aria-label="题库操作" onclick="event.stopPropagation();App.bankMenu('${b.id}')">⋯</button>
         </div>`;
     }
@@ -6089,6 +6128,16 @@ const App = (() => {
     toast('已改名');
   }
 
+  /** 冻结 / 解冻题库：冻结 = 不参与每日一练、首页列表沉到最后（题库多时先「收起来」） */
+  async function toggleFreeze(id) {
+    const b = await DB.bankGet(id);
+    if (!b) return toast('题库不存在');
+    b.frozen = !b.frozen;
+    await DB.bankAdd(b);
+    render();
+    toast(b.frozen ? '已冻结：不再出现在每日一练里' : '已解冻');
+  }
+
   /* 题库操作菜单（首页卡片右侧 ⋯）：把原来挤在一行的 4 个文字按钮收进底部弹层 */
   async function bankMenu(id) {
     const b = await DB.bankGet(id);
@@ -6110,6 +6159,7 @@ const App = (() => {
         <button class="menu-row" data-a="answers"><span>${na ? `🩹 补答案（${na} 题）` : '✅ 答案校验'}</span><i>›</i></button>
         <button class="menu-row" data-a="audit"><span>🩺 题库体检</span><i>›</i></button>
         <button class="menu-row" data-a="daily"><span>📅 今日一练</span><i>›</i></button>
+        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '☀️ 解冻题库（重新参与每日一练）' : '❄️ 冻结题库（暂不参与每日一练，列表沉底）'}</span><i>›</i></button>
         <button class="menu-row" data-a="rename"><span>✏️ 改名</span><i>›</i></button>
         <button class="menu-row danger" data-a="del"><span>🗑 删除题库</span><i>›</i></button>
       </div>`;
@@ -6124,6 +6174,7 @@ const App = (() => {
         else if (a === 'answers') navigate('#/answers/' + id);
         else if (a === 'audit') openAudit(id);
         else if (a === 'daily') dailyBank(id);
+        else if (a === 'freeze') toggleFreeze(id);
         else if (a === 'rename') renameBank(id);
         else if (a === 'del') delBank(id);
       };
@@ -6939,23 +6990,24 @@ const App = (() => {
     topbar(bank.name.slice(0, 10) || '题目列表', '#/home');
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">选择要练的题</div>
         <div class="list-tools">
           <input id="q-search" class="search-input" placeholder="搜索题干 / 选项 / 答案…">
-          <div class="chips" id="q-filter"></div>
+          <div class="chips scroll" id="q-filter"></div>
         </div>
-        <div class="chips" id="sec-fold">
-          <button class="chip" data-act="fold">全部折叠</button>
-          <button class="chip" data-act="unfold">全部展开</button>
+        <div class="pick-row">
+          <span class="muted small" id="pick-info"></span>
+          <span class="pick-fold" id="sec-fold">
+            <button data-act="fold">折叠全部</button>
+            <button data-act="unfold">展开全部</button>
+          </span>
         </div>
-        <div class="btn-row">
-          <button class="btn ghost" id="sel-all">全选可见</button>
-          <button class="btn ghost" id="sel-none">清空选择</button>
-          <button class="btn ghost" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
-          <button class="btn ghost" onclick="App.dailyBank('${bank.id}')">📅 今日一练</button>
+        <div class="chips">
+          <button class="chip" id="sel-all">全选可见</button>
+          <button class="chip" id="sel-none">清空选择</button>
+          <button class="chip" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
+          <button class="chip" onclick="App.dailyBank('${bank.id}')">📅 一练</button>
         </div>
-        <div class="muted small" id="pick-info" style="margin-top:8px"></div>
-        <button class="btn primary big" id="go-quiz" style="margin-top:8px"></button>
+        <button class="btn primary big" id="go-quiz" style="margin-top:10px"></button>
         <details style="margin-top:12px">
           <summary class="muted small" style="cursor:pointer;font-weight:600">更多操作（批量选 / AI 核对 / 导出范式 / 删除）</summary>
           <div class="btn-row" style="margin-top:10px">
@@ -9132,14 +9184,14 @@ const App = (() => {
       searchPool = arr.filter(q => q.answer);
       document.getElementById('qs-sum').textContent = kw.trim()
         ? `找到 ${arr.length} 题${arr.length > LIMIT ? `（显示前 ${LIMIT} 题）` : ''}`
-        : `全部题库共 ${all.length} 题 · 输入关键词缩小范围`;
+        : `全部题库共 ${all.length} 题 · 输入关键词缩小范围` + (arr.length ? ' · 点题目看选项和解析' : '');
       document.getElementById('qs-actions').innerHTML = searchPool.length
         ? `<button class="btn primary big" onclick="App.startSearchPractice()">练习这些题（${searchPool.length}）</button>` : '';
       const resEl = document.getElementById('qs-results');
       if (!arr.length) { resEl.innerHTML = kw.trim() ? '<div class="empty" style="padding:24px 0">没有匹配的题目</div>' : ''; return; }
       resEl.innerHTML = arr.slice(0, LIMIT).map(q => {
         const sec = secTitle.get(q.bankId + ':' + String(q.secIdx ?? ''));
-        return `<div class="card wrong-card">
+        return `<div class="card wrong-card" onclick="App.openQuestionDetail('${q.id}')" style="cursor:pointer">
           <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
             <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
             <span class="muted small" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bankName.get(q.bankId) || '')}${sec ? ' · ' + escapeHtml(sec) : ''}</span>
@@ -9151,7 +9203,8 @@ const App = (() => {
         </div>`;
       }).join('');
       resEl.querySelectorAll('[data-star]').forEach(btn => {
-        btn.onclick = async () => {
+        btn.onclick = async (ev) => {
+          ev.stopPropagation();   // 别把「收藏」当成「打开详情」
           const added = await DB.starToggle(btn.dataset.star);
           if (added) starIds.add(btn.dataset.star); else starIds.delete(btn.dataset.star);
           btn.textContent = added ? '★' : '☆';
@@ -9175,6 +9228,53 @@ const App = (() => {
       renderResults();
     };
     renderResults();
+  }
+
+  /* 题目详情弹层（搜题/任意列表复用）：完整题干 + 全部选项（标出正确答案）+ 答案 + 解析 */
+  async function openQuestionDetail(qid) {
+    const q = await DB.questionGet(qid);
+    if (!q) return toast('题目已经不存在了');
+    const bank = await DB.bankGet(q.bankId);
+    const sec = (bank && (bank.sections || []).find(x => String(x.secIdx) === String(q.secIdx ?? '')));
+    const stars = new Set(await DB.starIds());
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    const draw = () => {
+      const starred = stars.has(q.id);
+      const optHtml = q.options && Object.keys(q.options).length
+        ? `<div class="sheet-opts">${Object.entries(q.options).map(([k, v]) => {
+            const hit = String(q.answer || '').toUpperCase().includes(k);
+            return `<div class="sheet-opt${hit ? ' hit' : ''}"><b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>${hit ? '<i>✓</i>' : ''}</div>`;
+          }).join('')}</div>`
+        : '';
+      mask.innerHTML = `
+        <div class="sheet-panel">
+          <div class="sheet-head"><b>题目详情</b><button class="sheet-close">×</button></div>
+          <div class="muted small" style="margin:-8px 0 10px">${escapeHtml(bank ? bank.name : '')}${sec ? ' · ' + escapeHtml(sec.title) : ''}${q.no ? ' · 第 ' + escapeHtml(String(q.no)) + ' 题' : ''}</div>
+          <div class="stem sm">${renderStem(q)}</div>
+          ${optHtml}
+          <div class="wrong-ans" style="margin-top:12px">${q.answer ? '答案：' + escapeHtml(String(q.answer).replace(/\|\|\|/g, ' ／ ')) : '（本题缺答案）'}</div>
+          ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+          <div class="btn-row" style="margin-top:14px">
+            <button class="btn ghost" id="qd-star">${starred ? '★ 已收藏' : '☆ 收藏'}</button>
+            <button class="btn primary" id="qd-edit">修改这道题</button>
+          </div>
+        </div>`;
+      mask.querySelector('.sheet-close').onclick = () => mask.remove();
+      mask.querySelector('#qd-star').onclick = async () => {
+        const added = await DB.starToggle(q.id);
+        if (added) stars.add(q.id); else stars.delete(q.id);
+        toast(added ? '已收藏' : '已取消收藏');
+        draw();
+      };
+      mask.querySelector('#qd-edit').onclick = () => {
+        mask.remove();
+        openQuestionEditor(q.id, () => { if ((location.hash || '').startsWith('#/search')) render(); });
+      };
+    };
+    draw();
+    mask.onclick = e => { if (e.target === mask) mask.remove(); };
+    document.body.appendChild(mask);
   }
 
   async function startSearchPractice() {
@@ -9308,14 +9408,24 @@ const App = (() => {
     const weak = est
       ? (est.sections || []).filter(x => (x.n || 0) >= 2).sort((a, b) => (a.score || 0) - (b.score || 0))[0]
       : null;
+    if (!total) return '';
     if (score == null) {
-      if (!total) return `<button class="btn ghost big" onclick="App.navigate('#/ability')">📈 能力估分（先答几题）</button>`;
       return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
         <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">正在计算…</span></div>
         <div class="audit-sum" style="margin:0">
           <div class="audit-stat"><b>…</b><span>预计卷面分</span></div>
           <div class="audit-stat"><b>…</b><span>及格概率</span></div>
           <div class="audit-stat"><b>…</b><span>最弱章节</span></div>
+        </div>
+      </div>`;
+    }
+    if (est && est.insufficient) {
+      return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
+        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">数据还不够，先练题</span></div>
+        <div class="audit-sum" style="margin:0">
+          <div class="audit-stat"><b>${total}</b><span>已答题数</span></div>
+          <div class="audit-stat"><b>30</b><span>建议至少答</span></div>
+          <div class="audit-stat"><b>${Math.max(0, 30 - total)}</b><span>还差</span></div>
         </div>
       </div>`;
     }
@@ -9373,7 +9483,7 @@ const App = (() => {
     const LIMIT = 12;
 
     /* 能力估分：命中缓存就立刻出卡；没缓存先画「计算中」，让页面先出来再算 */
-    const cachedEst = (abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
+    const cachedEst = (s.total && abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
 
     $view().innerHTML = `
       <div class="stats-row">
@@ -9396,7 +9506,7 @@ const App = (() => {
         : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况</div>'}
       </div>
       <div class="card">
-        <div class="card-title">近 ${days.length} 日答题量</div>
+        <div class="card-title">近 14 日答题量</div>
         ${days.length ? `<div class="chart">
           ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
             <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
@@ -9404,7 +9514,7 @@ const App = (() => {
         </div>` : '<div class="muted">暂无答题记录</div>'}
       </div>
       <div class="card">
-        <div class="card-title">近 ${days.length} 日正确率</div>
+        <div class="card-title">近 14 日正确率</div>
         ${days.length ? `<div class="chart">
           ${days.map(([d, v]) => {
             const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
@@ -9539,15 +9649,37 @@ const App = (() => {
   async function pageSettings() {
     topbar('设置');
     const cfg = await LLM.getConfig();
-    const theme = (await DB.metaGet('theme')) || 'auto';
+    const themeRaw = (await DB.metaGet('theme')) || 'light';
+    const dsize = await dailySize();
+    const dmode = (await DB.metaGet('dailyMode')) || 'standard';
+    /* 老版本存过 'auto'（跟随系统）：WebView 里取不到系统深色，等于没用，直接按当前系统检测结果落成日间/夜间 */
+    const theme = themeRaw === 'auto'
+      ? ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light')
+      : themeRaw;
     $view().innerHTML = `
       <div class="card">
         <div class="card-title">外观</div>
         <div class="seg" id="seg-theme">
-          <button data-v="auto" class="${theme === 'auto' ? 'on' : ''}">跟随系统</button>
           <button data-v="light" class="${theme === 'light' ? 'on' : ''}">☀ 日间</button>
           <button data-v="dark" class="${theme === 'dark' ? 'on' : ''}">🌙 夜间</button>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title">每日一练</div>
+        <div class="muted small">每个题库每天一组，题数和配比自己定；同一天题集固定，做一半退出再进还是这一组</div>
+        <div class="field" style="margin-top:10px"><span>每个题库每天几题</span>
+          <div class="chips" id="seg-dsize">
+            ${[4, 6, 8, 10, 12, 15].map(n => `<button class="chip ${n === dsize ? 'on' : ''}" data-v="${n}">${n} 题</button>`).join('')}
+          </div>
+        </div>
+        <div class="field"><span>错题 / 新题配比</span>
+          <div class="chips" id="seg-dmode">
+            <button class="chip ${dmode === 'easy' ? 'on' : ''}" data-v="easy">轻松（少错题）</button>
+            <button class="chip ${dmode === 'standard' ? 'on' : ''}" data-v="standard">标准</button>
+            <button class="chip ${dmode === 'devil' ? 'on' : ''}" data-v="devil">魔鬼（多错题）</button>
+          </div>
+        </div>
+        <div class="muted small" id="dset-hint"></div>
       </div>
       <div class="card">
         <div class="card-title">AI 接口（「文件 → AI 转范式」/「AI 智能对位」使用）</div>
@@ -9576,9 +9708,6 @@ const App = (() => {
         <div class="muted small">图片识别（导入图片 / 图片型 Word）走「视觉模型」：默认跟随主模型；若主模型不支持图片（如 deepseek-chat），请单独填写支持图片的模型名</div>
         <label class="field"><span>解析并发数（1-8，越大越快，过高可能被限流）</span>
           <input id="set-conc" type="number" min="1" max="8" value="${cfg.concurrency || 4}">
-        </label>
-        <label class="field"><span>单次输出上限（tok，答长题/长解析可调大，受模型上限约束）</span>
-          <input id="set-mtok" type="number" min="256" step="256" value="${cfg.maxTokens != null ? cfg.maxTokens : 8192}">
         </label>
         <label class="field"><span>单次费用上限（¥，0 = 不限，实耗达到即自动暂停）</span>
           <input id="set-cap" type="number" min="0" step="0.1" value="${cfg.capYuan != null ? cfg.capYuan : 0}">
@@ -9650,6 +9779,34 @@ const App = (() => {
       }
     };
 
+    // 每日一练设置：改完当天就生效（meta 里记了 size/mode，题集对不上会自动重排）
+    const dHint = document.getElementById('dset-hint');
+    const renderDHint = async () => {
+      const n = await dailySize();
+      const md = (await DB.metaGet('dailyMode')) || 'standard';
+      const q = md === 'easy' ? `错题 ${Math.round(scaled(n, 2, 8))} + 新题 ${Math.round(scaled(n, 5, 8))}`
+        : md === 'devil' ? `错题 ${Math.round(scaled(n, 4, 8))} + 新题 ${Math.round(scaled(n, 3, 8))}`
+        : `错题 ${Math.round(scaled(n, 3, 8))} + 新题 ${Math.round(scaled(n, 4, 8))}`;
+      dHint.textContent = `当前：每个题库 ${n} 题（${q} + 复习，某类不够自动补）`;
+    };
+    document.getElementById('seg-dsize').onclick = async (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.querySelectorAll('#seg-dsize .chip').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      await DB.metaSet('dailySize', parseInt(b.dataset.v, 10));
+      await renderDHint();
+      toast(`每日一练改为每库 ${b.dataset.v} 题`);
+    };
+    document.getElementById('seg-dmode').onclick = async (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      document.querySelectorAll('#seg-dmode .chip').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      await DB.metaSet('dailyMode', b.dataset.v);
+      await renderDHint();
+      toast('配比已更新');
+    };
+    renderDHint();
+
     // 外观切换：立即生效并保存
     const segTheme = document.getElementById('seg-theme');
     if (segTheme) segTheme.onclick = async (e) => {
@@ -9658,7 +9815,7 @@ const App = (() => {
       b.classList.add('on');
       await DB.metaSet('theme', b.dataset.v);
       applyTheme();
-      toast(b.dataset.v === 'auto' ? '已跟随系统' : (b.dataset.v === 'dark' ? '已切换夜间' : '已切换日间'));
+      toast(b.dataset.v === 'dark' ? '已切换夜间' : '已切换日间');
     };
 
 
@@ -9703,7 +9860,7 @@ const App = (() => {
         : selModel.value,
       visionModel: (document.getElementById('set-vmodel')?.value || '').trim(),
       concurrency: Math.max(1, Math.min(8, parseInt(document.getElementById('set-conc').value, 10) || 4)),
-      maxTokens: Math.max(256, parseInt(document.getElementById('set-mtok').value, 10) || 8192),
+      maxTokens: cfg.maxTokens != null ? cfg.maxTokens : 8192,   // 已从设置页移除，沿用旧值/默认
       priceIn: curPrice.priceIn,
       priceOut: curPrice.priceOut,
       capYuan: Math.max(0, parseFloat(document.getElementById('set-cap').value) || 0)
@@ -9730,6 +9887,7 @@ const App = (() => {
     if (!confirmDialog('清空全部答题记录和错题本？题目不受影响。')) return;
     await DB.clearRecords();
     await DB.metaSet('quizHistory', []);
+    abilityCache = null;   // 清空记录后不要再拿旧的估分缓存（否则统计页会显示没数据时的假估分）
     toast('已清空');
     render();
   }
@@ -9994,14 +10152,14 @@ const App = (() => {
 
     $view().innerHTML = `
       <div class="card">
-        ${score != null ? `
+        ${score != null && !est.insufficient ? `
         <div class="ability-hero">
           <div class="ability-score">${score}<small> / 100</small></div>
           <div class="ability-range">预计区间 ${low}–${high} · 基于 ${n} 次作答</div>
           ${passRate != null ? `<div class="ability-pass">及格（60 分）概率 <b style="color:${passRate >= 60 ? 'var(--ok)' : 'var(--bad)'}">${passRate}%</b></div>` : ''}
           <div class="ability-line"><i style="width:${Math.max(2, Math.min(100, score))}%"></i></div>
         </div>` : `
-        <div class="empty" style="padding:20px 0">还在攒数据</div>`}
+        <div class="empty" style="padding:16px 0">还在攒数据<span class="muted small" style="display:block;margin-top:6px">已作答 ${n} / 30 题，够了才开始估算</span></div>`}
         <div class="muted small" style="margin-top:10px">
           ${n < 30
             ? `已作答 ${n} 题，再多练 ${30 - n} 题估分会更准（现在的结果波动较大）。`
@@ -10050,6 +10208,13 @@ const App = (() => {
   }
 
   /* ---------- 每日一练（按题库：每个题库每天一组） ---------- */
+  const DAILY_SIZES = [4, 6, 8, 10, 12, 15];
+  async function dailySize() {
+    const v = parseInt(await DB.metaGet('dailySize'), 10);
+    return DAILY_SIZES.includes(v) ? v : 8;
+  }
+  const scaled = (n, part, base) => Math.max(0, Math.round(n * part / base));
+
   async function dailyBanksMap() {
     return (await DB.metaGet('dailyBanks')) || {};
   }
@@ -10081,21 +10246,25 @@ const App = (() => {
   /** 这个库今天的那一组：首次访问生成并落库，同一天不变，跨天重建 */
   async function planForBank(bankId, bankQuestions, latest, map) {
     const dateKey = todayKey();
+    const size = await dailySize();
+    const mode = (await DB.metaGet('dailyMode')) || 'standard';
     const saved = map[bankId];
-    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length) {
+    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length
+        && (saved.size == null || saved.size === size) && (saved.mode == null || saved.mode === mode)) {
       const ids = new Set(bankQuestions.map(q => q.id));
       if (saved.qids.every(id => ids.has(id))) return saved;
     }
-    const mode = (await DB.metaGet('dailyMode')) || 'standard';
     let plan = null;
     try {
-      plan = Daily.plan({ questions: bankQuestions, latest, dateKey, size: 8, mode, bankId });
+      plan = Daily.plan({ questions: bankQuestions, latest, dateKey, size, mode, bankId });
     } catch (e) {
       console.error('[daily]', e);
       plan = { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 } };
     }
     const meta = {
       date: dateKey,
+      size,
+      mode,
       qids: plan.qids || [],
       breakdown: plan.breakdown || { wrong: 0, weak: 0, fresh: 0, review: 0 },
       done: false,
@@ -10114,6 +10283,7 @@ const App = (() => {
     const qid2bank = new Map(allQ.map(q => [q.id, q.bankId]));
     const out = [];
     for (const b of banks) {
+      if (b.frozen) continue;   // 冻结的题库不参与每日一练
       const qs = allQ.filter(q => q.bankId === b.id && q.answer);
       if (!qs.length) continue;
       const meta = await planForBank(b.id, qs, latest, map);
@@ -10146,7 +10316,7 @@ const App = (() => {
           <b style="flex:1">今天已完成 ${doneCount} / ${rows.length} 个题库</b>
           <span class="muted small">每个库每天一组</span>
         </div>
-        <div class="muted small" style="margin-top:4px">每组 8 题：错题 3 + 新题 4 + 复习 1（某类不够自动回填）。同一天题集固定，做一半退出再进还是这一组。</div>
+        <div class="muted small" style="margin-top:4px" id="daily-desc">每组 ${await dailySize()} 题（错题 / 新题 / 复习按设置配比，某类不够自动回填）。同一天题集固定；题数和配比可在「我的 → 设置 → 每日一练」改。</div>
       </div>
       ${rows.map(({ bank, meta, streak }) => `
       <div class="card">
@@ -10178,7 +10348,7 @@ const App = (() => {
     if (again) {
       let plan = null;
       try {
-        plan = Daily.plan({ questions: qs, latest, dateKey: todayKey() + '-again-' + Date.now(), size: 8 });
+        plan = Daily.plan({ questions: qs, latest, dateKey: todayKey() + '-again-' + Date.now(), size: await dailySize() });
       } catch (e) {
         console.error('[daily again]', e);
       }
@@ -10333,7 +10503,7 @@ const App = (() => {
     document.body.appendChild(mask);
   }
 
-  return { init, navigate, startBank, delBank, renameBank, bankMenu, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, dailyBank, toast };
+  return { init, navigate, startBank, delBank, renameBank, bankMenu, wrongRedo, starRedo, replay, finishQuiz, clearProgress, resumeLast, clearRecords, examWrongRedo, startSearchPractice, historyClear, openAudit, dailyBank, openQuestionDetail, toast };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);
