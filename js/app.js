@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.24'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.25'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -628,7 +628,7 @@ const App = (() => {
             <div class="bank-name">${escapeHtml(b.name)}${b.frozen ? '<span class="bank-tag">冻结</span>' : ''}</div>
             <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
           </div>
-          ${b.count ? `<button class="bank-pick" onclick="event.stopPropagation();App.navigate('#/bank/${b.id}')">选题</button>` : ''}
+          ${b.count ? `<button class="bank-go" onclick="event.stopPropagation();App.navigate('#/bank/${b.id}')">选题</button>` : ''}
           <button class="bank-menu" aria-label="题库操作" onclick="event.stopPropagation();App.bankMenu('${b.id}')">⋯</button>
         </div>`;
     }
@@ -716,14 +716,13 @@ const App = (() => {
           <b>${escapeHtml(b.name)}</b>
           <button class="sheet-close" id="bm-close">×</button>
         </div>
-        <div class="muted small" style="margin:-8px 0 8px">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
-        <button class="menu-row" data-a="pick"><span>📑 按章节选题</span><i>›</i></button>
-        <button class="menu-row" data-a="answers"><span>${na ? `🩹 补答案（${na} 题）` : '✅ 答案校验'}</span><i>›</i></button>
-        <button class="menu-row" data-a="audit"><span>🩺 题库体检</span><i>›</i></button>
-        <button class="menu-row" data-a="daily"><span>📅 今日一练</span><i>›</i></button>
-        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '☀️ 解冻题库（重新参与每日一练）' : '❄️ 冻结题库（暂不参与每日一练，列表沉底）'}</span><i>›</i></button>
-        <button class="menu-row" data-a="rename"><span>✏️ 改名</span><i>›</i></button>
-        <button class="menu-row danger" data-a="del"><span>🗑 删除题库</span><i>›</i></button>
+        <div class="sheet-sub">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
+        <button class="menu-row" data-a="answers"><span>${na ? `补答案 <b class="menu-num">${na}</b>` : '答案校验'}</span><i>›</i></button>
+        <button class="menu-row" data-a="audit"><span>题库体检</span><i>›</i></button>
+        <button class="menu-row" data-a="daily"><span>今日一练</span><i>›</i></button>
+        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '解冻题库' : '冻结题库'}</span><i>›</i></button>
+        <button class="menu-row" data-a="rename"><span>改名</span><i>›</i></button>
+        <button class="menu-row danger" data-a="del"><span>删除题库</span><i>›</i></button>
       </div>`;
     const close = () => mask.remove();
     mask.onclick = e => { if (e.target === mask) close(); };
@@ -1537,6 +1536,9 @@ const App = (() => {
     const sel = new Set(qs.filter(q => q.answer).map(q => q.id));
     let kw = '', filter = 'all';
     const collapsed = new Set();
+    /* 首屏只展开前 2 节：1139 题的库原来一次画 1000+ 个格子，点进「选题」要等半秒；
+       其余章节点 ▸ 再按需渲染（"展开全部"仍然保留） */
+    if (groups.length > 4) groups.slice(2).forEach(g => collapsed.add(g.sec));
 
     const FILTERS = [
       ['all', '全部', () => true],

@@ -202,8 +202,10 @@ body {
 /* 概览条：总题量 + 上次练习（合并成一行，把高度让给题库列表） */
 .ov-card {
   display: flex; align-items: center; gap: 12px;
-  background: var(--card); border-radius: var(--radius);
-  padding: 11px 14px; margin-bottom: 12px;
+  background: linear-gradient(180deg, var(--card) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 12px;
   box-shadow: var(--shadow-soft);
 }
 .ov-main { min-width: 0; }
@@ -214,8 +216,8 @@ body {
 .ov-num span { font-size: 12px; font-weight: 600; opacity: .55; margin-left: 2px; letter-spacing: 0; }
 .ov-meta { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
 .ov-act { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 0 auto; }
-.ov-last { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.ov-last a { color: var(--primary); margin-left: 6px; }
+.ov-last { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.ov-last a { color: var(--primary); margin-left: 8px; font-weight: 600; }
 .ov-btn {
   border: 0; border-radius: 999px; padding: 7px 20px; cursor: pointer;
   font-family: inherit; font-size: 13px; font-weight: 700; color: #fff;
@@ -229,16 +231,16 @@ body {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px;
 }
 .quick-tile {
-  display: flex; flex-direction: column; align-items: center; gap: 5px;
-  padding: 9px 2px 8px; border: none; cursor: pointer; font-family: inherit;
-  background: var(--card); border-radius: 12px;
-  font-size: 11px; font-weight: 600; color: var(--text, #1c2333);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px 2px 9px; border: none; cursor: pointer; font-family: inherit;
+  background: var(--card); border: 1px solid var(--glass-line); border-radius: 14px;
+  font-size: 11.5px; font-weight: 600; color: var(--text, #1c2333);
   box-shadow: 0 2px 8px rgba(30, 50, 120, .06);
   transition: transform .12s ease, box-shadow .15s ease;
 }
 .quick-tile:active { transform: scale(.94); box-shadow: 0 1px 4px rgba(30, 50, 120, .08); }
 .quick-ico {
-  width: 32px; height: 32px; border-radius: 9px; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 11px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
 }
 .quick-ico svg { width: 18px; height: 18px; display: block; }
@@ -246,24 +248,30 @@ body {
 .bank-list { margin-top: 14px; }
 .bank-card {
   display: flex; align-items: center; background: var(--card);
-  border-radius: var(--radius); margin-bottom: 8px; overflow: hidden;
+  border: 1px solid var(--glass-line);
+  border-radius: 14px; margin-bottom: 8px; overflow: hidden;
   box-shadow: var(--shadow-soft);
+  transition: border-color .15s, box-shadow .15s;
 }
-.bank-main { flex: 1; padding: 11px 4px 11px 14px; cursor: pointer; min-width: 0; }
+.bank-card:active { border-color: var(--primary); }
+.bank-main { flex: 1; padding: 12px 4px 12px 14px; cursor: pointer; min-width: 0; }
 .bank-name { font-weight: 600; font-size: 15px; word-break: break-word; }
 .bank-meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.bank-go {
+  flex: 0 0 auto; border: 0; cursor: pointer; font-family: inherit;
+  font-size: 12.5px; font-weight: 600; color: var(--primary);
+  background: var(--surface-3); border-radius: 999px;
+  padding: 7px 13px; margin-right: 2px;
+  transition: transform .12s ease, background .15s;
+}
+.bank-go:active { transform: scale(.95); background: var(--primary-soft); }
 .bank-menu {
-  flex: 0 0 auto; width: 42px; align-self: stretch;
-  background: none; border: 0; color: var(--muted); font-size: 20px; line-height: 1;
-  cursor: pointer; padding: 0;
+  flex: 0 0 auto; width: 36px; height: 36px; margin-right: 6px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer;
 }
 .bank-menu:active { background: var(--surface-2); }
-.bank-pick {
-  flex: 0 0 auto; background: none; border: 0; color: var(--primary);
-  font-family: inherit; font-size: 13px; font-weight: 600;
-  padding: 0 10px; align-self: stretch; cursor: pointer;
-}
-.bank-pick:active { background: var(--surface-2); }
 .bank-tag {
   display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px;
   font-size: 10px; font-weight: 600; vertical-align: 2px;
@@ -296,13 +304,19 @@ body {
 .menu-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: none; border: 0; border-radius: 12px;
-  padding: 13px 12px; margin-bottom: 4px; cursor: pointer;
-  font-family: inherit; font-size: 15px; color: var(--text); text-align: left;
+  padding: 14px 10px; margin-bottom: 2px; cursor: pointer;
+  font-family: inherit; font-size: 15px; line-height: 1.4; color: var(--text); text-align: left;
 }
 .menu-row:active { background: var(--surface-2); }
 .menu-row span { flex: 1; }
-.menu-row i { color: var(--muted); font-style: normal; font-size: 17px; }
+.menu-row i { color: var(--muted); font-style: normal; font-size: 16px; opacity: .6; }
 .menu-row.danger { color: var(--bad); }
+.menu-row.danger i { color: var(--bad); opacity: .35; }
+.menu-num {
+  display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px;
+  font-size: 12px; font-weight: 700; color: var(--bad); background: var(--bad-bg);
+}
+.sheet-sub { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
 
 /* ---------- 导入 ---------- */
 .file-list { margin-top: 14px; }
@@ -541,8 +555,9 @@ body {
 /* ---------- 统计 ---------- */
 .stats-row { display: flex; gap: 10px; margin-bottom: 14px; }
 .stat-cell {
-  flex: 1; min-width: 0; background: var(--card); border-radius: var(--radius); text-align: center;
-  padding: 16px 8px; box-shadow: var(--shadow-soft);
+  flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--glass-line);
+  border-radius: var(--radius); text-align: center;
+  padding: 15px 8px; box-shadow: var(--shadow-soft);
 }
 .stat-cell b { display: block; font-size: clamp(18px, 5.6vw, 22px); }
 .stat-cell span { font-size: 12px; color: var(--muted); }
@@ -730,9 +745,9 @@ html.dark {
   position: relative; overflow: hidden;
   display: flex; align-items: center; gap: 12px;
   background: var(--grad-primary); color: var(--on-primary);
-  border-radius: var(--radius); padding: 13px 15px 15px;
+  border-radius: var(--radius); padding: 14px 16px 16px;
   margin-bottom: 12px;
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 10px 26px -8px var(--primary-glow);
 }
 .daily-body { flex: 1; min-width: 0; }
 .daily-top { display: flex; align-items: center; gap: 8px; font-size: 12px; opacity: .9; }
@@ -5461,7 +5476,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.24'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.25'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -6089,7 +6104,7 @@ const App = (() => {
             <div class="bank-name">${escapeHtml(b.name)}${b.frozen ? '<span class="bank-tag">冻结</span>' : ''}</div>
             <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
           </div>
-          ${b.count ? `<button class="bank-pick" onclick="event.stopPropagation();App.navigate('#/bank/${b.id}')">选题</button>` : ''}
+          ${b.count ? `<button class="bank-go" onclick="event.stopPropagation();App.navigate('#/bank/${b.id}')">选题</button>` : ''}
           <button class="bank-menu" aria-label="题库操作" onclick="event.stopPropagation();App.bankMenu('${b.id}')">⋯</button>
         </div>`;
     }
@@ -6177,14 +6192,13 @@ const App = (() => {
           <b>${escapeHtml(b.name)}</b>
           <button class="sheet-close" id="bm-close">×</button>
         </div>
-        <div class="muted small" style="margin:-8px 0 8px">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
-        <button class="menu-row" data-a="pick"><span>📑 按章节选题</span><i>›</i></button>
-        <button class="menu-row" data-a="answers"><span>${na ? `🩹 补答案（${na} 题）` : '✅ 答案校验'}</span><i>›</i></button>
-        <button class="menu-row" data-a="audit"><span>🩺 题库体检</span><i>›</i></button>
-        <button class="menu-row" data-a="daily"><span>📅 今日一练</span><i>›</i></button>
-        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '☀️ 解冻题库（重新参与每日一练）' : '❄️ 冻结题库（暂不参与每日一练，列表沉底）'}</span><i>›</i></button>
-        <button class="menu-row" data-a="rename"><span>✏️ 改名</span><i>›</i></button>
-        <button class="menu-row danger" data-a="del"><span>🗑 删除题库</span><i>›</i></button>
+        <div class="sheet-sub">${count} 题${secs ? ` · ${secs} 章` : ''}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
+        <button class="menu-row" data-a="answers"><span>${na ? `补答案 <b class="menu-num">${na}</b>` : '答案校验'}</span><i>›</i></button>
+        <button class="menu-row" data-a="audit"><span>题库体检</span><i>›</i></button>
+        <button class="menu-row" data-a="daily"><span>今日一练</span><i>›</i></button>
+        <button class="menu-row" data-a="freeze"><span>${b.frozen ? '解冻题库' : '冻结题库'}</span><i>›</i></button>
+        <button class="menu-row" data-a="rename"><span>改名</span><i>›</i></button>
+        <button class="menu-row danger" data-a="del"><span>删除题库</span><i>›</i></button>
       </div>`;
     const close = () => mask.remove();
     mask.onclick = e => { if (e.target === mask) close(); };
@@ -6998,6 +7012,9 @@ const App = (() => {
     const sel = new Set(qs.filter(q => q.answer).map(q => q.id));
     let kw = '', filter = 'all';
     const collapsed = new Set();
+    /* 首屏只展开前 2 节：1139 题的库原来一次画 1000+ 个格子，点进「选题」要等半秒；
+       其余章节点 ▸ 再按需渲染（"展开全部"仍然保留） */
+    if (groups.length > 4) groups.slice(2).forEach(g => collapsed.add(g.sec));
 
     const FILTERS = [
       ['all', '全部', () => true],
