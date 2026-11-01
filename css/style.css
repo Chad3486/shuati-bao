@@ -830,3 +830,9 @@ html.dark {
 .canon-links { display: flex; gap: 18px; justify-content: flex-end; margin-top: 10px; }
 .canon-links a { font-size: 12px; color: var(--primary); cursor: pointer; font-weight: 600; }
 .canon-links a:active { opacity: .6; }
+
+/* 长列表滚动性能：屏幕外的卡片不参与布局/绘制（新版 WebView 支持，老版本自动忽略） */
+.bank-card, .wrong-card, .sec-group { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+@media (prefers-reduced-motion: reduce) {
+  #view > * { animation: none !important; }
+}

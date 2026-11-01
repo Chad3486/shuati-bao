@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.29'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.30'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -513,34 +513,18 @@ const App = (() => {
     const last = await DB.metaGet('lastSession');
     const recycle = await DB.recycleList();
 
-    // 每库缺答案数 + 章节数（各一次遍历）；顺带收集全部题目给「每日一练」用
+    /* v1.8.30：首页不再等「全库题目扫一遍」才出画面。
+       4192 题的库光读题目就要几百毫秒，原来首帧要等它 → 点开首页先白一下。
+       现在先用题库自身的元数据（题量/章节数）立刻画，缺答案数、每日一练这卡片
+       等首帧结束后再补上（样式不变，只是晚几十毫秒出现）。 */
     const info = {};
     const allQ = [];
-    await Promise.all(banks.map(async b => {
-      const qs = await DB.questionsByBank(b.id);
-      allQ.push(...qs);
-      info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
-    }));
-
-    // 每日一练（按题库）：各库今天一组，卡片显示还没练的库数；点进去选题库
     let dailyInfo = null, streak = { days: 0, todayDone: false };
-    if (allQ.length) {
-      try {
-        const overview = await dailyOverview(banks, allQ, await historyList());
-        if (overview.length) {
-          const pending = overview.filter(x => !x.meta.done);
-          dailyInfo = { total: overview.length, pending: pending.length, done: overview.length - pending.length, size: (pending[0] || overview[0]).meta.size || 8 };
-          streak = (pending[0] || overview[0]).streak || streak;
-        }
-      } catch (e) {
-        console.error('[daily] 首页卡片生成失败', e);
-      }
-    }
 
     // 列表工具状态：题库多时不用一直往下翻（搜索 + 排序 + 折叠）
     let sortBy = 'recent', keyword = '', expanded = false;
     const LIMIT = 6;
-    const secTotal = banks.reduce((s, b) => s + (info[b.id]?.secs || 0), 0);
+    const secTotal = banks.reduce((s, b) => s + (b.sections || []).length, 0);
 
     $view().innerHTML = `
       <div class="ov-card">
@@ -554,18 +538,7 @@ const App = (() => {
           <button class="ov-btn" onclick="App.resumeLast()">继续</button>
         </div>` : ''}
       </div>
-      ${dailyInfo ? `
-      <div class="daily-card" onclick="App.navigate('#/daily')">
-        <div class="daily-body">
-          <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${streak.days || 0} 天</span></div>
-          <div class="daily-title">${dailyInfo.pending ? '还有 ' + dailyInfo.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
-          <div class="daily-sub">${dailyInfo.pending
-            ? `每库 ${dailyInfo.size || 8} 题 · 已完成 ${dailyInfo.done}/${dailyInfo.total}`
-            : `完成 ${dailyInfo.total} 个题库 · 点开可再来一组`}</div>
-        </div>
-        <span class="daily-btn">${dailyInfo.pending ? '开始' : '看小结'}</span>
-        <div class="daily-bar"><i style="width:${dailyInfo.total ? Math.round(dailyInfo.done / dailyInfo.total * 100) : 0}%"></i></div>
-      </div>` : ''}
+      <div id="daily-slot"></div>
       <div class="quick-grid">
         <button class="quick-tile" onclick="App.navigate('#/star')">
           <span class="quick-ico" style="background:rgba(245,158,11,.16);color:#d97706">
@@ -621,9 +594,9 @@ const App = (() => {
 
     function cardHtml(b) {
       const na = info[b.id]?.noAns || 0;
-      const secs = info[b.id]?.secs || 0;
+      const secs = (b.sections || []).length;
       return `
-        <div class="bank-card${b.frozen ? ' frozen' : ''}">
+        <div class="bank-card${b.frozen ? ' frozen' : ''}" data-bid="${b.id}">
           <div class="bank-main" onclick="App.startBank('${b.id}')">
             <div class="bank-name">${escapeHtml(b.name)}${b.frozen ? '<span class="bank-tag">冻结</span>' : ''}</div>
             <div class="bank-meta">${b.count || 0} 题${secs ? ` · ${secs} 章` : ''} · ${new Date(b.createdAt).toLocaleDateString()}${na ? ` · <b style="color:var(--bad)">${na} 题缺答案</b>` : ''}</div>
@@ -657,6 +630,56 @@ const App = (() => {
     };
     if (moreBtn) moreBtn.onclick = () => { expanded = !expanded; renderList(); };
     renderList();
+
+    /* ---- 首帧之后再补这两块（都要扫全部题目，放前面会让首页白一下） ---- */
+    setTimeout(async () => {
+      const view0 = $view();
+      const alive = () => view0 && view0.isConnected && !!view0.querySelector('.ov-card');
+      if (!alive()) return;
+      try {
+        for (const b of banks) {
+          const qs = await DB.questionsByBank(b.id);
+          allQ.push(...qs);
+          info[b.id] = { noAns: qs.filter(q => !q.answer).length, secs: (b.sections || []).length };
+        }
+        if (!alive()) return;
+        // 「N 题缺答案」只追加到对应卡片的 meta 里，不重排列表
+        for (const b of banks) {
+          const na = info[b.id].noAns;
+          if (!na) continue;
+          const metaEl = view0.querySelector(`.bank-card[data-bid="${b.id}"] .bank-meta`);
+          if (metaEl && !metaEl.querySelector('.na-badge')) {
+            const tag = document.createElement('b');
+            tag.className = 'na-badge';
+            tag.style.color = 'var(--bad)';
+            tag.textContent = ` · ${na} 题缺答案`;
+            metaEl.appendChild(tag);
+          }
+        }
+        if (!allQ.length) return;
+        const overview = await dailyOverview(banks, allQ, await historyList());
+        if (!overview.length || !alive()) return;
+        const pending = overview.filter(x => !x.meta.done);
+        const d = { total: overview.length, pending: pending.length, done: overview.length - pending.length, size: (pending[0] || overview[0]).meta.size || 8 };
+        const st = (pending[0] || overview[0]).streak || { days: 0 };
+        const slot = view0.querySelector('#daily-slot');
+        if (!slot) return;
+        slot.innerHTML = `
+      <div class="daily-card" onclick="App.navigate('#/daily')">
+        <div class="daily-body">
+          <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${st.days || 0} 天</span></div>
+          <div class="daily-title">${d.pending ? '还有 ' + d.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
+          <div class="daily-sub">${d.pending
+            ? `每库 ${d.size} 题 · 已完成 ${d.done}/${d.total}`
+            : `完成 ${d.total} 个题库 · 点开可再来一组`}</div>
+        </div>
+        <span class="daily-btn">${d.pending ? '开始' : '看小结'}</span>
+        <div class="daily-bar"><i style="width:${Math.round(d.done / d.total * 100)}%"></i></div>
+      </div>`;
+      } catch (e) {
+        console.error('[home] 后台补数据失败', e);
+      }
+    }, 0);
   }
 
   async function startBank(id) {
@@ -808,6 +831,101 @@ const App = (() => {
       fileStatus.textContent = '';
       importStatus.textContent = '';
       docxStatus.textContent = '';
+    };
+
+    /* ---- ✨ AI 整理格式：把文本框里的文字交给 AI 重排成范式（只改排版，答案照抄原卷） ---- */
+    const tidyStatus = document.getElementById('canon-tidy-status');
+    const dropMatBtn = document.getElementById('canon-drop-material');
+    const DROP_MAT_RULE = `7. 材料题整组剔除：遇到「资料分析 / 阅读理解 / 篇章阅读 / 案例分析 / 共用一段材料下的① ② ③ 小题」这类必须先读一大段材料才能作答的题，整组都不要输出（题干里有「根据上述资料」「阅读以下材料」「材料一」「（一）」「回答X~Y题」的都算）。其它题照常输出。`;
+    let dropMat = true;   // 默认开：这类题本来就不方便做
+    const paintDropMat = () => dropMatBtn.classList.toggle('on', !!dropMat);
+    paintDropMat();
+    (async () => {
+      const v = await DB.metaGet('aiDropMaterial');
+      if (v === null || v === undefined) return;
+      dropMat = !!v;
+      paintDropMat();
+    })();
+    dropMatBtn.onclick = async () => {
+      dropMat = !dropMat;
+      await DB.metaSet('aiDropMaterial', dropMat);
+      paintDropMat();
+      toast(dropMat ? '已开启：材料题会被剔除' : '已关闭：材料题也会保留');
+    };
+
+    document.getElementById('canon-tidy').onclick = async () => {
+      const raw = ta.value.trim();
+      if (raw.length < 20) { tidyStatus.textContent = '⚠ 先把要整理的题目文字贴进上面文本框'; toast('先贴入题目文字'); return; }
+      const cfg = await LLM.getConfig();
+      if (!cfg.apiKey) {
+        tidyStatus.textContent = '⚠ 还没配置 AI 接口：到「我的 → 设置」填 Base URL 和 API Key，再回来点这个按钮';
+        toast('先到「设置」配置 API Key');
+        return;
+      }
+      const btn = document.getElementById('canon-tidy');
+      btn.disabled = true;
+      const orig = ta.value;
+      try {
+        // 按空行切成 ~3000 字一片，片内原样交给 AI（不先本地清洗，否则题号会被并掉）
+        const CH = 3000;
+        const paras = raw.split(/\n{2,}/);
+        const chunks = [];
+        let buf = [];
+        let size = 0;
+        for (const p0 of paras) {
+          buf.push(p0); size += p0.length + 1;
+          if (size >= CH) { chunks.push(buf.join('\n\n')); buf = []; size = 0; }
+        }
+        if (buf.length) chunks.push(buf.join('\n\n'));
+        const TIDY_PROMPT = `你是题库排版助手。用户贴进来的是从试卷/考试系统导出的题目文字，排版被压坏了：
+题号、选项、答案、解析可能黏在一起，题号可能是「第1题（0.5分）」也可能是「1.」。
+请把内容重排成「范式」格式后输出，除此之外什么都不要做。
+
+范式格式（每题一块）：
+【单选】1. 题干原文
+A. 选项原文
+B. 选项原文
+答案：B
+解析：解析原文
+
+要求：
+1. 题干、选项、解析一律照抄原文，一个字都不要改写、不要补全、不要翻译。
+2. 题号从 1 开始连续编号；原卷的「第N题（0.5分）」只当题号，不要写进题干。
+3. 答案只从原文里抄：遇到「【您的答案：C　正确答案：A】」时，只用「正确答案」的字母（这里取 A），绝不能把「您的答案」当成正确答案。
+4. 判断题答案写成「答案：对」或「答案：错」；多选题答案连写（如 答案：ABD）。
+5. 原文没有答案就留空，不要自己推理；拿不准的题宁可不写答案。
+6. 只输出范式文本，不要解释、不要代码块、不要序号说明。
+${dropMat ? DROP_MAT_RULE : ''}`;
+
+        const parts = [];
+        for (let i = 0; i < chunks.length; i++) {
+          tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}`;
+          const out = await LLM.chat([
+            { role: 'system', content: TIDY_PROMPT },
+            { role: 'user', content: chunks[i] }
+          ], {
+            onRetry: (att, cool, why) => { tidyStatus.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}`; },
+            onDelta: acc => { tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}（已生成 ${acc.length} 字）`; }
+          });
+          const t = String(out || '').trim();
+          if (t) parts.push(t);
+        }
+        if (!parts.length) throw new Error('AI 没有返回内容');
+        ta.value = parts.join('\n\n');
+        invalidate();
+        const r = runCheck();
+        const st = r ? r.stats : null;
+        if (!st || !st.total) {
+          ta.value = orig;
+          throw new Error('AI 整理后没解析出题目，已还原原文（可改用本地转换或手动整理）');
+        }
+        tidyStatus.textContent = `✓ AI 整理完成：${st.total} 题 · 有答案 ${st.answered} · 缺答案 ${st.missing}。核对无误后点下面「导入题库」`;
+        toast(`已整理成范式：${st.total} 题`);
+      } catch (e) {
+        tidyStatus.textContent = '⚠ ' + String(e.message || e).slice(0, 140);
+      } finally {
+        btn.disabled = false;
+      }
     };
 
     document.getElementById('canon-check').onclick = () => runCheck();
@@ -3138,7 +3256,9 @@ const App = (() => {
         <div class="btn-row">
           <button class="btn ghost" id="edit-cancel">取消</button>
           <button class="btn primary" id="edit-save">保存修改</button>
-        </div>`;
+        </div>
+        <button class="btn ghost" id="edit-del" style="width:100%;margin-top:8px;color:var(--bad)">🗑 删除这道题</button>
+        <div class="muted small center" style="margin-top:6px">删除后进回收站，可在「我的 → 回收站」恢复</div>`;
         // 题型切换：先收起当前输入再重渲染
         editCard.querySelector('#edit-types').onclick = e => {
           const b = e.target.closest('button[data-t]'); if (!b || b.dataset.t === st.type) return;
@@ -3172,6 +3292,34 @@ const App = (() => {
           };
         }
         editCard.querySelector('#edit-cancel').onclick = () => { editOpen = false; editCard.style.display = 'none'; };
+        // 题目有错、找不到原文件时，直接在练习页把这道题删掉（进回收站）
+        editCard.querySelector('#edit-del').onclick = async () => {
+          if (!confirmDialog(`删除第 ${q.no ?? '?'} 题？\n删除后进入回收站，可在「我的 → 回收站」恢复。`)) return;
+          try {
+            const bank = await DB.bankGet(q.bankId);
+            if (bank) await DB.recycleAdd(bank, [q]);
+            await DB.questionDelete(q.id);
+            if (bank) await DB.bankUpdateCount(q.bankId);
+            try {
+              const stIds = await DB.starIds();
+              if (stIds.includes(q.id)) await DB.starToggle(q.id);
+              const muted = (await DB.metaGet('wrongMuted')) || [];
+              if (muted.includes(q.id)) await DB.metaSet('wrongMuted', muted.filter(x => x !== q.id));
+            } catch (e) { console.error('[del q] cleanup', e); }
+            editOpen = false;
+            // 从当前练习里摘掉这道题；删完没题了就回题库页
+            const pos = session.list.indexOf(q);
+            if (pos >= 0) session.list.splice(pos, 1);
+            if (!session.list.length) { toast('已删除，这一组没有题了'); return navigate('#/home'); }
+            if (session.index >= session.list.length) session.index = session.list.length - 1;
+            if (session.index > 0 && pos >= 0 && pos < session.index) session.index--;
+            session.answered.delete(q.id);
+            toast('已删除，可在回收站恢复');
+            render();
+          } catch (e) {
+            toast('删除失败：' + String(e.message || e).slice(0, 60));
+          }
+        };
         editCard.querySelector('#edit-save').onclick = async () => {
           const expEl = editCard.querySelector('#edit-exp');
           const newExp = expEl ? expEl.value.trim() : '';
