@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.25'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.26'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -768,6 +768,10 @@ const App = (() => {
         <div class="card-title">② 贴入范式文本</div>
         <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
         <div class="btn-row">
+          <button class="btn primary" id="canon-tidy">✨ AI 整理格式</button>
+        </div>
+        <div class="muted small" id="canon-tidy-status"></div>
+        <div class="btn-row" style="margin-top:8px">
           <button class="btn ghost" id="canon-conv">Word 转换器</button>
           <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
         </div>
@@ -840,6 +844,80 @@ const App = (() => {
         runCheck();
       } catch (e) {
         fileStatus.textContent = '⚠ ' + e.message.slice(0, 120);
+      }
+    };
+
+    /* ---- ✨ AI 整理格式：文本框里的文字排版乱（题号/选项/答案黏在一起）→ AI 重排成范式 ----
+       只做排版：题干/选项/答案/解析一律照抄原文，AI 不许自己解题。
+       本地解析认不出来的「第N题（0.5分）+【您的答案：C　正确答案：A】」这类导出格式，
+       这一键就能救回来。 ---- */
+    const tidyStatus = document.getElementById('canon-tidy-status');
+    document.getElementById('canon-tidy').onclick = async () => {
+      const raw = ta.value.trim();
+      if (raw.length < 20) return toast('先把要整理的题目文字贴进上面文本框');
+      if (!await ensureApiKey()) return;
+      const btn = document.getElementById('canon-tidy');
+      btn.disabled = true;
+      const orig = ta.value;
+      try {
+        // 按空行切成 ~3000 字一片，片内保持原样交给 AI（不要先做本地清洗，否则题号会被并掉）
+        const CH = 3000;
+        const paras = raw.split(/\n{2,}/);
+        const chunks = [];
+        let buf = [];
+        let size = 0;
+        for (const p0 of paras) {
+          buf.push(p0); size += p0.length + 1;
+          if (size >= CH) { chunks.push(buf.join('\n\n')); buf = []; size = 0; }
+        }
+        if (buf.length) chunks.push(buf.join('\n\n'));
+        const TIDY_PROMPT = `你是题库排版助手。用户贴进来的是从试卷/考试系统导出的题目文字，排版被压坏了：
+题号、选项、答案、解析可能黏在一起，题号可能是「第1题（0.5分）」也可能是「1.」。
+请把内容重排成「范式」格式后输出，除此之外什么都不要做。
+
+范式格式（每题一块）：
+【单选】1. 题干原文
+A. 选项原文
+B. 选项原文
+答案：B
+解析：解析原文
+
+要求：
+1. 题干、选项、解析一律照抄原文，一个字都不要改写、不要补全、不要翻译。
+2. 题号从 1 开始连续编号；原卷的「第N题（0.5分）」只当题号，不要写进题干。
+3. 答案只从原文里抄：遇到「【您的答案：C　正确答案：A】」时，只用「正确答案」的字母（这里取 A），绝不能把「您的答案」当成正确答案。
+4. 判断题答案写成「答案：对」或「答案：错」；多选题答案连写（如 答案：ABD）。
+5. 原文没有答案就留空，不要自己推理；拿不准的题宁可不写答案。
+6. 只输出范式文本，不要解释、不要代码块、不要序号说明。`;
+
+        const parts = [];
+        for (let i = 0; i < chunks.length; i++) {
+          tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}`;
+          const out = await LLM.chat([
+            { role: 'system', content: TIDY_PROMPT },
+            { role: 'user', content: chunks[i] }
+          ], {
+            onRetry: (att, cool, why) => { tidyStatus.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}`; },
+            onDelta: acc => { tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}（已生成 ${acc.length} 字）`; }
+          });
+          const t = String(out || '').trim();
+          if (t) parts.push(t);
+        }
+        if (!parts.length) throw new Error('AI 没有返回内容');
+        ta.value = parts.join('\n\n');
+        invalidate();
+        const r = runCheck();
+        const st = r ? r.stats : null;
+        if (!st || !st.total) {
+          ta.value = orig;   // AI 结果解析不出题 → 还原，别把用户原文弄丢
+          throw new Error('AI 整理后没解析出题目，已还原原文（可改用「Word 转换器」或手动整理）');
+        }
+        tidyStatus.textContent = `✓ AI 整理完成：${st.total} 题 · 有答案 ${st.answered} · 缺答案 ${st.missing}。核对无误后点「导入题库」`;
+        toast(`已整理成范式：${st.total} 题`);
+      } catch (e) {
+        tidyStatus.textContent = '⚠ ' + String(e.message || e).slice(0, 140);
+      } finally {
+        btn.disabled = false;
       }
     };
 

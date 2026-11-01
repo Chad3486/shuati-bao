@@ -132,9 +132,15 @@ const Extractor = (() => {
       if (!t || t.length > 40) continue;
       if (/^[A-H]\s*[.、．:：)）]/.test(t)) continue; // 选项行
       if (/^\s*\d{1,3}\s*[.、．)）]/.test(t)) continue; // 数字题号行
+      // 题号行「第1题（0.5分）」：分节会重新从第1题开始，天然重复 ≥3 次，
+      // 旧版当成页眉页脚删掉 → 每节前 5 题直接消失（这次这份卷子就少了第1~5题）
+      if (/^第\s*\d{1,3}\s*题/.test(t)) continue;
       // 答案行 / 解析行：每道题后面都跟一行，天然「重复」，绝不能当页眉页脚删掉
       //（曾把「答案：D」当重复短行删除 → 整套题答案全丢，就是「答案扫不上」的主因）
       if (/^(?:参考答案|正确答案|标准答案|答案|答)\s*[:：]?/.test(t)) continue;
+      // v1.8.26：试卷导出把答案写成「【您的答案：C　正确答案：A】」，每道题一行、天然重复，
+      // 旧版只认行首「答案：」，于是整批答案行被当页眉删掉 → 表现为「答案扫不上」
+      if (/^【[^】]*(?:您的答案|正确答案|答案)/.test(t) || /正确答案\s*[:：]/.test(t)) continue;
       if (/^(?:答案解析|解析|解释|说明)\s*[:：]/.test(t)) continue;
       if (isStructural(t)) continue; // 章节题型结构行
       counts.set(t, (counts.get(t) || 0) + 1);
@@ -159,15 +165,20 @@ const Extractor = (() => {
     //    中间的空行不阻断合并（页眉页脚删除后常留空行）
     const merged = [];
     let pendingBlank = false;
-    const isNewQ = s => /^\s*(\d{1,3}\s*[.、．)）]|[（(]\s*\d{1,3}\s*[)）])/.test(s);
+    const isNewQ = s => /^\s*(\d{1,3}\s*[.、．)）]|[（(]\s*\d{1,3}\s*[)）]|第\s*\d{1,3}\s*题)/.test(s);
     const isOpt = s => /^\s*[A-H]\s*[.、．:：)）]/.test(s);
     const isSec = s => /^\s*[一二三四五六七八九十][、.]/.test(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
     const isAnsHead = s => /^(参考答案|标准答案|答案速查|速查表|答案表|答案汇总|答案与解析|试题答案|附录|附表)/.test(s);
     // 独立题型标题行（无中文序号，如「单选题」单独成行）——是结构行，不能并进上一行
     const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
+    // v1.8.26：「单选1」「多选2 专业多选」「判断题」这种无顿号小节标题不能并进上一行
+    const isTypeTitle2 = s => s.length <= 24
+      && /^(单选|多选|判断|填空|不定项选择|不定项|单项选择题|多项选择题|判断题|填空题)\s*\d{0,2}\s*[：:]?\s*[\u4e00-\u9fff、·]{0,8}\s*$/.test(s);
     // 答案行（「答案：D    解析：…」）——必须独立，并入选项行会污染选项内容
-    const isAnsLine = s => /^答案\s*[:：]/.test(s);
+    const isAnsLine = s => /^(?:答案|答)\s*[:：]/.test(s)
+      || /^(?:答案解析|解析|解释|说明)\s*[:：]/.test(s)
+      || /^【[^】]*(?:您的答案|正确答案)/.test(s);
     for (const line of lines) {
       const t = line.trim();
       if (!t) { pendingBlank = true; continue; }
@@ -175,7 +186,7 @@ const Extractor = (() => {
         const prev = merged[merged.length - 1];
         const prevEnds = /[\u4e00-\u9fffA-Za-z0-9，。；：、？！）】》""''%,:;?)]$/.test(prev);
         const nextStarts = /^[\u4e00-\u9fff]/.test(t);
-        if (prevEnds && nextStarts && !isNewQ(t) && !isOpt(t) && !isSec(t) && !isChapter(t) && !isAnsHead(t) && !isTypeTitle(t) && !isAnsLine(t)) {
+        if (prevEnds && nextStarts && !isNewQ(t) && !isOpt(t) && !isSec(t) && !isChapter(t) && !isAnsHead(t) && !isTypeTitle(t) && !isTypeTitle2(t) && !isAnsLine(t)) {
           merged[merged.length - 1] = prev + t; // 合并时丢弃中间空行
           pendingBlank = false;
           continue;
@@ -234,6 +245,9 @@ const Extractor = (() => {
     let autoNo = 0;
     const lines = text.split('\n');
     const mainRe = /^\s*(\d{1,3})\s*[.、．)）]\s*/;
+    /* v1.8.26：试卷导出（超星/学习通/问卷星等）常用「第1题（0.5分）」当题号，而不是「1.」
+       —— 认不出这种题号时整份卷子会被并成十几坨"巨题"，表现为「扫不上」 */
+    const cnQRe = /^\s*第\s*(\d{1,3})\s*题\s*(?:[（(]\s*[^）)]{0,14}?\s*[）)])?\s*[.、．:：]?\s*/;
     const subRe = /^[（(]\s*(\d{1,3})\s*[)）]\s*/;
     const ansPairRe = /(\d{1,3})\s*[.、．:：)]?\s*[A-H]\b/g;
     const ansHeadRe = /^(参考答案|标准答案|答案速查|答案表|答案汇总|答案与解析|试题答案|参考答案与解析)/;
@@ -249,6 +263,18 @@ const Extractor = (() => {
       return null;
     };
     const isTypeTitle = s => /^(单项选择题|单选题|多项选择题|多选题|不定项选择题|判断题|填空题|简答题|计算题|名词解释|论述题|选择题)\s*[：:]?\s*$/.test(s);
+    /* v1.8.26：无顿号的题型小节标题，如「单选1」「单选2 专业单选」「多选1」「多选2 综合多选」「判断题」
+       —— 注意必须整行匹配（后面最多跟 8 个汉字），不能把「多选题的正确选项是…」这种题干误判成小节 */
+    const secTypeTitle = s => {
+      if (s.length > 24 || /^[\d（(]/.test(s)) return null;
+      const m = s.match(/^(单选|多选|判断|填空|不定项选择|不定项|单项选择题|多项选择题|判断题|填空题)\s*\d{0,2}\s*[：:]?\s*([\u4e00-\u9fff、·]{0,8})\s*$/);
+      if (!m) return null;
+      if (/单选|只选|单项选择/.test(m[1])) return 'single';
+      if (/多选|多项选择|不定项/.test(m[1])) return 'multi';
+      if (/判断/.test(m[1])) return 'judge';
+      if (/填空/.test(m[1])) return 'fill';
+      return null;
+    };
     const isSecLine = s => (/^[一二三四五六七八九十]\s*[、.．]\s*\S/.test(s) && !/^\s*\d/.test(s)) || isTypeTitle(s);
     const isChapter = s => /^第\s*[一二三四五六七八九十\d]+\s*章/.test(s);
 
@@ -298,8 +324,9 @@ const Extractor = (() => {
       // S1：题型小节 / 章标题。章 = 单元，必须带进节标题里——
       //     否则「第一章 xxx / 一、单选题」只剩「一、单选题」，
       //     导入后题库就没有单元了（多章同名小节还会互相混淆）
-      if (isSecLine(trimmed) || isChapter(trimmed)) {
-        const t = secType(trimmed);
+      const secTitleType = secTypeTitle(trimmed);
+      if (isSecLine(trimmed) || isChapter(trimmed) || secTitleType) {
+        const t = secType(trimmed) || secTitleType;
         const isChap = isChapter(trimmed);
         if (t || isChap) {
           if (cur) { items.push(cur); cur = null; }
@@ -336,6 +363,20 @@ const Extractor = (() => {
         continue;
       }
 
+      const cq = line.match(cnQRe);
+      if (cq && !ansHeadRe.test(trimmed)) {
+        const no = +cq[1];
+        if (no === 1 && lastQNo > 1) {
+          secIdx++;
+          curType = null;
+          chapPart++;
+          sections.push({ secIdx, title: curChapter ? (curChapter + ' · 第' + chapPart + '组') : null, type: null });
+        }
+        lastQNo = no;
+        if (cur) items.push(cur);
+        cur = { no, secIdx, type: curType, key: secIdx + '-' + no, text: [line.replace(cnQRe, '')] };
+        continue;
+      }
       const m = line.match(mainRe);
       const sm = line.match(subRe);
       const isMainQ = m && trimmed.length > 5;
@@ -415,6 +456,16 @@ const Extractor = (() => {
     // 分隔符只允许行内空白（[ \t]），不能用 \s —— 否则「答案：A\nA．选项甲」会把下一行
     // 选项的字母 A 一起吃进来（得到 "AA"，选项行同时被破坏）——1000 题里最常见的漏扫根因
     const AT = '[A-H](?:[ \\t]*[、,，／/]?[ \\t]*[A-H]){0,7}';
+
+    // 0b) 试卷导出常见「【您的答案：C　正确答案：A】」：必须取「正确答案」，
+    //     否则会把考生自己选错的「您的答案」当标准答案存进去
+    if (/正确答案/.test(t)) {
+      const cm = t.match(/正确答案\s*[:：]?\s*([A-H](?:[ \t]*[、,，／/]?[ \t]*[A-H]){0,7})/);
+      if (cm) answer = normAns(cm[1]);
+      t = t.replace(/【[^】]*(?:您的答案|正确答案)[^】]*】/g, ' ')
+           .replace(/[（(]\s*您的答案\s*[:：]?\s*[A-H]?\s*[)）]/g, ' ')
+           .replace(/【\s*】/g, ' ');
+    }
 
     // 1) 显式答案标注（含顿号/逗号分隔的多选答案）
     const ansRes = [
@@ -506,10 +557,12 @@ const Extractor = (() => {
         options[mk.letter] = flat.slice(from, to).replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
       });
       if (Object.values(options).every(v => v.length > 0) && stem.length >= 5) {
-        let type = 'single';
+        let type = hintType === 'judge' ? 'judge' : 'single';
         if (hintType === 'multi' || (answer && answer.length > 1)) type = 'multi';
         const vals = Object.values(options).map(v => v.replace(/\s/g, ''));
-        if (lineSet.length === 2 && /正确|对|√/.test(vals[0]) && /错误|错|×/.test(vals[1])) type = 'single';
+        if (lineSet.length === 2 && /正确|对|√/.test(vals[0]) && /错误|错|×/.test(vals[1])) {
+          type = hintType === 'judge' ? 'judge' : 'single';
+        }
         if (answer && [...answer].some(c => !options[c])) answer = null;
         return { no, key: hintKey, type, stem, options, answer: answer || null, explanation, _local: true, _degraded: lineGaps > 0 || keptLine.length !== uniq2.length || undefined };
       }
@@ -552,11 +605,11 @@ const Extractor = (() => {
           options[mk.letter] = flat.slice(from, to).replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
         });
         if (Object.values(options).every(v => v.length > 0) && stem.length >= 5) {
-          let type = 'single';
+          let type = hintType === 'judge' ? 'judge' : 'single';
           if (hintType === 'multi' || (answer && answer.length > 1)) type = 'multi';
           const vals = Object.values(options).map(v => v.replace(/\s/g, ''));
           if (letters.length === 2 && /正确|对|√/.test(vals[0]) && /错误|错|×/.test(vals[1])) {
-            type = 'single';
+            type = hintType === 'judge' ? 'judge' : 'single';
           }
           if (answer && [...answer].some(c => !options[c])) answer = null;
           return { no, key: hintKey, type, stem, options, answer: answer || null, explanation, _local: true, _degraded: degraded || undefined };
