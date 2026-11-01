@@ -5518,7 +5518,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.27'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.28'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -10662,10 +10662,34 @@ ${dropMat ? DROP_MAT_RULE : ''}
             <button class="btn ghost" id="qe-cancel">取消</button>
             <button class="btn primary" id="qe-save">保存</button>
           </div>
+          <button class="btn ghost" id="qe-del" style="width:100%;margin-top:8px;color:var(--bad)">🗑 删除这道题</button>
+          <div class="muted small center" style="margin-top:6px">删除后进回收站，可在「我的 → 回收站」恢复</div>
         </div>`;
 
       mask.querySelector('#qe-close').onclick = () => mask.remove();
       mask.querySelector('#qe-cancel').onclick = () => mask.remove();
+      // 题目有错又找不到原文件时，直接在改题弹层里删掉（进回收站，不彻底删）
+      mask.querySelector('#qe-del').onclick = async () => {
+        if (!confirmDialog(`删除第 ${q.no ?? '?'} 题？\n删除后进入回收站，可在「我的 → 回收站」恢复。`)) return;
+        const bank = await DB.bankGet(q.bankId);
+        try {
+          if (bank) await DB.recycleAdd(bank, [q]);
+          await DB.questionDelete(q.id);
+          if (bank) await DB.bankUpdateCount(q.bankId);
+          // 收藏/忽略名单里也清掉，避免留下指向已删题的记录
+          try {
+            const st = await DB.starIds();
+            if (st.includes(q.id)) await DB.starToggle(q.id);
+            const muted = (await DB.metaGet('wrongMuted')) || [];
+            if (muted.includes(q.id)) await DB.metaSet('wrongMuted', muted.filter(x => x !== q.id));
+          } catch (e) { console.error('[del q] cleanup', e); }
+          mask.remove();
+          toast('已删除，可在回收站恢复');
+          if (onSaved) onSaved();
+        } catch (e) {
+          toast('删除失败：' + String(e.message || e).slice(0, 60));
+        }
+      };
       mask.onclick = e => { if (e.target === mask) mask.remove(); };
       mask.querySelectorAll('button[data-t]').forEach(b => {
         b.onclick = () => {
