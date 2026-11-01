@@ -836,3 +836,12 @@ html.dark {
 @media (prefers-reduced-motion: reduce) {
   #view > * { animation: none !important; }
 }
+
+/* 练习页「修改本题」：题型行右侧放紧凑的删除按钮 */
+.edit-type-row { display: flex; align-items: center; gap: 8px; }
+.edit-del-btn {
+  flex: 0 0 auto; width: 40px; height: 38px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--bad);
+  font-size: 16px; line-height: 1; cursor: pointer; font-family: inherit;
+}
+.edit-del-btn:active { transform: scale(.94); }

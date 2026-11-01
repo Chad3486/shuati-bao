@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.30'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.31'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -3211,6 +3211,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       const TYPES = [['single', '单选'], ['multi', '多选'], ['judge', '判断'], ['fill', '填空']];
       // 面板状态（切换题型时保留已输入内容）
       const st = {
+        stem: q.stem || '',
         type: q.type || 'single',
         sel: new Set((q.answer || '').toUpperCase().match(/[A-H]/g) || []),
         ansText: String(q.answer ?? '').replace(/\|\|\|/g, '/'),
@@ -3234,9 +3235,15 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         const oKeys = isJudge ? ['A', 'B'] : (isFill ? [] : Object.keys(parseOpts(st.optsText)));
         editCard.innerHTML = `
         <div class="card-title">修改本题（第 ${q.no ?? '?'} 题）</div>
+        <div class="field"><span>题干</span>
+          <textarea id="edit-stem" rows="3" style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.5;font-family:inherit;background:var(--card);color:var(--text);width:100%">${escapeHtml(st.stem)}</textarea>
+        </div>
         <div class="field"><span>题型</span>
-          <div class="seg" id="edit-types" style="flex-wrap:wrap">
-            ${TYPES.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:64px;padding:8px 14px">${n}</button>`).join('')}
+          <div class="edit-type-row">
+            <div class="seg" id="edit-types" style="flex:1;min-width:0">
+              ${TYPES.map(([v, n]) => `<button data-t="${v}" class="${st.type === v ? 'on' : ''}" style="flex:0 0 auto;min-width:56px;padding:8px 12px">${n}</button>`).join('')}
+            </div>
+            <button class="edit-del-btn" id="edit-del" title="删除这道题">🗑</button>
           </div>
         </div>
         <div class="field"><span>答案${isFill ? '（多空用 / 分隔）' : ''}</span>
@@ -3257,8 +3264,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <button class="btn ghost" id="edit-cancel">取消</button>
           <button class="btn primary" id="edit-save">保存修改</button>
         </div>
-        <button class="btn ghost" id="edit-del" style="width:100%;margin-top:8px;color:var(--bad)">🗑 删除这道题</button>
-        <div class="muted small center" style="margin-top:6px">删除后进回收站，可在「我的 → 回收站」恢复</div>`;
+`;
         // 题型切换：先收起当前输入再重渲染
         editCard.querySelector('#edit-types').onclick = e => {
           const b = e.target.closest('button[data-t]'); if (!b || b.dataset.t === st.type) return;
@@ -3266,6 +3272,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           const ansEl = editCard.querySelector('#edit-ans');
           const optsEl = editCard.querySelector('#edit-opts');
           const expEl = editCard.querySelector('#edit-exp');
+          const stemEl = editCard.querySelector('#edit-stem');
+          if (stemEl) st.stem = stemEl.value;
           if (ansEl) st.ansText = ansEl.value;
           if (optsEl) st.optsText = optsEl.value;
           if (expEl) st.exp = expEl.value;
@@ -3322,6 +3330,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         };
         editCard.querySelector('#edit-save').onclick = async () => {
           const expEl = editCard.querySelector('#edit-exp');
+          const stemEl = editCard.querySelector('#edit-stem');
+          const newStem = stemEl ? stemEl.value.trim() : st.stem;
+          if (!newStem) return toast('题干不能为空');
           const newExp = expEl ? expEl.value.trim() : '';
           if (st.type === 'fill') {
             const ansEl = editCard.querySelector('#edit-ans');
@@ -3338,6 +3349,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
             if ((st.type === 'single' || st.type === 'judge') && sel.length !== 1) return toast(st.type === 'single' ? '单选题只能选一个答案' : '判断题只能选一个答案');
             q.type = st.type; q.options = opts; q.answer = sel;
           }
+          q.stem = newStem;
           q.explanation = newExp || null;
           await DB.questionPut(q);
           // 本题若已答过，清除作答状态让用户按新答案重做
