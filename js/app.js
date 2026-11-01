@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.26'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.27'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -770,6 +770,9 @@ const App = (() => {
         <div class="btn-row">
           <button class="btn primary" id="canon-tidy">✨ AI 整理格式</button>
         </div>
+        <div class="chips" style="margin-top:8px">
+          <button class="chip" id="canon-drop-material">剔除材料题</button>
+        </div>
         <div class="muted small" id="canon-tidy-status"></div>
         <div class="btn-row" style="margin-top:8px">
           <button class="btn ghost" id="canon-conv">Word 转换器</button>
@@ -852,6 +855,24 @@ const App = (() => {
        本地解析认不出来的「第N题（0.5分）+【您的答案：C　正确答案：A】」这类导出格式，
        这一键就能救回来。 ---- */
     const tidyStatus = document.getElementById('canon-tidy-status');
+    /* 剔除材料题：资料分析/阅读理解/案例分析这类要先读一大段材料才能答的题，直接不要 */
+    const dropMatBtn = document.getElementById('canon-drop-material');
+    const DROP_MAT_RULE = `7. 材料题整组剔除：遇到「资料分析 / 阅读理解 / 篇章阅读 / 案例分析 / 共用一段材料下的① ② ③ 小题」这类必须先读一大段材料才能作答的题，整组都不要输出（题干里有「根据上述资料」「阅读以下材料」「材料一」「（一）」「回答X~Y题」的都算）。其它题照常输出。`;
+    let dropMat = true;   // 默认开：材料题本来就不方便做
+    const paintDropMat = () => dropMatBtn.classList.toggle('on', !!dropMat);
+    paintDropMat();
+    (async () => {
+      const v = await DB.metaGet('aiDropMaterial');
+      if (v === null || v === undefined) return;
+      dropMat = !!v;
+      paintDropMat();
+    })();
+    dropMatBtn.onclick = async () => {
+      dropMat = !dropMat;
+      await DB.metaSet('aiDropMaterial', dropMat);
+      paintDropMat();
+      toast(dropMat ? '已开启：材料题会被剔除' : '已关闭：材料题也会保留');
+    };
     document.getElementById('canon-tidy').onclick = async () => {
       const raw = ta.value.trim();
       if (raw.length < 20) return toast('先把要整理的题目文字贴进上面文本框');
@@ -888,6 +909,7 @@ B. 选项原文
 3. 答案只从原文里抄：遇到「【您的答案：C　正确答案：A】」时，只用「正确答案」的字母（这里取 A），绝不能把「您的答案」当成正确答案。
 4. 判断题答案写成「答案：对」或「答案：错」；多选题答案连写（如 答案：ABD）。
 5. 原文没有答案就留空，不要自己推理；拿不准的题宁可不写答案。
+${dropMat ? DROP_MAT_RULE : ''}
 6. 只输出范式文本，不要解释、不要代码块、不要序号说明。`;
 
         const parts = [];
@@ -1308,6 +1330,7 @@ B. 选项原文
               if (!chunks.length) throw new Error('文档切片失败');
 
               // Prompt
+              const dropMatOn = (await DB.metaGet('aiDropMaterial'));
               const CANON_PROMPT = `你是题库格式转换专家。把【原卷文档】转换为「范式」格式。
 
 范式格式：
@@ -1322,7 +1345,8 @@ B. 选项原文
 - 答案只能照抄原卷或答案表，严禁自己推理
 - 题干选项原文照抄，不改写
 - 丢弃页眉页脚水印
-- 只输出范式文本，不要解释或代码块`;
+- 只输出范式文本，不要解释或代码块${dropMatOn === false ? '' : `
+- 材料题整组剔除：资料分析 / 阅读理解 / 篇章阅读 / 案例分析，或共用一段材料下的① ② ③ 小题（「根据上述资料」「阅读以下材料」「材料一」），不要输出`};`;
 
               const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
               const allPieces = [];
@@ -3710,10 +3734,14 @@ B. 选项原文
         </button>
         <div id="rev-body-${g.id}" style="display:none">
           ${g.items.map(q => `
-            <div class="card wrong-card">
+            <div class="card wrong-card" onclick="App.openQuestionDetail('${q.id}')" style="cursor:pointer">
               <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
                 <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
-                ${starred ? `<button class="star-btn on" data-unstar="${q.id}" title="取消收藏" style="margin-left:auto;font-size:18px">★</button>` : ''}
+                <span class="rev-ops">
+                  ${starred
+                    ? `<button class="rev-op" data-unstar="${q.id}" title="取消收藏">★ 取消</button>`
+                    : `<button class="rev-op danger" data-rev-del="${q.id}" title="移出错题本">✕ 移出</button>`}
+                </span>
               </div>
               <div class="stem sm">${renderStem(q)}</div>
               ${q.answer
@@ -3739,9 +3767,24 @@ B. 选项原文
     });
   }
 
+  /* 「移出错题本」：不改作答记录（统计/估分照旧），只记一份忽略名单；
+     之后再答错这道题会自动从名单里恢复，不会永久丢 */
+  async function wrongMutedSet() {
+    return new Set((await DB.metaGet('wrongMuted')) || []);
+  }
+  async function unmuteWrong(rows) {
+    if (!rows || !rows.length) return;
+    const cur = await DB.metaGet('wrongMuted');
+    if (!Array.isArray(cur) || !cur.length) return;
+    const bad = new Set(rows.filter(r => r && r.status && r.status !== 'ok').map(r => r.qid));
+    const next = cur.filter(id => !bad.has(id));
+    if (next.length !== cur.length) await DB.metaSet('wrongMuted', next);
+  }
+
   async function pageWrong() {
     topbar('错题本');
-    const qs = await DB.wrongQuestions();
+    const muted = await wrongMutedSet();
+    const qs = (await DB.wrongQuestions()).filter(q => !muted.has(q.id));
     const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
       <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">重做错题（${qs.length} · 按题库选）</button>
@@ -3751,6 +3794,16 @@ B. 选项原文
       : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
     bindNavSeg('#/wrong');
     bindReviewFolds();
+    $view().querySelectorAll('[data-rev-del]').forEach(btn => {
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();   // 别把「移出」当成「打开详情」
+        const cur = (await DB.metaGet('wrongMuted')) || [];
+        if (!cur.includes(btn.dataset.revDel)) cur.push(btn.dataset.revDel);
+        await DB.metaSet('wrongMuted', cur);
+        toast('已移出错题本（再答错会重新出现）');
+        render();
+      };
+    });
   }
 
   /* ---- 收藏夹：跨题库集中看收藏题、取消收藏、一键收藏练习 ---- */
@@ -3770,7 +3823,8 @@ B. 选项原文
     bindNavSeg('#/star');
     bindReviewFolds();
     $view().querySelectorAll('[data-unstar]').forEach(btn => {
-      btn.onclick = async () => {
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
         await DB.starToggle(btn.dataset.unstar);
         toast('已取消收藏');
         render();   // 重渲染：题目从列表移除
@@ -3956,6 +4010,7 @@ B. 选项原文
     const acc = s.exam ? r.acc : (r.answered ? Math.round(r.correct / r.answered * 100) : 0);
     const rows = reviewRows(s).map(x => ({ qid: x.q.id, ua: x.ua, status: x.status }));
     s._recorded = true;
+    try { await unmuteWrong(rows); } catch (e) { console.error('[wrong] unmute', e); }
     await historyPush({
       id: DB.uid(), at: Date.now(), exam: !!s.exam,
       label: s.exam ? '模拟考试' : (s.opts && s.opts.mode === 'wrong' ? '错题重做'
