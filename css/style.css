@@ -825,3 +825,8 @@ html.dark {
   font-size: 12px; color: var(--text); opacity: .72; margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* 范式导入页底部的小链接（导出 Word / 清空） */
+.canon-links { display: flex; gap: 18px; justify-content: flex-end; margin-top: 10px; }
+.canon-links a { font-size: 12px; color: var(--primary); cursor: pointer; font-weight: 600; }
+.canon-links a:active { opacity: .6; }

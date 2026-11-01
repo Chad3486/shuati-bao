@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.28'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.29'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -567,11 +567,11 @@ const App = (() => {
         <div class="daily-bar"><i style="width:${dailyInfo.total ? Math.round(dailyInfo.done / dailyInfo.total * 100) : 0}%"></i></div>
       </div>` : ''}
       <div class="quick-grid">
-        <button class="quick-tile" onclick="App.navigate('#/import')">
-          <span class="quick-ico" style="background:rgba(59,130,246,.14);color:#2f6bff">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <button class="quick-tile" onclick="App.navigate('#/star')">
+          <span class="quick-ico" style="background:rgba(245,158,11,.16);color:#d97706">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/></svg>
           </span>
-          <span>导入题库</span>
+          <span>收藏夹</span>
         </button>
         <button class="quick-tile" onclick="App.navigate('#/canon')">
           <span class="quick-ico" style="background:rgba(139,92,246,.14);color:#7c3aed">
@@ -750,51 +750,35 @@ const App = (() => {
     topbar('范式导入', '#/home');
     $view().innerHTML = `
       <div class="card">
-        <div class="card-title">范式 · 一题一块，答案跟着题目走</div>
-        <p class="muted small">答案直接写在题目里（<b>答案：B</b>），导入时<b>不需要任何「答案对齐」</b>——不再有扫不上的题；1000 题也是一次线性扫描，零 API 调用、秒级完成。</p>
-      </div>
-
-      <div class="card">
-        <div class="card-title">① 文件 → AI 转范式（可选）</div>
-        <p class="muted small">上传 Word 原卷（题目文件与配套答案文件可一起选）：先在本地<b>免费</b>提取文字，再让 AI 把原卷<b>重排成范式文本</b>——答案只从原卷<b>照抄</b>，AI 不做题。转完自动填进下面文本框，核对后一键导入。需在「设置」配置 API Key。</p>
-        <button class="btn primary big" id="canon-ai-conv">选择 Word 文件</button>
-        <input type="file" id="canon-ai-file" multiple accept=".docx,.doc,.txt,.md" style="display:none">
-        <div class="progress" id="canon-ai-prog" style="display:none"><div class="progress-bar" id="canon-ai-bar"></div></div>
-        <div class="muted small" id="canon-ai-conv-status"></div>
-        <pre id="canon-ai-live" style="display:none;max-height:180px;overflow:auto;font-size:11px;line-height:1.5;white-space:pre-wrap;background:#0F1620;color:#9FD8C2;border-radius:8px;padding:8px;margin-top:8px"></pre>
-      </div>
-
-      <div class="card">
-        <div class="card-title">② 贴入范式文本</div>
-        <textarea id="canon-text" class="canon-area" placeholder="在这里粘贴范式文本…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
+        <div class="card-title">导入题目</div>
+        <p class="muted small">一题一块、答案写在题里（<b>答案：B</b>），导入时不需要答案对齐。选 Word 会本地提取并按规则排好；排得不对就点「✨ AI 整理格式」。</p>
         <div class="btn-row">
+          <button class="btn ghost" id="canon-ai-conv">📄 选择 Word / 文本文件</button>
           <button class="btn primary" id="canon-tidy">✨ AI 整理格式</button>
         </div>
+        <input type="file" id="canon-ai-file" multiple accept=".docx,.doc,.txt,.md" style="display:none">
+        <textarea id="canon-text" class="canon-area" style="margin-top:10px" placeholder="把题目文字粘到这里…&#10;&#10;【单选】1. 电力二极管属于（ ）器件。&#10;A. 不可控器件&#10;B. 半控器件&#10;答案：B"></textarea>
         <div class="chips" style="margin-top:8px">
           <button class="chip" id="canon-drop-material">剔除材料题</button>
         </div>
         <div class="muted small" id="canon-tidy-status"></div>
-        <div class="btn-row" style="margin-top:8px">
-          <button class="btn ghost" id="canon-conv">Word 转换器</button>
-          <button class="btn ghost" id="canon-docx">导出 Word (.docx)</button>
-        </div>
-        <input type="file" id="canon-old" accept=".txt,.md,.markdown,.docx,.doc" style="display:none">
         <div class="muted small" id="canon-file-status"></div>
-        <div class="btn-row">
-          <button class="btn ghost" id="canon-clear">清空</button>
-          <button class="btn primary" id="canon-check">解析预览</button>
+        <button class="btn primary big" id="canon-check" style="margin-top:10px">解析预览</button>
+        <div class="canon-links">
+          <a id="canon-docx">导出 Word</a>
+          <a id="canon-clear">清空</a>
         </div>
         <div class="muted small" id="canon-count"></div>
         <div class="muted small" id="canon-docx-status"></div>
       </div>
 
       <div class="card" id="canon-report" style="display:none">
-        <div class="card-title">③ 解析结果</div>
+        <div class="card-title">解析结果</div>
         <div id="canon-report-body"></div>
       </div>
 
       <div class="card">
-        <div class="card-title">④ 导入题库</div>
+        <div class="card-title">导入到题库</div>
         <label class="field"><span>题库名称（留空自动命名）</span>
           <input id="canon-name" placeholder="例如：电力电子技术 期末题库">
         </label>
@@ -824,123 +808,6 @@ const App = (() => {
       fileStatus.textContent = '';
       importStatus.textContent = '';
       docxStatus.textContent = '';
-    };
-
-    // Word 转换器：旧格式文档（题目+答案表 / 内联答案）→ 范式文本
-    const oldInput = document.getElementById('canon-old');
-    document.getElementById('canon-conv').onclick = () => oldInput.click();
-    oldInput.onchange = async () => {
-      const f = oldInput.files[0];
-      oldInput.value = '';
-      if (!f) return;
-      fileStatus.textContent = `转换 ${f.name}…`;
-      try {
-        const raw = await readAnyText(f);
-        const res = Canon.convert(raw);
-        ta.value = res.text;
-        invalidate();
-        const s = res.stats;
-        fileStatus.textContent = res.passthrough
-          ? `✓ ${f.name} 已是范式格式，原样保留 · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}`
-          : `✓ 转换完成：${f.name} · ${s.total} 题 · 答案 ${s.answered} · 解析 ${s.explained || 0} · 章节 ${s.sections || 0}${s.filled ? `（答案表匹配 ${s.filled}）` : ''} · 缺答案 ${s.missing}`
-            + (res.problems?.length ? `；⚠ ${res.problems.slice(0, 3).map(p => `第${p.sec}节${p.dupNos.length ? '重号' + p.dupNos.join('、') : ''}${p.missingNos.length ? '缺号' + p.missingNos.slice(0, 8).join('、') : ''}`).join('；')}` : '');
-        runCheck();
-      } catch (e) {
-        fileStatus.textContent = '⚠ ' + e.message.slice(0, 120);
-      }
-    };
-
-    /* ---- ✨ AI 整理格式：文本框里的文字排版乱（题号/选项/答案黏在一起）→ AI 重排成范式 ----
-       只做排版：题干/选项/答案/解析一律照抄原文，AI 不许自己解题。
-       本地解析认不出来的「第N题（0.5分）+【您的答案：C　正确答案：A】」这类导出格式，
-       这一键就能救回来。 ---- */
-    const tidyStatus = document.getElementById('canon-tidy-status');
-    /* 剔除材料题：资料分析/阅读理解/案例分析这类要先读一大段材料才能答的题，直接不要 */
-    const dropMatBtn = document.getElementById('canon-drop-material');
-    const DROP_MAT_RULE = `7. 材料题整组剔除：遇到「资料分析 / 阅读理解 / 篇章阅读 / 案例分析 / 共用一段材料下的① ② ③ 小题」这类必须先读一大段材料才能作答的题，整组都不要输出（题干里有「根据上述资料」「阅读以下材料」「材料一」「（一）」「回答X~Y题」的都算）。其它题照常输出。`;
-    let dropMat = true;   // 默认开：材料题本来就不方便做
-    const paintDropMat = () => dropMatBtn.classList.toggle('on', !!dropMat);
-    paintDropMat();
-    (async () => {
-      const v = await DB.metaGet('aiDropMaterial');
-      if (v === null || v === undefined) return;
-      dropMat = !!v;
-      paintDropMat();
-    })();
-    dropMatBtn.onclick = async () => {
-      dropMat = !dropMat;
-      await DB.metaSet('aiDropMaterial', dropMat);
-      paintDropMat();
-      toast(dropMat ? '已开启：材料题会被剔除' : '已关闭：材料题也会保留');
-    };
-    document.getElementById('canon-tidy').onclick = async () => {
-      const raw = ta.value.trim();
-      if (raw.length < 20) return toast('先把要整理的题目文字贴进上面文本框');
-      if (!await ensureApiKey()) return;
-      const btn = document.getElementById('canon-tidy');
-      btn.disabled = true;
-      const orig = ta.value;
-      try {
-        // 按空行切成 ~3000 字一片，片内保持原样交给 AI（不要先做本地清洗，否则题号会被并掉）
-        const CH = 3000;
-        const paras = raw.split(/\n{2,}/);
-        const chunks = [];
-        let buf = [];
-        let size = 0;
-        for (const p0 of paras) {
-          buf.push(p0); size += p0.length + 1;
-          if (size >= CH) { chunks.push(buf.join('\n\n')); buf = []; size = 0; }
-        }
-        if (buf.length) chunks.push(buf.join('\n\n'));
-        const TIDY_PROMPT = `你是题库排版助手。用户贴进来的是从试卷/考试系统导出的题目文字，排版被压坏了：
-题号、选项、答案、解析可能黏在一起，题号可能是「第1题（0.5分）」也可能是「1.」。
-请把内容重排成「范式」格式后输出，除此之外什么都不要做。
-
-范式格式（每题一块）：
-【单选】1. 题干原文
-A. 选项原文
-B. 选项原文
-答案：B
-解析：解析原文
-
-要求：
-1. 题干、选项、解析一律照抄原文，一个字都不要改写、不要补全、不要翻译。
-2. 题号从 1 开始连续编号；原卷的「第N题（0.5分）」只当题号，不要写进题干。
-3. 答案只从原文里抄：遇到「【您的答案：C　正确答案：A】」时，只用「正确答案」的字母（这里取 A），绝不能把「您的答案」当成正确答案。
-4. 判断题答案写成「答案：对」或「答案：错」；多选题答案连写（如 答案：ABD）。
-5. 原文没有答案就留空，不要自己推理；拿不准的题宁可不写答案。
-${dropMat ? DROP_MAT_RULE : ''}
-6. 只输出范式文本，不要解释、不要代码块、不要序号说明。`;
-
-        const parts = [];
-        for (let i = 0; i < chunks.length; i++) {
-          tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}`;
-          const out = await LLM.chat([
-            { role: 'system', content: TIDY_PROMPT },
-            { role: 'user', content: chunks[i] }
-          ], {
-            onRetry: (att, cool, why) => { tidyStatus.textContent = `第 ${att}/4 次重试 · ${why || '网络波动'}`; },
-            onDelta: acc => { tidyStatus.textContent = `AI 整理中… ${i + 1}/${chunks.length}（已生成 ${acc.length} 字）`; }
-          });
-          const t = String(out || '').trim();
-          if (t) parts.push(t);
-        }
-        if (!parts.length) throw new Error('AI 没有返回内容');
-        ta.value = parts.join('\n\n');
-        invalidate();
-        const r = runCheck();
-        const st = r ? r.stats : null;
-        if (!st || !st.total) {
-          ta.value = orig;   // AI 结果解析不出题 → 还原，别把用户原文弄丢
-          throw new Error('AI 整理后没解析出题目，已还原原文（可改用「Word 转换器」或手动整理）');
-        }
-        tidyStatus.textContent = `✓ AI 整理完成：${st.total} 题 · 有答案 ${st.answered} · 缺答案 ${st.missing}。核对无误后点「导入题库」`;
-        toast(`已整理成范式：${st.total} 题`);
-      } catch (e) {
-        tidyStatus.textContent = '⚠ ' + String(e.message || e).slice(0, 140);
-      } finally {
-        btn.disabled = false;
-      }
     };
 
     document.getElementById('canon-check').onclick = () => runCheck();
@@ -979,83 +846,37 @@ ${dropMat ? DROP_MAT_RULE : ''}
       return r;
     }
 
-    /* ---- 文件 → AI 转范式：本地先免费抽文字，再让 AI 只做排版（答案照抄原卷，不做题） ---- */
+    /* ---- 选择文件：本地提取文字 + 本地按规则排成范式，填进文本框 ----
+       排得不好再点「✨ AI 整理格式」（只做排版，答案照抄原卷） ---- */
     const aiFileInput = document.getElementById('canon-ai-file');
     const aiConvBtn = document.getElementById('canon-ai-conv');
-    const aiConvStatus = document.getElementById('canon-ai-conv-status');
-    const aiProg = document.getElementById('canon-ai-prog');
-    const aiBar = document.getElementById('canon-ai-bar');
     aiConvBtn.onclick = () => aiFileInput.click();
     aiFileInput.onchange = async () => {
       const files = [...aiFileInput.files];
       aiFileInput.value = '';
       if (!files.length) return;
-      if (!await ensureApiKey()) return;
       aiConvBtn.disabled = true;
-      aiProg.style.display = '';
-      aiBar.style.width = '0%';
-      // v1.7.1：任务中心接管进度与通知栏——转范式逐片调 API，长文档可能十几分钟，换页/锁屏回来照样看得见
-      TC.start('AI 转范式');
-      const liveEl = document.getElementById('canon-ai-live');
-      liveEl.textContent = '';
+      fileStatus.textContent = '正在提取文字…';
       try {
-        const text = await aiCanonFromFiles(files, {
-          onStatus: s => { aiConvStatus.textContent = s; TC.note(s); },
-          onProgress: p => { aiBar.style.width = Math.round(p * 100) + '%'; TC.set(Math.round(p * 100), 100, `转换中 ${Math.round(p * 100)}%`); },
-          onRetry: (att, cool, why) => { TC.note(`第 ${att}/4 次重试 · ${why || '网络波动'}${cool > 0 ? `，冷却 ${cool}s` : ''}`); },
-          // 流式：AI 生成内容实时回显（1~2 秒出首字，页面内 + 任务中心双处可见）
-          onDelta: acc => {
-            liveEl.style.display = '';
-            liveEl.textContent = acc.length > 600 ? '…' + acc.slice(-600) : acc;
-            liveEl.scrollTop = liveEl.scrollHeight;
-            TC.delta(acc);
-          }
-        });
-        ta.value = text;
+        let all = '';
+        for (const f of files) {
+          const r = await Extractor.extractFull(f);
+          if (r && r.text) all += (all ? '\n\n' : '') + r.text;
+        }
+        if (!all.trim()) throw new Error('文件里没读到文字（可能是图片型文档）：请到「导入题库」页用 AI 视觉识别');
+        const res = Canon.convert(all);
+        ta.value = res.text;
         invalidate();
-        const r = runCheck();
-        aiConvStatus.textContent = `✓ 已转成范式并填入下方文本框${r ? `：${r.stats.total} 题 · 有答案 ${r.stats.answered}` : ''}，核对无误后点「导入题库」`;
-        toast('AI 转范式完成，请核对后导入');
-        TC.finish(true, `转换完成${r ? ` · ${r.stats.total} 题` : ''}`);
+        const st = res.stats;
+        fileStatus.textContent = `✓ 已提取并本地排成范式：${st.total} 题 · 答案 ${st.answered} · 缺答案 ${st.missing}`
+          + `。排得不对就点「✨ AI 整理格式」，没问题直接「解析预览」`;
       } catch (e) {
-        aiConvStatus.textContent = '⚠ ' + e.message.slice(0, 140);
-        TC.finish(false, '中断：' + e.message.slice(0, 60));
+        fileStatus.textContent = '⚠ ' + String(e.message || e).slice(0, 140);
       } finally {
         aiConvBtn.disabled = false;
-        aiProg.style.display = 'none';
-        const liveEl = document.getElementById('canon-ai-live');
-        if (liveEl) liveEl.style.display = 'none';
       }
     };
 
-    /* ---- 导出范式 Word（.docx） ---- */
-    const docxBtn = document.getElementById('canon-docx');
-    const docxStatus = document.getElementById('canon-docx-status');
-
-    docxBtn.onclick = async () => {
-      const text = ta.value;
-      if (text.replace(/\s/g, '').length < 5) { toast('文本框是空的，先贴入或转出范式文本'); return; }
-      try {
-        const name = (document.getElementById('canon-name').value.trim() || '刷题宝-范式') + '.docx';
-        const r = await saveDocxFile(name, text);
-        docxStatus.textContent = `✓ 已导出 Word：${r.path}（Word / WPS 可编辑；改完回本页点「Word 转换器」选它即可导回）`;
-        toast('已导出范式 Word');
-      } catch (e) {
-        docxStatus.textContent = '⚠ 导出失败：' + e.message.slice(0, 100);
-      }
-    };
-
-    // 「导入文件」页转好后带过来的范式文本：直接填进文本框并预览
-    DB.metaGet('canonDraft').then(d => {
-      if (!d) return;
-      DB.metaSet('canonDraft', null);
-      ta.value = d;
-      invalidate();
-      fileStatus.textContent = '✓ 已载入「AI 转范式」结果，核对后点「导入题库」';
-      runCheck();
-    });
-
-    /* ---- 导入题库 ---- */
     document.getElementById('canon-import').onclick = async () => {
       const r = canonParsed || runCheck();
       if (!r) return;
@@ -4418,7 +4239,13 @@ ${dropMat ? DROP_MAT_RULE : ''}
       </div>
       <div class="card">
         <div class="card-title">数据</div>
-        <button class="btn ghost" onclick="App.clearRecords()">清空答题记录</button>
+        <div class="btn-row">
+          <button class="btn ghost" onclick="App.navigate('#/import')">导入题库</button>
+          <button class="btn ghost" onclick="App.navigate('#/canon')">粘贴导入</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" onclick="App.clearRecords()">清空答题记录</button>
+        </div>
       </div>
       <div class="card">
         <div class="card-title">备份与恢复</div>
