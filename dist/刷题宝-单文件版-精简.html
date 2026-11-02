@@ -854,6 +854,25 @@ html.dark {
 }
 .edit-del-btn:active { transform: scale(.94); }
 
+/* 每日一练设置：数字输入（自己填，不用固定档位） */
+.dset-num-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.dset-num { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+.dset-num span { font-size: 11.5px; color: var(--muted); }
+.dset-num input {
+  width: 84px; padding: 8px 10px; font-size: 15px; font-weight: 600; font-family: inherit;
+  color: var(--text); background: var(--surface-2); border: 1.5px solid var(--line); border-radius: 10px;
+}
+.dset-num input:focus { outline: none; border-color: var(--primary); background: var(--card); }
+.dset-num em { font-style: normal; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.dset-num-row .dset-num:first-child em { margin-left: 6px; }
+/* 每日一练页每库的 ⚙ */
+.daily-cfg {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer; font-family: inherit;
+}
+.daily-cfg:active { transform: scale(.94); }
+
 </style>
 </head>
 <body>
@@ -5132,6 +5151,31 @@ const Daily = (() => {
     return quota;
   }
 
+  /* ---- 自定义配额（用户在设置里填的 错题/新题/复习 数字，不必等于题数）→ 按比例换成实际张数 ----
+     全 0 或非法时退回标准档，避免「一组 0 题」 */
+  function quotaBySize(ratio, size) {
+    const quota = { wrong: 0, weak: 0, fresh: 0, review: 0 };
+    if (!(size > 0)) return quota;
+    const r = ratio && typeof ratio === 'object' ? ratio : {};
+    const vals = { wrong: Math.max(0, Number(r.wrong) || 0), fresh: Math.max(0, Number(r.fresh) || 0), review: Math.max(0, Number(r.review) || 0) };
+    const sum = vals.wrong + vals.fresh + vals.review;
+    if (!(sum > 0)) return scaledQuota('standard', size);
+    const k = size / sum;
+    let used = 0;
+    for (const key of QUOTA_KEYS) {
+      quota[key] = Math.floor(vals[key] * k);
+      used += quota[key];
+    }
+    let rest = size - used;
+    for (let i = 0; rest > 0; i++) {
+      // 零头优先补配额比例最大的那类
+      const order = QUOTA_KEYS.slice().sort((x, y) => vals[y] - vals[x]);
+      quota[order[i % order.length]]++;
+      rest--;
+    }
+    return quota;
+  }
+
   function emptyPlan() {
     return { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 }, size: 0 };
   }
@@ -5189,16 +5233,17 @@ const Daily = (() => {
     const poolTotal = CATS.reduce((n, k) => n + pools[k].length, 0);
     if (!poolTotal) return emptyPlan();
 
-    /* 3. 种子只管 (dateKey, bankId, mode, size)：同一天同一档位洗出来的题固定
+    /* 3. 种子只管 (dateKey, bankId, quota, size)：同一天同一套设置洗出来的题固定
           —— 先按 id 排序再洗，题目在入参数的顺序（DB 遍历顺序）变了也不换题 */
-    const seedBase = dk + '|' + (bankId == null ? '' : String(bankId)) + '|' + mode + '|' + size;
+    const quota = o.quota ? quotaBySize(o.quota, size) : scaledQuota(mode, size);
+    const quotaTag = o.quota ? `${quota.wrong}-${quota.fresh}-${quota.review}` : mode;
+    const seedBase = dk + '|' + (bankId == null ? '' : String(bankId)) + '|' + quotaTag + '|' + size;
     for (const k of REFILL_ORDER) {
       pools[k].sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
       pools[k] = shuffle(pools[k], mulberry32(xmur3(seedBase + '|' + k)()));
     }
 
     /* 4. 按配额取，不够的按 REFILL_ORDER 从其它类别回填 */
-    const quota = scaledQuota(mode, size);
     const picked = { wrong: [], weak: [], fresh: [], review: [] };
     let need = size;
     for (const k of QUOTA_KEYS) {
@@ -5538,7 +5583,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.31'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.32'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -9866,8 +9911,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     topbar('设置');
     const cfg = await LLM.getConfig();
     const themeRaw = (await DB.metaGet('theme')) || 'light';
-    const dsize = await dailySize();
-    const dmode = (await DB.metaGet('dailyMode')) || 'standard';
+    const dcfg = await dailyCfg();
     /* 老版本存过 'auto'（跟随系统）：WebView 里取不到系统深色，等于没用，直接按当前系统检测结果落成日间/夜间 */
     const theme = themeRaw === 'auto'
       ? ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light')
@@ -9883,19 +9927,20 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       <div class="card">
         <div class="card-title">每日一练</div>
         <div class="muted small">每个题库每天一组，题数和配比自己定；同一天题集固定，做一半退出再进还是这一组</div>
-        <div class="field" style="margin-top:10px"><span>每个题库每天几题</span>
-          <div class="chips" id="seg-dsize">
-            ${[4, 6, 8, 10, 12, 15].map(n => `<button class="chip ${n === dsize ? 'on' : ''}" data-v="${n}">${n} 题</button>`).join('')}
+        <div class="dset-num-row">
+          <label class="dset-num"><span>每个题库每天</span>
+            <input id="dset-size" type="number" min="1" max="60" value="${dcfg.size}"><em>题</em>
+          </label>
+        </div>
+        <div class="field" style="margin-top:10px"><span>配比（错题 / 新题 / 复习，按比例凑够上面的题数）</span>
+          <div class="dset-num-row">
+            <label class="dset-num"><span>错题</span><input id="dset-wrong" type="number" min="0" value="${dcfg.quota.wrong}"></label>
+            <label class="dset-num"><span>新题</span><input id="dset-fresh" type="number" min="0" value="${dcfg.quota.fresh}"></label>
+            <label class="dset-num"><span>复习</span><input id="dset-review" type="number" min="0" value="${dcfg.quota.review}"></label>
           </div>
         </div>
-        <div class="field"><span>错题 / 新题配比</span>
-          <div class="chips" id="seg-dmode">
-            <button class="chip ${dmode === 'easy' ? 'on' : ''}" data-v="easy">轻松（少错题）</button>
-            <button class="chip ${dmode === 'standard' ? 'on' : ''}" data-v="standard">标准</button>
-            <button class="chip ${dmode === 'devil' ? 'on' : ''}" data-v="devil">魔鬼（多错题）</button>
-          </div>
-        </div>
-        <div class="muted small" id="dset-hint"></div>
+        <button class="btn primary" id="dset-save">保存默认设置</button>
+        <div class="muted small" id="dset-hint" style="margin-top:8px">单个题库想单独设（题数 / 配比 / 只练某几章）：到「每日一练」页点该题库右边的 ⚙</div>
       </div>
       <div class="card">
         <div class="card-title">AI 接口（「文件 → AI 转范式」/「AI 智能对位」使用）</div>
@@ -10001,33 +10046,23 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       }
     };
 
-    // 每日一练设置：改完当天就生效（meta 里记了 size/mode，题集对不上会自动重排）
+    // 每日一练默认设置：数字自己填，保存后当天重排（plan 里比对 sig，对不上会重生成）
     const dHint = document.getElementById('dset-hint');
-    const renderDHint = async () => {
-      const n = await dailySize();
-      const md = (await DB.metaGet('dailyMode')) || 'standard';
-      const q = md === 'easy' ? `错题 ${Math.round(scaled(n, 2, 8))} + 新题 ${Math.round(scaled(n, 5, 8))}`
-        : md === 'devil' ? `错题 ${Math.round(scaled(n, 4, 8))} + 新题 ${Math.round(scaled(n, 3, 8))}`
-        : `错题 ${Math.round(scaled(n, 3, 8))} + 新题 ${Math.round(scaled(n, 4, 8))}`;
-      dHint.textContent = `当前：每个题库 ${n} 题（${q} + 复习，某类不够自动补）`;
+    document.getElementById('dset-save').onclick = async () => {
+      const size = Math.max(1, Math.min(60, parseInt(document.getElementById('dset-size').value, 10) || 8));
+      const quota = normQuota({
+        wrong: document.getElementById('dset-wrong').value,
+        fresh: document.getElementById('dset-fresh').value,
+        review: document.getElementById('dset-review').value
+      });
+      const c = await dailyCfg();
+      c.size = size;
+      c.quota = quota;
+      await DB.metaSet('dailyCfg', c);
+      await DB.metaSet('dailySize', size);       // 兼容旧键
+      dHint.textContent = `✓ 已保存：默认每库 ${size} 题（错题 ${quota.wrong} · 新题 ${quota.fresh} · 复习 ${quota.review}，按比例凑够 ${size} 题）`;
+      toast('默认设置已保存');
     };
-    document.getElementById('seg-dsize').onclick = async (e) => {
-      const b = e.target.closest('button[data-v]'); if (!b) return;
-      document.querySelectorAll('#seg-dsize .chip').forEach(x => x.classList.remove('on'));
-      b.classList.add('on');
-      await DB.metaSet('dailySize', parseInt(b.dataset.v, 10));
-      await renderDHint();
-      toast(`每日一练改为每库 ${b.dataset.v} 题`);
-    };
-    document.getElementById('seg-dmode').onclick = async (e) => {
-      const b = e.target.closest('button[data-v]'); if (!b) return;
-      document.querySelectorAll('#seg-dmode .chip').forEach(x => x.classList.remove('on'));
-      b.classList.add('on');
-      await DB.metaSet('dailyMode', b.dataset.v);
-      await renderDHint();
-      toast('配比已更新');
-    };
-    renderDHint();
 
     // 外观切换：立即生效并保存
     const segTheme = document.getElementById('seg-theme');
@@ -10431,11 +10466,39 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
   /* ---------- 每日一练（按题库：每个题库每天一组） ---------- */
   const DAILY_SIZES = [4, 6, 8, 10, 12, 15];
-  async function dailySize() {
-    const v = parseInt(await DB.metaGet('dailySize'), 10);
-    return DAILY_SIZES.includes(v) ? v : 8;
+  const DAILY_QUOTA_DEFAULT = { wrong: 3, fresh: 4, review: 1 };
+  function normQuota(q) {
+    const w = Math.max(0, parseInt(q && q.wrong, 10) || 0);
+    const f = Math.max(0, parseInt(q && q.fresh, 10) || 0);
+    const r = Math.max(0, parseInt(q && q.review, 10) || 0);
+    return (w + f + r) > 0 ? { wrong: w, fresh: f, review: r } : { ...DAILY_QUOTA_DEFAULT };
   }
-  const scaled = (n, part, base) => Math.max(0, Math.round(n * part / base));
+  /* 每日一练设置：全局默认 + 每个题库可单独覆盖（题数 / 错题·新题·复习配比 / 只看哪些章节） */
+  async function dailyCfg() {
+    let c = await DB.metaGet('dailyCfg');
+    if (!c || typeof c !== 'object' || !c.quota) {
+      const oldSize = parseInt(await DB.metaGet('dailySize'), 10);
+      const mode = (await DB.metaGet('dailyMode')) || 'standard';
+      const preset = {
+        easy: { wrong: 2, fresh: 5, review: 1 },
+        standard: DAILY_QUOTA_DEFAULT,
+        devil: { wrong: 4, fresh: 3, review: 1 }
+      }[mode] || DAILY_QUOTA_DEFAULT;
+      c = { size: Number.isFinite(oldSize) ? oldSize : 8, quota: preset, perBank: {} };
+      await DB.metaSet('dailyCfg', c);
+    }
+    c.perBank = c.perBank || {};
+    return c;
+  }
+  async function dailyPlanCfg(bankId) {
+    const c = await dailyCfg();
+    const b = (bankId && c.perBank[bankId]) || {};
+    const size = Math.max(1, Math.min(60, parseInt(b.size, 10) || parseInt(c.size, 10) || 8));
+    const quota = normQuota(b.quota || c.quota);
+    const secs = Array.isArray(b.secs) && b.secs.length ? b.secs.map(Number) : null;   // null = 该库全部章节
+    return { size, quota, secs };
+  }
+  const dailySize = async () => (await dailyPlanCfg(null)).size;
 
   async function dailyBanksMap() {
     return (await DB.metaGet('dailyBanks')) || {};
@@ -10468,25 +10531,27 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
   /** 这个库今天的那一组：首次访问生成并落库，同一天不变，跨天重建 */
   async function planForBank(bankId, bankQuestions, latest, map) {
     const dateKey = todayKey();
-    const size = await dailySize();
-    const mode = (await DB.metaGet('dailyMode')) || 'standard';
+    const cfg = await dailyPlanCfg(bankId);
+    const scoped = cfg.secs ? bankQuestions.filter(q => cfg.secs.includes(Number(q.secIdx))) : bankQuestions;
+    const sig = `${cfg.size}|${cfg.quota.wrong}-${cfg.quota.fresh}-${cfg.quota.review}|${(cfg.secs || []).join(',')}`;
     const saved = map[bankId];
-    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length
-        && (saved.size == null || saved.size === size) && (saved.mode == null || saved.mode === mode)) {
-      const ids = new Set(bankQuestions.map(q => q.id));
+    if (saved && saved.date === dateKey && Array.isArray(saved.qids) && saved.qids.length && saved.sig === sig) {
+      const ids = new Set(scoped.map(q => q.id));
       if (saved.qids.every(id => ids.has(id))) return saved;
     }
     let plan = null;
     try {
-      plan = Daily.plan({ questions: bankQuestions, latest, dateKey, size, mode, bankId });
+      plan = Daily.plan({ questions: scoped, latest, dateKey, size: cfg.size, quota: cfg.quota, bankId });
     } catch (e) {
       console.error('[daily]', e);
       plan = { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 } };
     }
     const meta = {
       date: dateKey,
-      size,
-      mode,
+      size: cfg.size,
+      quota: cfg.quota,
+      secs: cfg.secs || [],
+      sig,
       qids: plan.qids || [],
       breakdown: plan.breakdown || { wrong: 0, weak: 0, fresh: 0, review: 0 },
       done: false,
@@ -10517,6 +10582,90 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     return out;
   }
 
+  /* 单个题库的每日一练设置：题数 / 配比 / 只看哪些章节（留空=跟随默认） */
+  async function openDailyCfg(bankId) {
+    const bank = await DB.bankGet(bankId);
+    if (!bank) return;
+    const c = await dailyCfg();
+    const b = c.perBank[bankId] || {};
+    const secList = bank.sections || [];
+    const sel = new Set(Array.isArray(b.secs) ? b.secs.map(Number) : []);
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    const draw = () => {
+      mask.innerHTML = `
+      <div class="sheet-panel">
+        <div class="sheet-head"><b>${escapeHtml(bank.name)} · 每日一练</b><button class="sheet-close">×</button></div>
+        <div class="sheet-sub">留空 = 跟随默认（默认每库 ${c.size} 题，错 ${c.quota.wrong} / 新 ${c.quota.fresh} / 复 ${c.quota.review}）</div>
+        <div class="field"><span>这个题库每天几题</span>
+          <div class="dset-num-row">
+            <label class="dset-num"><input id="dc-size" type="number" min="1" max="60" placeholder="${c.size}" value="${b.size != null ? b.size : ''}"><em>题</em></label>
+          </div>
+        </div>
+        <div class="field"><span>配比（错题 / 新题 / 复习）</span>
+          <div class="dset-num-row">
+            <label class="dset-num"><span>错题</span><input id="dc-wrong" type="number" min="0" placeholder="${c.quota.wrong}" value="${b.quota ? b.quota.wrong : ''}"></label>
+            <label class="dset-num"><span>新题</span><input id="dc-fresh" type="number" min="0" placeholder="${c.quota.fresh}" value="${b.quota ? b.quota.fresh : ''}"></label>
+            <label class="dset-num"><span>复习</span><input id="dc-review" type="number" min="0" placeholder="${c.quota.review}" value="${b.quota ? b.quota.review : ''}"></label>
+          </div>
+        </div>
+        ${secList.length ? `<div class="field"><span>只练这些章节（不选 = 全部 ${secList.length} 章）</span>
+          <div class="chips" id="dc-secs">
+            ${secList.map(sec => `<button class="chip ${sel.has(Number(sec.secIdx)) ? 'on' : ''}" data-s="${sec.secIdx}">${escapeHtml(String(sec.title || ('第' + sec.secIdx + '节')).slice(0, 14))}</button>`).join('')}
+          </div>
+        </div>` : ''}
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn ghost" id="dc-reset">恢复默认</button>
+          <button class="btn primary" id="dc-save">保存</button>
+        </div>
+      </div>`;
+      mask.querySelector('.sheet-close').onclick = () => mask.remove();
+      const secsEl = mask.querySelector('#dc-secs');
+      if (secsEl) secsEl.onclick = (e) => {
+        const btn = e.target.closest('button[data-s]');
+        if (!btn) return;
+        btn.classList.toggle('on');
+      };
+      const write = async (patch) => {
+        const cfg = await dailyCfg();
+        const cur = cfg.perBank[bankId] || {};
+        cfg.perBank[bankId] = Object.assign({}, cur, patch);
+        // 清掉空的字段（= 跟随默认）
+        for (const k of ['size', 'quota', 'secs']) {
+          const v = cfg.perBank[bankId][k];
+          if (v == null || (Array.isArray(v) && !v.length) || (k === 'size' && !v)) delete cfg.perBank[bankId][k];
+        }
+        if (!Object.keys(cfg.perBank[bankId]).length) delete cfg.perBank[bankId];
+        await DB.metaSet('dailyCfg', cfg);
+        // 这个库今天的题集作废，按新设置重排
+        const map = await dailyBanksMap();
+        delete map[bankId];
+        await DB.metaSet('dailyBanks', map);
+        mask.remove();
+        render();
+      };
+      mask.querySelector('#dc-reset').onclick = () => write({ size: null, quota: null, secs: null });
+      mask.querySelector('#dc-save').onclick = () => {
+        const sizeV = parseInt(mask.querySelector('#dc-size').value, 10);
+        const q = {
+          wrong: parseInt(mask.querySelector('#dc-wrong').value, 10),
+          fresh: parseInt(mask.querySelector('#dc-fresh').value, 10),
+          review: parseInt(mask.querySelector('#dc-review').value, 10)
+        };
+        const hasQuota = [q.wrong, q.fresh, q.review].some(v => Number.isFinite(v));
+        const picked = [...mask.querySelectorAll('#dc-secs button.on')].map(x => Number(x.dataset.s));
+        write({
+          size: Number.isFinite(sizeV) ? Math.max(1, Math.min(60, sizeV)) : null,
+          quota: hasQuota ? normQuota(q) : null,
+          secs: picked.length ? picked : null
+        });
+      };
+    };
+    draw();
+    mask.onclick = e => { if (e.target === mask) mask.remove(); };
+    document.body.appendChild(mask);
+  }
+
   async function pageDaily() {
     topbar('每日一练', '#/home');
     const { banks, questions } = await allBanksQuestions();
@@ -10532,23 +10681,27 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       return;
     }
     const doneCount = rows.filter(r => r.meta.done).length;
+    const dcfg0 = await dailyCfg();
+    for (const r of rows) r.cfg = await dailyPlanCfg(r.bank.id);
     $view().innerHTML = `
       <div class="card" style="padding:12px 14px">
         <div style="display:flex;align-items:center;gap:8px">
           <b style="flex:1">今天已完成 ${doneCount} / ${rows.length} 个题库</b>
           <span class="muted small">每个库每天一组</span>
         </div>
-        <div class="muted small" style="margin-top:4px" id="daily-desc">每组 ${await dailySize()} 题（错题 / 新题 / 复习按设置配比，某类不够自动回填）。同一天题集固定；题数和配比可在「我的 → 设置 → 每日一练」改。</div>
+        <div class="muted small" style="margin-top:4px" id="daily-desc">默认每库 ${dcfg0.size} 题（错 ${dcfg0.quota.wrong} / 新 ${dcfg0.quota.fresh} / 复 ${dcfg0.quota.review}，某类不够自动回填）。点题库右侧 ⚙ 可给这个库单独设题数、配比和章节。</div>
       </div>
-      ${rows.map(({ bank, meta, streak }) => `
+      ${rows.map(({ bank, meta, streak, cfg }) => `
       <div class="card">
         <div style="display:flex;align-items:center;gap:8px">
           <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bank.name)}</b>
           <span class="muted small">🔥 连续 ${streak.days || 0} 天</span>
+          <button class="daily-cfg" data-cfg="${bank.id}" title="这个题库的每日一练设置">⚙</button>
         </div>
         <div class="muted small" style="margin-top:4px">${meta.done
           ? `今天已完成 · 答对 ${meta.correct ?? 0} / ${meta.total || 0} 题`
-          : `今天 ${meta.total || 0} 题${bdText(meta.breakdown) ? ' · ' + bdText(meta.breakdown) : ''}`}</div>
+          : `今天 ${meta.total || 0} 题${bdText(meta.breakdown) ? ' · ' + bdText(meta.breakdown) : ''}`}
+          · ${cfg.size} 题/天${cfg.secs ? ` · 只练 ${cfg.secs.length} 章` : ''}</div>
         <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
           <div class="daily-bar" style="background:var(--surface-2)"><i style="width:${meta.done ? 100 : 0}%;background:var(--primary)"></i></div>
           <button class="btn primary" data-go="${bank.id}" data-again="${meta.done ? 1 : 0}">${meta.done ? '再来一组' : '开始'}</button>
@@ -10556,6 +10709,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       </div>`).join('')}`;
     $view().querySelectorAll('button[data-go]').forEach(btn => {
       btn.onclick = () => startDaily(btn.dataset.go, btn.dataset.again === '1');
+    });
+    $view().querySelectorAll('button[data-cfg]').forEach(btn => {
+      btn.onclick = async (ev) => { ev.stopPropagation(); await openDailyCfg(btn.dataset.cfg); };
     });
   }
 
@@ -10570,7 +10726,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     if (again) {
       let plan = null;
       try {
-        plan = Daily.plan({ questions: qs, latest, dateKey: todayKey() + '-again-' + Date.now(), size: await dailySize() });
+        const cfg = await dailyPlanCfg(bankId);
+        const scoped = cfg.secs ? qs.filter(q => cfg.secs.includes(Number(q.secIdx))) : qs;
+        plan = Daily.plan({ questions: scoped, latest, dateKey: todayKey() + '-again-' + Date.now(), size: cfg.size, quota: cfg.quota });
       } catch (e) {
         console.error('[daily again]', e);
       }

@@ -133,6 +133,31 @@ const Daily = (() => {
     return quota;
   }
 
+  /* ---- 自定义配额（用户在设置里填的 错题/新题/复习 数字，不必等于题数）→ 按比例换成实际张数 ----
+     全 0 或非法时退回标准档，避免「一组 0 题」 */
+  function quotaBySize(ratio, size) {
+    const quota = { wrong: 0, weak: 0, fresh: 0, review: 0 };
+    if (!(size > 0)) return quota;
+    const r = ratio && typeof ratio === 'object' ? ratio : {};
+    const vals = { wrong: Math.max(0, Number(r.wrong) || 0), fresh: Math.max(0, Number(r.fresh) || 0), review: Math.max(0, Number(r.review) || 0) };
+    const sum = vals.wrong + vals.fresh + vals.review;
+    if (!(sum > 0)) return scaledQuota('standard', size);
+    const k = size / sum;
+    let used = 0;
+    for (const key of QUOTA_KEYS) {
+      quota[key] = Math.floor(vals[key] * k);
+      used += quota[key];
+    }
+    let rest = size - used;
+    for (let i = 0; rest > 0; i++) {
+      // 零头优先补配额比例最大的那类
+      const order = QUOTA_KEYS.slice().sort((x, y) => vals[y] - vals[x]);
+      quota[order[i % order.length]]++;
+      rest--;
+    }
+    return quota;
+  }
+
   function emptyPlan() {
     return { qids: [], breakdown: { wrong: 0, weak: 0, fresh: 0, review: 0 }, size: 0 };
   }
@@ -190,16 +215,17 @@ const Daily = (() => {
     const poolTotal = CATS.reduce((n, k) => n + pools[k].length, 0);
     if (!poolTotal) return emptyPlan();
 
-    /* 3. 种子只管 (dateKey, bankId, mode, size)：同一天同一档位洗出来的题固定
+    /* 3. 种子只管 (dateKey, bankId, quota, size)：同一天同一套设置洗出来的题固定
           —— 先按 id 排序再洗，题目在入参数的顺序（DB 遍历顺序）变了也不换题 */
-    const seedBase = dk + '|' + (bankId == null ? '' : String(bankId)) + '|' + mode + '|' + size;
+    const quota = o.quota ? quotaBySize(o.quota, size) : scaledQuota(mode, size);
+    const quotaTag = o.quota ? `${quota.wrong}-${quota.fresh}-${quota.review}` : mode;
+    const seedBase = dk + '|' + (bankId == null ? '' : String(bankId)) + '|' + quotaTag + '|' + size;
     for (const k of REFILL_ORDER) {
       pools[k].sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
       pools[k] = shuffle(pools[k], mulberry32(xmur3(seedBase + '|' + k)()));
     }
 
     /* 4. 按配额取，不够的按 REFILL_ORDER 从其它类别回填 */
-    const quota = scaledQuota(mode, size);
     const picked = { wrong: [], weak: [], fresh: [], review: [] };
     let need = size;
     for (const k of QUOTA_KEYS) {
