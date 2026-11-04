@@ -4200,8 +4200,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         ${days.length ? `<div class="chart">
           ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
             <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
-            <span class="col-label"><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
-        </div>` : '<div class="muted">暂无答题记录</div>'}
+            <span class="col-label"><b class="lb-num">${v.total}</b><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
+        </div>
+        <div class="muted small" style="margin-top:8px">柱子下面的数字 = 当天答了几题；没有答题的日期不显示柱</div>` : '<div class="muted">暂无答题记录</div>'}
       </div>
       <div class="card">
         <div class="card-title">近 14 日正确率</div>
@@ -4210,7 +4211,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
             const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
             return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
               <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
-              <span class="col-label"><span class="lb-full">${a}%</span><span class="lb-mini">${a}%</span></span></div>`;
+              <span class="col-label"><b class="lb-num" style="color:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}">${a}%</b><span class="lb-sub">${v.total} 题</span></span></div>`;
           }).join('')}
         </div>
         <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`

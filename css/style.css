@@ -586,7 +586,12 @@ body {
   border-radius: 5px 5px 2px 2px;
   transition: height .35s ease;
 }
-.col-label { flex: 0 0 auto; font-size: 9px; color: var(--muted); margin-top: 5px; white-space: nowrap; }
+/* v1.8.33：柱形图每根柱下面补「数字 + 日期/题量」两行小字——
+   以前答题量图只标日期，看不到那天答了几题（只能点住看 title） */
+.col-label { flex: 0 0 auto; font-size: 9px; color: var(--muted); margin-top: 5px; white-space: nowrap;
+  display: flex; flex-direction: column; align-items: center; gap: 1px; line-height: 1.15; }
+.col-label .lb-num { font-size: 10px; font-weight: 600; color: var(--text); }
+.col-label .lb-sub { font-size: 9px; color: var(--muted); }
 /* 日期标签：宽屏显示「月-日」，窄屏自动缩成「日」，避免 14 列标签互相挤压 */
 .col-label .lb-mini { display: none; }
 @media (max-width: 400px) {
