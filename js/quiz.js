@@ -213,7 +213,12 @@ class QuizSession {
       recite: !!this.recite,
       examAnswers: [...this.examAnswers.entries()],
       // 选项乱序映射（v1.8.15）：qid -> {旧字母:新字母}，恢复时原样套回，已答字母才不会错位
-      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm])
+      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm]),
+      /* v1.8.33 修复：续做要记住「这是什么练习」——
+         以前只存题目和进度，从首页「继续」接着做完后，记录变成普通「练习」，
+         每日一练也不会被标记完成（退出再进来做完了、次数不涨）。 */
+      mode: (this.opts && this.opts.mode) || null,
+      daily: this._daily || null
     };
   }
   /* ---- 反序列化：查库重建 ---- */
@@ -226,10 +231,12 @@ class QuizSession {
       // 套回上次会话的选项乱序（保证已答字母不错位）；套不上就原题，判分仍正确
       qs.push(permMap.has(id) ? (QuizSession.permuteQuestion(q, new Map(Object.entries(permMap.get(id)))) || q) : q);
     }
-    const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
+    const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline, mode: data.mode || null });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
     s.graded = !!data.graded;
     s.recite = !!data.recite;
+    // v1.8.33：恢复「每日一练」身份，续做做完照样计入今天的完成数
+    if (data.daily && typeof data.daily === 'object' && data.daily.bankId) s._daily = data.daily;
     for (const [qid, ua] of (data.examAnswers || [])) s.examAnswers.set(qid, ua);
     for (const [qid, v] of (data.answered || [])) {
       const q = qs.find(x => x.id === qid);

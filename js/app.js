@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.32'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.33'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -440,7 +440,16 @@ const App = (() => {
     if (!session || !session.list.length) return;
     clearTimeout(_saveTimer);
     _saveTimer = setTimeout(async () => {
-      try { await DB.metaSet('lastSession', session.serialize()); } catch (e) { /* 静默 */ }
+      try {
+        const s = session;
+        if (!s) return;
+        await DB.metaSet('lastSession', s.serialize());
+        /* v1.8.33：每日一练整组都答完了、但用户没点「完成」就退出去 —— 也算做完，
+           当场落记录 + 标今天已完成（否则回到每日一练页还是「开始」，用户会觉得没算数）。 */
+        if (s._daily && !s._recorded && !s.exam && s.answered.size >= s.list.length) {
+          await recordSession(s, true);
+        }
+      } catch (e) { /* 静默 */ }
     }, 400);
   }
   async function resumeLast() {
@@ -3059,7 +3068,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           : inExam
             ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
                <button class="btn primary" id="submit-exam-btn">交卷</button>`
-            : `<button class="btn ghost" id="next-btn">${session.answered.has(q.id) ? '下一题' : (session.index < session.total - 1 ? '跳过 ›' : '结束练习')}</button>`}
+            : `<button class="btn ghost" id="next-btn">${session.index >= session.total - 1
+                ? (session.answered.has(q.id) ? '完成 ›' : '结束练习')
+                : (session.answered.has(q.id) ? '下一题' : '跳过 ›')}</button>`}
       </div>`;
 
     const judgeArea = document.getElementById('judge-area');
@@ -3980,11 +3991,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
-  /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录） */
-  async function recordSession(s) {
+  /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录）
+   *  force=true：整组题都答完但用户没点「完成」就退出（每日一练兜底，v1.8.33） */
+  async function recordSession(s, force) {
     if (!s || s._recorded || s.recite) return;
     // v1.8.7: 学习模式从答题卡页“提交题库”结束练习(_submitted)也要落记录
-    const done = s.exam ? s.graded : (s.finished || s._submitted);
+    const done = force || (s.exam ? s.graded : (s.finished || s._submitted));
     if (!done) return;
     const r = s.result();
     if (!r.answered && !s.exam) return;   // 学习模式一题没答就不记

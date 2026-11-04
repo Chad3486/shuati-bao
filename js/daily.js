@@ -243,8 +243,14 @@ const Daily = (() => {
       need -= take;
     }
 
-    /* 5. 拼题单：按 wrong → weak → fresh → review 的段序（错题先做），段内即洗牌后的顺序 */
-    const qids = [].concat(picked.wrong, picked.weak, picked.fresh, picked.review);
+    /* 5. 拼题单：v1.8.33 起纯随机顺序。
+       配额/回填只决定「抽哪些题」，顺序不再按 wrong → weak → fresh → review 分段
+       （那样每天都从老错题开头，练起来很闷）。用独立种子再洗一遍：
+       同一天、同一套设置顺序固定（做一半退出再进不换题），换天/换设置就换顺序。 */
+    const qids = shuffle(
+      [].concat(picked.wrong, picked.weak, picked.fresh, picked.review),
+      mulberry32(xmur3(seedBase + '|order')())
+    );
     const breakdown = {
       wrong: picked.wrong.length,
       weak: picked.weak.length,

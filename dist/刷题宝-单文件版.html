@@ -5284,8 +5284,14 @@ const Daily = (() => {
       need -= take;
     }
 
-    /* 5. 拼题单：按 wrong → weak → fresh → review 的段序（错题先做），段内即洗牌后的顺序 */
-    const qids = [].concat(picked.wrong, picked.weak, picked.fresh, picked.review);
+    /* 5. 拼题单：v1.8.33 起纯随机顺序。
+       配额/回填只决定「抽哪些题」，顺序不再按 wrong → weak → fresh → review 分段
+       （那样每天都从老错题开头，练起来很闷）。用独立种子再洗一遍：
+       同一天、同一套设置顺序固定（做一半退出再进不换题），换天/换设置就换顺序。 */
+    const qids = shuffle(
+      [].concat(picked.wrong, picked.weak, picked.fresh, picked.review),
+      mulberry32(xmur3(seedBase + '|order')())
+    );
     const breakdown = {
       wrong: picked.wrong.length,
       weak: picked.weak.length,
@@ -5542,7 +5548,12 @@ class QuizSession {
       recite: !!this.recite,
       examAnswers: [...this.examAnswers.entries()],
       // 选项乱序映射（v1.8.15）：qid -> {旧字母:新字母}，恢复时原样套回，已答字母才不会错位
-      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm])
+      optPerm: this.list.filter(q => q._optPerm).map(q => [q.id, q._optPerm]),
+      /* v1.8.33 修复：续做要记住「这是什么练习」——
+         以前只存题目和进度，从首页「继续」接着做完后，记录变成普通「练习」，
+         每日一练也不会被标记完成（退出再进来做完了、次数不涨）。 */
+      mode: (this.opts && this.opts.mode) || null,
+      daily: this._daily || null
     };
   }
   /* ---- 反序列化：查库重建 ---- */
@@ -5555,10 +5566,12 @@ class QuizSession {
       // 套回上次会话的选项乱序（保证已答字母不错位）；套不上就原题，判分仍正确
       qs.push(permMap.has(id) ? (QuizSession.permuteQuestion(q, new Map(Object.entries(permMap.get(id)))) || q) : q);
     }
-    const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline });
+    const s = new QuizSession(qs, { shuffle: false, exam: data.exam, minutes: data.minutes, deadline: data.deadline, mode: data.mode || null });
     s.index = Math.min(data.index || 0, Math.max(0, qs.length - 1));
     s.graded = !!data.graded;
     s.recite = !!data.recite;
+    // v1.8.33：恢复「每日一练」身份，续做做完照样计入今天的完成数
+    if (data.daily && typeof data.daily === 'object' && data.daily.bankId) s._daily = data.daily;
     for (const [qid, ua] of (data.examAnswers || [])) s.examAnswers.set(qid, ua);
     for (const [qid, v] of (data.answered || [])) {
       const q = qs.find(x => x.id === qid);
@@ -5606,7 +5619,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.32'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.33'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -6046,7 +6059,16 @@ const App = (() => {
     if (!session || !session.list.length) return;
     clearTimeout(_saveTimer);
     _saveTimer = setTimeout(async () => {
-      try { await DB.metaSet('lastSession', session.serialize()); } catch (e) { /* 静默 */ }
+      try {
+        const s = session;
+        if (!s) return;
+        await DB.metaSet('lastSession', s.serialize());
+        /* v1.8.33：每日一练整组都答完了、但用户没点「完成」就退出去 —— 也算做完，
+           当场落记录 + 标今天已完成（否则回到每日一练页还是「开始」，用户会觉得没算数）。 */
+        if (s._daily && !s._recorded && !s.exam && s.answered.size >= s.list.length) {
+          await recordSession(s, true);
+        }
+      } catch (e) { /* 静默 */ }
     }, 400);
   }
   async function resumeLast() {
@@ -8665,7 +8687,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           : inExam
             ? `${session.index < session.total - 1 ? '<button class="btn ghost" id="next-btn">下一题</button>' : ''}
                <button class="btn primary" id="submit-exam-btn">交卷</button>`
-            : `<button class="btn ghost" id="next-btn">${session.answered.has(q.id) ? '下一题' : (session.index < session.total - 1 ? '跳过 ›' : '结束练习')}</button>`}
+            : `<button class="btn ghost" id="next-btn">${session.index >= session.total - 1
+                ? (session.answered.has(q.id) ? '完成 ›' : '结束练习')
+                : (session.answered.has(q.id) ? '下一题' : '跳过 ›')}</button>`}
       </div>`;
 
     const judgeArea = document.getElementById('judge-area');
@@ -9586,11 +9610,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
-  /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录） */
-  async function recordSession(s) {
+  /** 一轮练习/考试结束 → 存一条记录（session._recorded 防重复；背题模式不落记录）
+   *  force=true：整组题都答完但用户没点「完成」就退出（每日一练兜底，v1.8.33） */
+  async function recordSession(s, force) {
     if (!s || s._recorded || s.recite) return;
     // v1.8.7: 学习模式从答题卡页“提交题库”结束练习(_submitted)也要落记录
-    const done = s.exam ? s.graded : (s.finished || s._submitted);
+    const done = force || (s.exam ? s.graded : (s.finished || s._submitted));
     if (!done) return;
     const r = s.result();
     if (!r.answered && !s.exam) return;   // 学习模式一题没答就不记

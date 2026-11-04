@@ -143,9 +143,40 @@ test('weak 不占配额，只在错题不够时顶上（回填顺序 wrong → w
   // 错题只有 2 道（配额要 3）→ 差额先用 weak 顶满（2 道都上），再回填 fresh
   assert.deepStrictEqual(r.breakdown, { wrong: 2, weak: 2, fresh: 4, review: 0 });
   assert.strictEqual(breakdownSum(r.breakdown), r.qids.length);
-  assert.strictEqual(r.qids[0][0], 'w', '题单先出错题');
-  assert.strictEqual(r.qids[2][0], 'k', '错题后面才轮到 weak');
-  assert.strictEqual(r.qids[4][0], 'f', 'weak 用尽后才是 fresh');
+  // v1.8.33 起题单顺序纯随机，「抽哪些题」仍按上面配额（这里只断类别数量）
+  const cnt = p => r.qids.filter(id => id[0] === p).length;
+  assert.strictEqual(cnt('w'), 2);
+  assert.strictEqual(cnt('k'), 2);
+  assert.strictEqual(cnt('f'), 4);
+});
+
+/* v1.8.33：顺序纯随机 —— 不再每天从老错题开头，但同一天仍是固定顺序 */
+test('题单顺序打乱：20 天里至少有一天不是「错题排最前」', () => {
+  const questions = [], correct = {};
+  for (let i = 1; i <= 10; i++) { const q = Q('w' + i, 'b1', 0); questions.push(q); correct[q.id] = false; }
+  for (let i = 1; i <= 30; i++) questions.push(Q('f' + i, 'b1', 1));
+  const latest = withLatest(questions, correct);
+  let notWrongFirst = 0;
+  for (let d = 1; d <= 20; d++) {
+    const r = Daily.plan({ questions, latest, dateKey: '2026-11-' + String(d).padStart(2, '0') });
+    if (r.qids[0][0] !== 'w') notWrongFirst++;
+    assert.strictEqual(new Set(r.qids).size, r.qids.length, '顺序打乱不能产生重复');
+  }
+  assert.ok(notWrongFirst > 0, '20 天全都错题开头说明没有打乱');
+});
+
+test('顺序同一天固定、换天会变（打乱也要可复现）', () => {
+  const questions = [], correct = {};
+  for (let i = 1; i <= 30; i++) { const q = Q('f' + i, 'b1', i % 3); questions.push(q); }
+  const latest = withLatest(questions, correct);
+  const a = Daily.plan({ questions, latest, dateKey: DK });
+  const b = Daily.plan({ questions, latest, dateKey: DK });
+  assert.deepStrictEqual(a.qids, b.qids, '同一天必须同一顺序');
+  const orders = new Set();
+  for (let d = 1; d <= 10; d++) {
+    orders.add(Daily.plan({ questions, latest, dateKey: '2026-12-' + String(d).padStart(2, '0') }).qids.join(','));
+  }
+  assert.ok(orders.size > 1, '换日期应该换顺序');
 });
 
 test('章节正确率恰好 60% 不算 weak（review 侧边界）', () => {
