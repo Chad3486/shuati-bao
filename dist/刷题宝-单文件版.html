@@ -5689,7 +5689,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.35'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.36'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -7272,8 +7272,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     if (!bank) return navigate('#/home');
     const qs = await DB.questionsByBank(bankId);
     // 有节键按节-题号排（跨节同号不混排），老题无键按题号排
+    // v1.8.36：用 cmpQuestionKey 的数值比较，替掉耗时的 localeCompare（见函数注释）
     qs.sort((a, b) => a.key && b.key
-      ? a.key.localeCompare(b.key, 'zh', { numeric: true })
+      ? cmpQuestionKey(a.key, b.key)
       : (a.no ?? 0) - (b.no ?? 0));
 
     // ---- 按小节分组（key="节序号-题号"；无 key 的老题/兜底题归入"未分节"）----
@@ -7282,7 +7283,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     (bank.sections || []).forEach(s => secMap.set(String(s.secIdx), s));
     const groups = [];
     const groupOf = {};
-    for (const q of qs) {
+    /* v1.8.36 性能：原来是 qs.indexOf(q)，上千题就是 O(n²)（4192 题要比较 1700 万次）；
+       现在用循环下标，O(n)。 */
+    for (let qi = 0; qi < qs.length; qi++) {
+      const q = qs[qi];
       const sec = q.key ? String(q.key).split('-')[0] : '';
       if (!(sec in groupOf)) {
         groupOf[sec] = groups.length;
@@ -7294,8 +7298,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           idxs: []
         });
       }
-      groups[groupOf[sec]].idxs.push(qs.indexOf(q));
+      groups[groupOf[sec]].idxs.push(qi);
     }
+    const groupsBySec = new Map(groups.map(g => [String(g.sec), g]));
 
     // ---- 作答状态（错题 / 未答 / 答对）与收藏，供筛选 ----
     const latest = await DB.latestByQuestion();
@@ -7321,6 +7326,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       ['ai', 'AI 答案', q => !!q.aiAnswer]
     ];
 
+    /* v1.8.36：这一页原来写死 shuffle:false —— 勾了题只能按题号顺着做。
+       现在给一个「按题号 / 随机」开关，默认跟随上次的顺序偏好（选题页/练习页共用）。 */
+    const shuffle0 = await prefShuffle();
     topbar(bank.name.slice(0, 10) || '题目列表', '#/home');
     $view().innerHTML = `
       <div class="card">
@@ -7340,6 +7348,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <button class="chip" id="sel-none">清空选择</button>
           <button class="chip" onclick="App.openAudit('${bank.id}')">🩺 体检</button>
           <button class="chip" onclick="App.dailyBank('${bank.id}')">📅 一练</button>
+        </div>
+        <div class="seg" id="q-order" style="margin-top:10px">
+          <button data-v="order" class="${shuffle0 ? '' : 'on'}">按题号</button>
+          <button data-v="shuffle" class="${shuffle0 ? 'on' : ''}">🎲 随机</button>
         </div>
         <button class="btn primary big" id="go-quiz" style="margin-top:10px"></button>
         <details style="margin-top:12px">
@@ -7364,7 +7376,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         <div id="ai-review"></div>
       </div>
       <style>
-        .sec-group { margin-top:12px; }
+        .sec-group { margin-top:12px; content-visibility:auto; contain-intrinsic-size:auto 520px; }
+        /* v1.8.36：整批勾选/清空时关掉每格过渡，少烧上千帧动画 */
+        #no-grid.bulk .no-cell, #no-grid.bulk .no-cell::before { transition:none !important; }
         .sec-head { display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px dashed var(--line, #e3e8f0); }
         .sec-head b { flex:1; font-size:14px; min-width:0; }
         .no-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
@@ -7413,13 +7427,34 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const PAGE = 80;
     const secShown = new Map(); // sec → 已显示题数（「显示更多」翻页）
 
-    function matchQ(q) {
-      if (kw) {
-        const hay = [q.stem, q.answer, q.explanation, ...Object.values(q.options || {})].join(' ').toLowerCase();
-        if (!hay.includes(kw)) return false;
+    /* v1.8.36 性能：搜索用的整串（题干+答案+解析+选项）以前每次过滤都重新拼一遍，
+       1500 题的库一次筛选要拼 1500 次大字符串；现在按题缓存，只拼一次。
+       筛选函数也从每次 find 改成 Map 直取。 */
+    const filterFn = new Map(FILTERS.map(([k, label, fn]) => [k, fn]));
+    const hayCache = new Map();
+    function hayOf(q) {
+      let h = hayCache.get(q.id);
+      if (h == null) {
+        h = [q.stem, q.answer, q.explanation, ...Object.values(q.options || {})].join(' ').toLowerCase();
+        hayCache.set(q.id, h);
       }
-      const f = FILTERS.find(x => x[0] === filter);
-      return f ? f[2](q) : true;
+      return h;
+    }
+    function matchQ(q) {
+      if (kw && !hayOf(q).includes(kw)) return false;
+      const f = filterFn.get(filter);
+      return f ? f(q) : true;
+    }
+
+    /* 每节「符合条件的题号」缓存在当前筛选/关键词下，一次渲染内被问 3~4 次
+       （画格子、统计已显示数、同步节按钮），不再每问一遍都重算。 */
+    let visVer = 0, visKey = '', visCache = new Map();
+    function visIdxs(g) {
+      const key = filter + '|' + kw + '|' + visVer;
+      if (key !== visKey) { visKey = key; visCache = new Map(); }
+      let arr = visCache.get(g.sec);
+      if (!arr) { arr = g.idxs.filter(i => matchQ(qs[i])); visCache.set(g.sec, arr); }
+      return arr;
     }
 
     let shownCount = 0;
@@ -7440,7 +7475,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     /* 只画某一节的格子（含分页与「显示更多」）；展开/翻页时按节局部重建，
        不再整页重排——846 题整页重渲染一次要几百毫秒，是「点一下卡一下」的主因 */
     function sectionBodyHtml(g) {
-      const idxs = g.idxs.filter(i => matchQ(qs[i]));
+      const idxs = visIdxs(g);
       const lim = secShown.get(g.sec) || PAGE;
       const shownIdxs = idxs.slice(0, lim);
       const hidden = idxs.length - shownIdxs.length;
@@ -7452,16 +7487,48 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       let n = 0;
       for (const g of groups) {
         if (collapsed.has(g.sec)) continue;
-        const idxs = g.idxs.filter(i => matchQ(qs[i]));
+        const idxs = visIdxs(g);
         n += Math.min(idxs.length, secShown.get(g.sec) || PAGE);
       }
       shownCount = n;
       update(n);
     }
 
+    /* v1.8.36 性能：格子改成分帧填充（每帧约 8ms 上限）。
+       上千题一次性 innerHTML 会占住主线程、点一下卡半秒；
+       现在先画节头（立即可见），再由 paintBodies 按帧把每节格子填进去。
+       筛选/搜索切换同样走这里，所以大题库切筛选也不再整页冻结。 */
+    let paintSeq = 0;
+    const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+    function paintBodies(pairs, onDone) {
+      const mySeq = ++paintSeq;
+      let i = 0;
+      const step = () => {
+        if (mySeq !== paintSeq || !grid.isConnected) return;
+        const t0 = nowMs();
+        while (i < pairs.length) {
+          const { grp, g } = pairs[i++];
+          if (!grp.isConnected) continue;
+          const body = grp.querySelector('.sec-body');
+          const btn = grp.querySelector('[data-fold]');
+          if (collapsed.has(g.sec)) {
+            if (body) body.innerHTML = '';
+            if (btn) btn.textContent = '▸';
+          } else {
+            if (body) body.innerHTML = sectionBodyHtml(g);
+            if (btn) btn.textContent = '▾';
+          }
+          if (nowMs() - t0 > 8) break;
+        }
+        if (i < pairs.length) requestAnimationFrame(step);
+        else if (onDone) onDone();
+      };
+      step();
+    }
+
     function renderGrid() {
       const html = groups.map(g => {
-        const idxs = g.idxs.filter(i => matchQ(qs[i]));
+        const idxs = visIdxs(g);
         if (!idxs.length) return '';
         const isCollapsed = collapsed.has(g.sec);
         const secIds = idxs.map(i => qs[i].id);
@@ -7474,16 +7541,24 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
               <span class="muted small">${idxs.length}${idxs.length !== g.idxs.length ? '/' + g.idxs.length : ''} 题</span>
               <button class="chip ${allOn ? 'on' : ''}" data-sec="${escapeHtml(g.sec)}">${allOn ? '取消本节' : '本节全选'}</button>
             </div>
-            <div class="sec-body">${isCollapsed ? '' : sectionBodyHtml(g)}</div>
+            <div class="sec-body"></div>
           </div>`;
       }).join('');
       grid.innerHTML = html || '<div class="muted small" style="padding:12px 0">没有匹配的题（换个关键词或筛选试试）</div>';
-      recountShown();
+      recountShown();   // 先把「共 N 题 · 当前显示 M 题」更新好，格子随后按帧填
+      const pairs = [...grid.querySelectorAll('.sec-group')]
+        .map(grp => ({ grp, g: groupsBySec.get(grp.dataset.sec) }))
+        .filter(x => !!x.g);
+      paintBodies(pairs);
     }
 
     /* 同步选中态到已渲染的格子与节按钮（不重排 DOM），选几百题也不用整页重渲染 */
     function syncCells(root) {
       const scope = root || grid;
+      /* v1.8.36 性能：全选/清空要改上千个格子，逐个跑 .on 过渡动画最烧帧；
+         整批同步期间临时关掉过渡，同步完再恢复。 */
+      const bulk = !root;
+      if (bulk && grid.classList) grid.classList.add('bulk');
       scope.querySelectorAll('input[data-id]').forEach(b => {
         const on = sel.has(b.dataset.id);
         if (b.checked !== on) b.checked = on;
@@ -7491,14 +7566,15 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         if (cell) cell.classList.toggle('on', on);
       });
       scope.querySelectorAll('button[data-sec]').forEach(btn => {
-        const g = groups.find(x => String(x.sec) === btn.dataset.sec);
+        const g = groupsBySec.get(btn.dataset.sec);
         if (!g) return;
-        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const ids = visIdxs(g).map(i => qs[i].id);
         const allOn = ids.length > 0 && ids.every(id => sel.has(id));
         btn.classList.toggle('on', allOn);
         btn.textContent = allOn ? '取消本节' : '本节全选';
       });
       update(shownCount);
+      if (bulk && grid.classList) setTimeout(() => grid.classList.remove('bulk'), 0);
     }
 
     // 事件委托：innerHTML 重写不失效，也不再每次渲染循环重绑上千个 onchange
@@ -7512,10 +7588,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       update(shownCount);
       // 本节「全选/取消」按钮文案跟着变，但不重排
       const grp = box.closest('.sec-group');
-      const g = grp && groups.find(x => String(x.sec) === (grp.dataset.sec || ''));
+      const g = grp && groupsBySec.get(grp.dataset.sec || '');
       const btn = grp && grp.querySelector('button[data-sec]');
       if (g && btn) {
-        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const ids = visIdxs(g).map(i => qs[i].id);
         const allOn = ids.length > 0 && ids.every(id => sel.has(id));
         btn.classList.toggle('on', allOn);
         btn.textContent = allOn ? '取消本节' : '本节全选';
@@ -7527,7 +7603,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         const sec = more.dataset.more;
         secShown.set(sec, (secShown.get(sec) || PAGE) + PAGE);
         const grp = more.closest('.sec-group');
-        const g = groups.find(x => String(x.sec) === sec);
+        const g = groupsBySec.get(sec);
         const body = grp && grp.querySelector('.sec-body');
         if (g && body) body.innerHTML = sectionBodyHtml(g);
         recountShown();
@@ -7541,7 +7617,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         const wasFolded = collapsed.has(sec);
         if (wasFolded) {
           collapsed.delete(sec);
-          const g = groups.find(x => String(x.sec) === sec);
+          const g = groupsBySec.get(sec);
           if (g && body) body.innerHTML = sectionBodyHtml(g);
           fold.textContent = '▾';
         } else {
@@ -7554,9 +7630,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       }
       const secBtn = e.target.closest('button[data-sec]');
       if (secBtn) {
-        const g = groups.find(x => String(x.sec) === secBtn.dataset.sec);
+        const g = groupsBySec.get(secBtn.dataset.sec);
         if (!g) return;
-        const ids = g.idxs.filter(i => matchQ(qs[i])).map(i => qs[i].id);
+        const ids = visIdxs(g).map(i => qs[i].id);
         const allOn = ids.length > 0 && ids.every(id => sel.has(id));
         ids.forEach(id => allOn ? sel.delete(id) : sel.add(id));
         const grp = secBtn.closest('.sec-group');
@@ -7604,7 +7680,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
             q.aiAnswer = false;
             await DB.questionPut(q);
             toast('已采纳为正式答案');
-            renderReview(); renderGrid();
+            hayCache.delete(q.id); visVer++; renderReview(); renderGrid();
           } else if (act === 'edit') {
             if (card.querySelector('.edit-ans')) return;
             const inp = document.createElement('input');
@@ -7629,7 +7705,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
               q.aiAnswer = false;
               await DB.questionPut(q);
               toast('已保存修改');
-              renderReview(); renderGrid();
+              hayCache.delete(q.id); visVer++; renderReview(); renderGrid();
             };
           } else if (act === 'rerun') {
             b.disabled = true; b.textContent = '重跑中…';
@@ -7649,7 +7725,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
               q.answer = oldAns; q.aiAnswer = oldAI;
               toast('重跑失败：' + String(err.message || '').slice(0, 60));
             }
-            renderReview(); renderGrid();
+            hayCache.delete(q.id); visVer++; renderReview(); renderGrid();
           }
         };
       });
@@ -7677,13 +7753,36 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     };
     document.getElementById('sec-fold').onclick = (e) => {
       const b = e.target.closest('button[data-act]'); if (!b) return;
-      collapsed.clear();
-      if (b.dataset.act === 'fold') groups.forEach(g => collapsed.add(g.sec));
-      renderGrid();
+      const fold = b.dataset.act === 'fold';
+      /* v1.8.36 性能：折叠/展开全部改成只动每节的 body 与箭头，不再整页重建 DOM
+         （1500 题的库原来点一下要重新拼 1500 个格子，约 140ms，中低端机明显卡） */
+      if (fold) {
+        paintSeq++;                        // 打断可能还在跑的分帧填充任务
+        groups.forEach(g => collapsed.add(g.sec));
+        grid.querySelectorAll('.sec-group').forEach(grp => {
+          const body = grp.querySelector('.sec-body');
+          const btn = grp.querySelector('[data-fold]');
+          if (body) body.innerHTML = '';
+          if (btn) btn.textContent = '▸';
+        });
+        recountShown();
+        return;
+      }
+      /* 展开全部：分帧渲染（每帧最多约 8ms），上千个格子不会把主线程一次性占住 */
+      groups.forEach(g => collapsed.delete(g.sec));
+      const pairs = [...grid.querySelectorAll('.sec-group')]
+        .map(grp => ({ grp, g: groupsBySec.get(grp.dataset.sec) }))
+        .filter(x => !!x.g);
+      paintBodies(pairs, recountShown);
     };
-    // 批量选择必须重渲染，让格子的 .on 选中态跟着变（只改数据不改视觉会「选了却看不出来」）
+    /* 批量选择必须重渲染，让格子的 .on 选中态跟着变（只改数据不改视觉会「选了却看不出来」）。
+       v1.8.36：格子是分帧填充的，如果按 DOM 里的格子来选，点太快会漏掉还没画出来的题；
+       这里改成按数据算「当前可见」（未折叠 + 每节已显示页数），跟一眼看到的范围一致。 */
     document.getElementById('sel-all').onclick = () => {
-      grid.querySelectorAll('input[data-id]').forEach(b => sel.add(b.dataset.id));
+      for (const g of groups) {
+        if (collapsed.has(g.sec)) continue;
+        visIdxs(g).slice(0, secShown.get(g.sec) || PAGE).forEach(i => sel.add(qs[i].id));
+      }
       syncCells();
     };
     document.getElementById('sel-none').onclick = () => {
@@ -7701,6 +7800,13 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       syncCells();
     };
 
+    let shuffleOrder = shuffle0;
+    document.getElementById('q-order').onclick = (e) => {
+      const b = e.target.closest('button[data-v]'); if (!b) return;
+      shuffleOrder = b.dataset.v === 'shuffle';
+      document.querySelectorAll('#q-order button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === shuffleOrder));
+      savePrefShuffle(shuffleOrder);   // 记住这次的选择，练习设置页也跟着变
+    };
     goBtn.onclick = async () => {
       if (!sel.size) return toast('请先勾选题号');
       // 缺答案的题也允许练（练习时用 ✎ 自己填答案）
@@ -7708,7 +7814,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       const noAnsCount = list.filter(q => !q.answer).length;
       guardUnfinishedSession().then(go => {
         if (!go) return;
-        session = new QuizSession(list, { shuffle: false });
+        session = new QuizSession(list, { shuffle: shuffleOrder });
         if (noAnsCount) toast(`其中 ${noAnsCount} 题缺答案，练习时点右上角 ✎ 自己填`);
         navigate('#/quiz');
       });
@@ -10484,6 +10590,25 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
   }
 
   /* ================= 工具 ================= */
+  /* v1.8.36 性能：题目排序键是「节序号-题号」，原来用 localeCompare('zh',{numeric:true})，
+     4200 题光排序就要 200ms 以上（手机上更久），是点开「选题」卡一下的大头。
+     这里换成纯数值比较，排序结果一致（按节、再按题号），耗时几乎为 0。 */
+  const NUM_KEY_RE = /^\d+$/;
+  function cmpQuestionKey(a, b) {
+    const pa = String(a == null ? '' : a), pb = String(b == null ? '' : b);
+    if (pa === pb) return 0;
+    const da = pa.indexOf('-'), db = pb.indexOf('-');
+    if (da < 0 || db < 0) return pa < pb ? -1 : 1;
+    const as = pa.slice(0, da), bs = pb.slice(0, db);
+    if (NUM_KEY_RE.test(as) && NUM_KEY_RE.test(bs) && +as !== +bs) return +as - +bs;
+    const an = pa.slice(da + 1), bn = pb.slice(db + 1);
+    if (NUM_KEY_RE.test(an) && NUM_KEY_RE.test(bn)) {
+      if (+an !== +bn) return +an - +bn;
+      return pa < pb ? -1 : 1;
+    }
+    // 非「节-题号」形态的怪 key（历史数据）：退回原来的中文数字排序，保证顺序与旧版一致
+    return pa.localeCompare(pb, 'zh', { numeric: true });
+  }
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
