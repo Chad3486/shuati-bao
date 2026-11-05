@@ -902,6 +902,47 @@ html.dark {
 }
 .daily-cfg:active { transform: scale(.94); }
 
+/* ---------- 题目笔记（v1.8.35） ----------
+   只挂在某一道题上：练习页题目卡下面一条、题目详情弹层里一段、
+   「我的 → 我的笔记」里按时间倒序列出。 */
+.note-card {
+  border-left: 3px solid #d97706;
+  background: linear-gradient(180deg, rgba(217,119,6,.06), transparent 70%);
+}
+.note-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 600; color: #b45309; margin-bottom: 4px;
+}
+.note-edit {
+  border: 1px solid rgba(217,119,6,.35); background: transparent; color: #b45309;
+  font-size: 11px; padding: 2px 9px; border-radius: 999px; cursor: pointer; font-family: inherit;
+}
+.note-text { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.note-inline {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(217,119,6,.07); border-left: 3px solid #d97706;
+}
+.note-inline .note-text { font-size: 13.5px; }
+.note-stem {
+  font-size: 12.5px; color: var(--muted); line-height: 1.5;
+  background: var(--surface-2); border-radius: 9px; padding: 8px 10px; margin: 8px 0;
+}
+.note-input {
+  width: 100%; box-sizing: border-box; min-height: 132px; resize: vertical;
+  padding: 11px 12px; font-size: 14px; line-height: 1.65; font-family: inherit;
+  color: var(--text); background: var(--surface-2);
+  border: 1.5px solid var(--line); border-radius: 12px; outline: none;
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+.note-input::placeholder { color: var(--muted); }
+.note-input:focus {
+  background: var(--card); border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow);
+}
+.note-item { cursor: pointer; }
+.note-item:active { transform: scale(.995); }
+.note-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.note-item .note-stem { margin: 0 0 6px; }
+
 </style>
 </head>
 <body>
@@ -5648,7 +5689,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.34'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.35'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5677,6 +5718,7 @@ const App = (() => {
     'audit': pageAudit,
     'ability': pageAbility,
     'daily': pageDaily,
+    'notes': pageNotes,
     'me': pageMe,
     'settings': pageSettings
   };
@@ -8720,6 +8762,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const multi = q.type === 'multi';
     const optKeys = q.options ? Object.keys(q.options) : [];
     const starSet = new Set(await DB.starIds());
+    const qnote = await noteOf(q.id);   // v1.8.35：这道题自己写的笔记（没有就不显示）
     const inExam = session.inExam;
     const recite = !inExam && !!session.recite;   // 背题模式：直接看答案、不用作答（学习类会话）
     const examPicked = inExam ? (session.examAnswers.get(q.id) || '') : '';
@@ -8737,6 +8780,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         ${!inExam ? `<button class="star-btn${recite ? ' on' : ''}" id="recite-btn" title="背题模式：直接看答案，不用作答">${recite ? '✎' : '📖'}</button>` : ''}
         <button class="star-btn" id="sheet-btn" title="答题卡" style="font-size:19px">▦</button>
         <button class="star-btn" id="star-btn" title="收藏本题">☆</button>
+        <button class="star-btn${qnote ? ' on' : ''}" id="note-btn" title="给这道题写笔记" style="font-size:18px">📝</button>
         <button class="star-btn" id="edit-btn" title="修改答案与解析" style="font-size:19px">✎</button>
       </div>
       <div class="quiz-bar"><div class="quiz-bar-fill" style="width:${donePct}%"></div></div>
@@ -8783,6 +8827,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         <div class="judge-area" id="judge-area" style="display:none"></div>
         ${inExam ? `<div class="muted small" style="margin-top:10px">答案会自动保存，可随时回看或修改；点「交卷」后统一判分</div>` : ''}
       </div>`}
+      ${qnote ? `<div class="card note-card">
+        <div class="note-head"><span>📝 我的笔记</span><button class="note-edit" id="note-edit">改</button></div>
+        <div class="note-text">${escapeHtml(qnote.text)}</div>
+      </div>` : ''}
       <div class="quiz-nav">
         <button class="btn ghost" id="skip-btn" ${session.index === 0 ? 'disabled' : ''}>上一题</button>
         ${recite
@@ -8934,6 +8982,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       if (added) starSet.add(q.id); else starSet.delete(q.id);
       toast(added ? '已收藏' : '已取消收藏');
     };
+
+    /* ---- 写笔记（v1.8.35）：只记在当前这道题上 ---- */
+    const noteBtn = document.getElementById('note-btn');
+    if (noteBtn) noteBtn.onclick = () => openNoteEditor(q.id, () => render());
+    const noteEditBtn = document.getElementById('note-edit');
+    if (noteEditBtn) noteEditBtn.onclick = () => openNoteEditor(q.id, () => render());
 
     /* ---- 编辑答案与解析（当场纠错） ---- */
     const editCard = document.getElementById('edit-card');
@@ -9641,12 +9695,125 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
   }
 
   /* 题目详情弹层（搜题/任意列表复用）：完整题干 + 全部选项（标出正确答案）+ 答案 + 解析 */
+  /* ===== 题目笔记（v1.8.35）：想写就写，只挂在某一道题上，不是整库备注 ===== */
+  async function notesMap() {
+    try { return (await DB.metaGet('qNotes')) || {}; } catch (e) { return {}; }
+  }
+  async function noteOf(qid) {
+    const m = await notesMap();
+    const n = m[qid];
+    return n && n.text ? n : null;
+  }
+  async function noteSave(qid, text) {
+    const m = await notesMap();
+    const t = String(text == null ? '' : text).trim().slice(0, 2000);
+    if (t) m[qid] = { text: t, at: Date.now() };
+    else delete m[qid];
+    await DB.metaSet('qNotes', m);
+    return !!t;
+  }
+  async function noteCount() {
+    const m = await notesMap();
+    return Object.keys(m).filter(k => m[k] && m[k].text).length;
+  }
+
+  /** 写笔记 / 改笔记 / 删笔记（练习页、题目详情、笔记列表共用） */
+  async function openNoteEditor(qid, onSaved) {
+    const q = await DB.questionGet(qid);
+    if (!q) return toast('题目已经不存在了');
+    const bank = await DB.bankGet(q.bankId);
+    const cur = await noteOf(qid);
+    const mask = document.createElement('div');
+    mask.className = 'sheet-mask';
+    const stem = String(q.stem || '').replace(/\s+/g, ' ').slice(0, 70);
+    mask.innerHTML = `
+      <div class="sheet-panel">
+        <div class="sheet-head"><b>📝 ${cur ? '修改笔记' : '写笔记'}</b><button class="sheet-close">×</button></div>
+        <div class="muted small" style="margin:-8px 0 10px">${escapeHtml(bank ? bank.name : '')}${q.no ? ' · 第 ' + escapeHtml(String(q.no)) + ' 题' : ''} · 只记在这一道题上</div>
+        <div class="note-stem">${escapeHtml(stem)}${String(q.stem || '').length > 70 ? '…' : ''}</div>
+        <textarea id="note-text" class="note-input" maxlength="2000" placeholder="写你的理解、易错点、记法……（留空保存＝删除）">${cur ? escapeHtml(cur.text) : ''}</textarea>
+        <div class="btn-row" style="margin-top:12px">
+          ${cur ? '<button class="btn ghost" id="note-del">删除笔记</button>' : ''}
+          <button class="btn primary" id="note-save">保存</button>
+        </div>
+      </div>`;
+    const close = () => mask.remove();
+    mask.querySelector('.sheet-close').onclick = close;
+    mask.querySelector('#note-save').onclick = async () => {
+      const t = mask.querySelector('#note-text').value;
+      const kept = await noteSave(qid, t);
+      close();
+      toast(kept ? '笔记已保存' : '已清空这道题的笔记');
+      if (onSaved) onSaved();
+    };
+    const del = mask.querySelector('#note-del');
+    if (del) del.onclick = async () => {
+      await noteSave(qid, '');
+      close();
+      toast('笔记已删除');
+      if (onSaved) onSaved();
+    };
+    mask.onclick = e => { if (e.target === mask) close(); };
+    document.body.appendChild(mask);
+    const ta = mask.querySelector('#note-text');
+    setTimeout(() => { try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }, 60);
+  }
+
+  /** 笔记列表：按时间倒序，点一条看题目；题目被删了的笔记自动跳过 */
+  async function pageNotes() {
+    topbar('我的笔记', '#/me');
+    const map = await notesMap();
+    const entries = Object.entries(map).filter(([, v]) => v && v.text).sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
+    if (!entries.length) {
+      $view().innerHTML = `<div class="empty" style="padding-top:40px">还没有笔记<br>
+        <span class="muted small">练习时点题目右上角 📝，就能给这一道题写你的理解、易错点</span></div>
+        <button class="btn primary big" onclick="App.navigate('#/quiz-setup')">去练习</button>`;
+      return;
+    }
+    const { banks, questions } = await allBanksQuestions();
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    const qMap = new Map(questions.map(q => [q.id, q]));
+    const live = entries.filter(([qid]) => qMap.has(qid));
+    $view().innerHTML = live.length ? `
+      <div class="muted small" style="margin-bottom:10px">共 ${live.length} 条笔记，点任意一条回到那道题</div>
+      ${live.map(([qid, n]) => {
+        const q = qMap.get(qid);
+        const d = new Date(n.at || Date.now()), p = x => String(x).padStart(2, '0');
+        const when = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        return `<div class="card note-item" data-note="${qid}">
+          <div class="note-item-head">
+            <span class="muted small">${escapeHtml(bankName.get(q.bankId) || '未知题库')} · ${when}</span>
+            <button class="rev-op danger" data-note-del="${qid}" title="删除这条笔记">✕</button>
+          </div>
+          <div class="note-stem">${escapeHtml(String(q.stem || '').replace(/\s+/g, ' ').slice(0, 60))}${String(q.stem || '').length > 60 ? '…' : ''}</div>
+          <div class="note-text">${escapeHtml(n.text)}</div>
+        </div>`;
+      }).join('')}`
+      : `<div class="empty" style="padding-top:40px">笔记对应的题目已经被删了<br><span class="muted small">重新给别的题写一条吧</span></div>`;
+    $view().querySelectorAll('[data-note]').forEach(el => {
+      el.onclick = e => {
+        if (e.target.closest('[data-note-del]')) return;
+        openQuestionDetail(el.dataset.note);
+      };
+    });
+    $view().querySelectorAll('[data-note-del]').forEach(btn => {
+      btn.onclick = async e => {
+        e.stopPropagation();
+        if (!confirmDialog('删除这条笔记？（题目不会受影响）')) return;
+        await noteSave(btn.dataset.noteDel, '');
+        toast('笔记已删除');
+        render();
+      };
+    });
+  }
+
   async function openQuestionDetail(qid) {
     const q = await DB.questionGet(qid);
     if (!q) return toast('题目已经不存在了');
     const bank = await DB.bankGet(q.bankId);
     const sec = (bank && (bank.sections || []).find(x => String(x.secIdx) === String(q.secIdx ?? '')));
     const stars = new Set(await DB.starIds());
+    let qnote0 = await noteOf(q.id);
     const mask = document.createElement('div');
     mask.className = 'sheet-mask';
     const draw = () => {
@@ -9665,8 +9832,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           ${optHtml}
           <div class="wrong-ans" style="margin-top:12px">${q.answer ? '答案：' + escapeHtml(String(q.answer).replace(/\|\|\|/g, ' ／ ')) : '（本题缺答案）'}</div>
           ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
+          ${qnote0 ? `<div class="note-inline"><div class="note-head"><span>📝 我的笔记</span></div><div class="note-text">${escapeHtml(qnote0.text)}</div></div>` : ''}
           <div class="btn-row" style="margin-top:14px">
             <button class="btn ghost" id="qd-star">${starred ? '★ 已收藏' : '☆ 收藏'}</button>
+            <button class="btn ghost" id="qd-note">📝 ${qnote0 ? '改笔记' : '写笔记'}</button>
             <button class="btn primary" id="qd-edit">修改这道题</button>
           </div>
         </div>`;
@@ -9680,6 +9849,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       mask.querySelector('#qd-edit').onclick = () => {
         mask.remove();
         openQuestionEditor(q.id, () => { if ((location.hash || '').startsWith('#/search')) render(); });
+      };
+      mask.querySelector('#qd-note').onclick = () => {
+        openNoteEditor(q.id, async () => {
+          qnote0 = await noteOf(q.id);
+          draw();
+        });
       };
     };
     draw();
@@ -10008,6 +10183,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     topbar('我的');
     const banks = await DB.bankList();
     const qTotal = banks.reduce((n, b) => n + (b.count || 0), 0);
+    const nNotes = await noteCount();
     $view().innerHTML = `
       <div class="card me-hero">
         <div class="me-avatar">刷</div>
@@ -10019,6 +10195,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <span class="me-ico" style="background:var(--primary)">⚙</span>
           <span class="me-label">设置</span>
           <span class="muted small">模型 / Key / 外观 / 计费</span>
+          <span class="me-chev">›</span>
+        </button>
+        <button class="me-entry" onclick="App.navigate('#/notes')">
+          <span class="me-ico" style="background:#d97706">📝</span>
+          <span class="me-label">我的笔记</span>
+          <span class="muted small">${nNotes ? nNotes + ' 条 · 只看你自己写的' : '给某道题写感悟'}</span>
           <span class="me-chev">›</span>
         </button>
         <button class="me-entry" onclick="App.navigate('#/recycle')">

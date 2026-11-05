@@ -893,3 +893,44 @@ html.dark {
   font-size: 14px; line-height: 1; cursor: pointer; font-family: inherit;
 }
 .daily-cfg:active { transform: scale(.94); }
+
+/* ---------- 题目笔记（v1.8.35） ----------
+   只挂在某一道题上：练习页题目卡下面一条、题目详情弹层里一段、
+   「我的 → 我的笔记」里按时间倒序列出。 */
+.note-card {
+  border-left: 3px solid #d97706;
+  background: linear-gradient(180deg, rgba(217,119,6,.06), transparent 70%);
+}
+.note-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 600; color: #b45309; margin-bottom: 4px;
+}
+.note-edit {
+  border: 1px solid rgba(217,119,6,.35); background: transparent; color: #b45309;
+  font-size: 11px; padding: 2px 9px; border-radius: 999px; cursor: pointer; font-family: inherit;
+}
+.note-text { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.note-inline {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(217,119,6,.07); border-left: 3px solid #d97706;
+}
+.note-inline .note-text { font-size: 13.5px; }
+.note-stem {
+  font-size: 12.5px; color: var(--muted); line-height: 1.5;
+  background: var(--surface-2); border-radius: 9px; padding: 8px 10px; margin: 8px 0;
+}
+.note-input {
+  width: 100%; box-sizing: border-box; min-height: 132px; resize: vertical;
+  padding: 11px 12px; font-size: 14px; line-height: 1.65; font-family: inherit;
+  color: var(--text); background: var(--surface-2);
+  border: 1.5px solid var(--line); border-radius: 12px; outline: none;
+  transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease;
+}
+.note-input::placeholder { color: var(--muted); }
+.note-input:focus {
+  background: var(--card); border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow);
+}
+.note-item { cursor: pointer; }
+.note-item:active { transform: scale(.995); }
+.note-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.note-item .note-stem { margin: 0 0 6px; }
