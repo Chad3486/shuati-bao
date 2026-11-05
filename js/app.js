@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.33'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.34'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -287,6 +287,36 @@ const App = (() => {
     } catch (e) { return true; }
   }
   async function savePrefShuffle(on) { try { await DB.metaSet('prefShuffle', !!on); } catch (e) { /* 静默 */ } }
+
+  /* v1.8.34：记住「开始练习」页上次的选择（题库范围 / 章节 / 题型 / 模式 / 顺序 / 时长）。
+     以前每次从首页进来都重置成「全部题库 + 全部章节 + 学习模式」，只想练固定几个库
+     的用户每回都要重新勾一遍。状态存 meta 'prefQuizSetup'，进页面先还原，改了就存。 */
+  const SETUP_TYPES = ['all', 'choice', 'fill'];
+  const SETUP_ORDERS = ['order', 'shuffle'];
+  const SETUP_MODES = ['learn', 'exam'];
+  const SETUP_TIMES = ['auto', 'none', 'custom'];
+  async function setupPref() {
+    let p = null;
+    try { p = await DB.metaGet('prefQuizSetup'); } catch (e) { p = null; }
+    p = p && typeof p === 'object' ? p : {};
+    const mins = parseInt(p.minutes, 10);
+    return {
+      banks: Array.isArray(p.banks) ? p.banks.filter(x => typeof x === 'string') : null,
+      secs: Array.isArray(p.secs) ? p.secs.filter(x => typeof x === 'string') : null,
+      type: SETUP_TYPES.includes(p.type) ? p.type : null,
+      order: SETUP_ORDERS.includes(p.order) ? p.order : null,
+      mode: SETUP_MODES.includes(p.mode) ? p.mode : 'learn',
+      time: SETUP_TIMES.includes(p.time) ? p.time : 'auto',
+      minutes: Number.isFinite(mins) && mins > 0 ? Math.min(600, mins) : 60
+    };
+  }
+  async function saveSetupPref(patch) {
+    try {
+      const cur = await setupPref();
+      const next = Object.assign({}, cur, patch);
+      await DB.metaSet('prefQuizSetup', next);
+    } catch (e) { /* 静默 */ }
+  }
 
   /* ---- 文件小工具（浏览器 / APK 通用） ---- */
   function blobToBase64(blob) {
@@ -2428,12 +2458,38 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       return;
     }
 
-    // ---- 选择状态 ----
-    const sel = new Set(banks.map(b => b.id));  // 选中的题库
-    const selSecs = new Set();                  // "bankId:secIdx"，空 = 全部章节
+    // ---- 选择状态（v1.8.34：默认取上次的选择，没有记录才回到全选/全部章节） ----
+    const pref = await setupPref();
+    const validIds = new Set(banks.map(b => b.id));
+    const savedBanks = (pref.banks || []).filter(id => validIds.has(id));
+    const sel = new Set(savedBanks.length ? savedBanks : banks.map(b => b.id));  // 选中的题库
+    const selSecs = new Set((pref.secs || []).filter(k => {
+      const i = k.indexOf(':');
+      if (i < 0) return false;
+      const bid = k.slice(0, i), sidx = k.slice(i + 1);
+      if (!sel.has(bid)) return false;
+      const d = bankData[bid];
+      return !!d && d.secCount.has(sidx);   // 章节被删掉/题库没了就自动丢掉
+    }));
     const secExpanded = new Set();              // 章节区：默认整库折叠，点库头才展开（v1.8.12）
-    let bankKw = '', bankExpanded = false, exam = false, timeMode = 'auto';
+    let bankKw = '', bankExpanded = false, exam = pref.mode === 'exam', timeMode = pref.time;
     const LIMIT = 6;
+    let setupTimer = null;
+    /* 当前选择落库：改一次存一次（防抖 250ms，连点不会写爆）。
+       注意快照要在点击当时抓——等定时器触发时页面可能已经切走、DOM 查不到按钮了 */
+    const persistSetup = () => {
+      const snap = {
+        banks: [...sel],
+        secs: [...selSecs],
+        type: (document.querySelector('#seg-type .on') || {}).dataset?.v || 'all',
+        order: (document.querySelector('#seg-order .on') || {}).dataset?.v || 'order',
+        mode: exam ? 'exam' : 'learn',
+        time: timeMode,
+        minutes: parseInt((document.getElementById('exam-min') || {}).value, 10) || 60
+      };
+      clearTimeout(setupTimer);
+      setupTimer = setTimeout(() => { saveSetupPref(snap); }, 250);
+    };
 
     $view().innerHTML = `
       <div class="card">
@@ -2550,7 +2606,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         </label>`;
       }).join('') : '<div class="muted small" style="padding:8px 0">没有匹配的题库</div>';
       bankPickEl.querySelectorAll('input').forEach(i => {
-        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
+        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); persistSetup(); refresh(); };
       });
       pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
       pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
@@ -2604,7 +2660,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         btn.onclick = () => {
           const key = btn.dataset.sec;
           selSecs.has(key) ? selSecs.delete(key) : selSecs.add(key);
-          renderSecs(); refresh();
+          renderSecs(); persistSetup(); refresh();
         };
       });
       // 整库全选/清空
@@ -2617,7 +2673,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           if (d.secCount.has('')) keys.push(bid + ':');
           const allOn = keys.every(k => selSecs.has(k));
           keys.forEach(k => allOn ? selSecs.delete(k) : selSecs.add(k));
-          renderSecs(); refresh();
+          renderSecs(); persistSetup(); refresh();
         };
       });
     }
@@ -2675,22 +2731,38 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       if (b.dataset.act === 'all') banks.forEach(x => sel.add(x.id));
       else if (b.dataset.act === 'none') sel.clear();
       else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
-      renderBanks(); renderSecs(); refresh();
+      renderBanks(); renderSecs(); persistSetup(); refresh();
     };
     /* ---- 章节选择：点击默认拉起底部弹层，不在页面里铺开 ---- */
     secOpenBtn.onclick = () => { secSheet.style.display = ''; };
     document.getElementById('sec-mask').onclick = () => { secSheet.style.display = 'none'; };
     document.getElementById('sec-sheet-done').onclick = () => { secSheet.style.display = 'none'; };
     document.getElementById('sec-sheet-clear').onclick = () => {
-      selSecs.clear(); renderSecs(); refresh();
+      selSecs.clear(); renderSecs(); persistSetup(); refresh();
     };
     const segType = document.getElementById('seg-type');
     const segOrder = document.getElementById('seg-order');
-    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
-      segOrder.querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
-    });
     const segMode = document.getElementById('seg-mode');
     const segTime = document.getElementById('seg-time');
+    const setSeg = (seg, v) => {
+      if (!seg || v == null) return;
+      seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
+    };
+    /* 还原上次的选择；没有记录时退回「全部 / 学习 / 顺序偏好」 */
+    (async () => {
+      const ord = pref.order || ((await prefShuffle()) ? 'shuffle' : 'order');
+      setSeg(segType, pref.type || 'all');
+      setSeg(segOrder, ord);
+      setSeg(segMode, pref.mode);
+      setSeg(segTime, pref.time);
+      exam = pref.mode === 'exam';
+      timeMode = pref.time;
+      document.getElementById('exam-opts').style.display = exam ? '' : 'none';
+      document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
+      const minEl = document.getElementById('exam-min');
+      if (minEl) minEl.value = pref.minutes;
+      refresh();
+    })();
     [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
       seg.onclick = (e) => {
         const b = e.target.closest('button'); if (!b) return;
@@ -2705,14 +2777,16 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           timeMode = b.dataset.v;
           document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
         }
+        persistSetup();
         refresh();
       };
     });
-    document.getElementById('exam-min').oninput = refresh;
+    document.getElementById('exam-min').oninput = () => { persistSetup(); refresh(); };
 
     startBtn.onclick = async () => {
       const ids = [...sel];
       if (!ids.length) return toast('请至少选择一个题库');
+      persistSetup();   // 开始前把当前选择落库（下次进页面照旧）
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
       const n = countAvail();
       const mins = curMinutes(n);
