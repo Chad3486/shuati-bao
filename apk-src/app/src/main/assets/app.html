@@ -381,7 +381,7 @@ body {
 @keyframes shimmer { to { transform: translateX(100%); } }
 
 /* ---------- 练习配置 ---------- */
-.bank-pick { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.bank-pick { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .pick-item { display: flex; gap: 8px; font-size: 14px; padding: 4px 0; }
 /* 章节区：按题库分组（可整库折叠） */
 .sec-pick { margin-top: 12px; }
@@ -942,6 +942,46 @@ html.dark {
 .note-item:active { transform: scale(.995); }
 .note-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .note-item .note-stem { margin: 0 0 6px; }
+
+/* ---------- 选择器弹层（v1.8.37，仿市面 App 的整屏底部面板） ----------
+   题库 / 章节选择：88vh 面板、顶部搜索、列表行勾选、底部大按钮。
+   顺手解决「划列表时后面页面跟着滑」：面板内部 overscroll-behavior:contain，
+   打开期间 html.sheet-open 把页面滚动锁住。 */
+html.sheet-open, html.sheet-open body { overflow: hidden; height: 100%; }
+.pick-sheet { position: fixed; inset: 0; z-index: 99; display: flex; flex-direction: column; justify-content: flex-end; }
+.pick-mask { position: absolute; inset: 0; background: rgba(0,0,0,.45); overscroll-behavior: contain; }
+.pick-panel {
+  position: relative; display: flex; flex-direction: column;
+  height: 88vh; max-height: 88vh;
+  background: var(--card); border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0,0,0,.25);
+  overscroll-behavior: contain;
+}
+.pick-grip { flex: 0 0 auto; width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 9px auto 2px; }
+.pick-head { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 16px 10px; }
+.pick-head b { font-size: 16px; }
+.pick-tools { flex: 0 0 auto; padding: 0 16px 8px; }
+.pick-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding: 0 16px; touch-action: pan-y;
+}
+.pick-foot { flex: 0 0 auto; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
+.pick-row { display: flex; align-items: center; gap: 12px; padding: 14px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.pick-group .pick-row { padding-left: 30px; }
+.pick-row:last-child { border-bottom: none; }
+.pick-row input { flex: 0 0 auto; width: 20px; height: 20px; accent-color: var(--primary); }
+.pick-row .nm { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-row .cnt { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+.pick-row.on .nm { color: var(--primary); font-weight: 600; }
+.pick-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 14px 2px 8px;
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 2; background: var(--card);
+}
+.pick-group-head b { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 弹层里的滚动区域滚到底不再把页面带着滑 */
+.sheet-mask, .sheet-panel, .sheet-panel > * { overscroll-behavior: contain; }
 
 </style>
 </head>
@@ -5689,7 +5729,7 @@ const QuizBuilder = {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.36'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.37'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -5977,6 +6017,24 @@ const App = (() => {
     } catch (e) { return true; }
   }
   async function savePrefShuffle(on) { try { await DB.metaSet('prefShuffle', !!on); } catch (e) { /* 静默 */ } }
+
+  /* v1.8.37：弹层打开时锁住后面页面滚动。
+     用户反馈「划选择列表时后面页面跟着滑、还容易误触」——Android WebView 没有滚动穿透隔离，
+     弹层滚到底后会继续把页面滚走。这里：① 有弹层时把页面锁住（html.sheet-open 上 overflow:hidden）
+     ② .pick-body / .sheet-panel 加 overscroll-behavior:contain，滚到底不再链式滚动。 */
+  const sheetLock = { mask: false, inline: false };
+  function applyPageLock() {
+    try { document.documentElement.classList.toggle('sheet-open', sheetLock.mask || sheetLock.inline); } catch (e) {}
+  }
+  function setInlineLock(on) { sheetLock.inline = !!on; applyPageLock(); }
+  function setupSheetScrollLock() {
+    const sync = () => {
+      sheetLock.mask = !!document.querySelector('.sheet-mask');
+      applyPageLock();
+    };
+    try { new MutationObserver(sync).observe(document.body, { childList: true }); } catch (e) { /* 老内核忽略 */ }
+    sync();
+  }
 
   /* v1.8.34：记住「开始练习」页上次的选择（题库范围 / 章节 / 题型 / 模式 / 顺序 / 时长）。
      以前每次从首页进来都重置成「全部题库 + 全部章节 + 学习模式」，只想练固定几个库
@@ -8267,9 +8325,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       const d = bankData[bid];
       return !!d && d.secCount.has(sidx);   // 章节被删掉/题库没了就自动丢掉
     }));
-    const secExpanded = new Set();              // 章节区：默认整库折叠，点库头才展开（v1.8.12）
-    let bankKw = '', bankExpanded = false, exam = pref.mode === 'exam', timeMode = pref.time;
-    const LIMIT = 6;
+    let bankKw = '', secKw = '', exam = pref.mode === 'exam', timeMode = pref.time;
     let setupTimer = null;
     /* 当前选择落库：改一次存一次（防抖 250ms，连点不会写爆）。
        注意快照要在点击当时抓——等定时器触发时页面可能已经切走、DOM 查不到按钮了 */
@@ -8343,76 +8399,124 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
       ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}
 
-      <div id="sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
-        <div id="sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
-        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
-          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
-            <b style="flex:1;font-size:15px">选择章节</b>
-            <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
+      <div id="sec-sheet" class="pick-sheet" style="display:none">
+        <div class="pick-mask" id="sec-mask"></div>
+        <div class="pick-panel">
+          <div class="pick-grip"></div>
+          <div class="pick-head">
+            <b>选择章节</b>
+            <span class="muted small" id="sec-sum"></span>
             <button class="btn primary" id="sec-sheet-done" style="padding:8px 16px">完成</button>
           </div>
-          <div id="sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+          <div class="pick-tools">
+            <input id="sec-search" class="search-input" placeholder="搜索章节 / 题库名…">
+            <div class="chips" style="margin-top:8px">
+              <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
+              <button class="chip" id="sec-expand-all">全部展开</button>
+              <button class="chip" id="sec-fold-all">全部折叠</button>
+            </div>
+          </div>
+          <div class="pick-body" id="sec-area"></div>
+          <div class="pick-foot"><button class="btn primary big" id="sec-confirm">完成</button></div>
         </div>
       </div>
 
-      <div id="bank-sheet" style="display:none;position:fixed;inset:0;z-index:99">
-        <div id="bank-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
-        <div style="position:absolute;left:0;right:0;bottom:0;max-height:76vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
-          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
-            <b style="flex:1;font-size:15px">选择题库</b>
+      <div id="bank-sheet" class="pick-sheet" style="display:none">
+        <div class="pick-mask" id="bank-mask"></div>
+        <div class="pick-panel">
+          <div class="pick-grip"></div>
+          <div class="pick-head">
+            <b>选择题库</b>
+            <span class="muted small" id="bank-sum"></span>
             <button class="btn primary" id="bank-sheet-done" style="padding:8px 16px">完成</button>
           </div>
-          <div style="padding:0 16px 8px">
-            <input id="setup-search" class="search-input" style="width:100%" placeholder="搜索题库名称…">
+          <div class="pick-tools">
+            <input id="setup-search" class="search-input" placeholder="搜索题库名称…">
             <div class="chips" id="pick-tools" style="margin-top:8px">
               <button class="chip" data-act="all">全选</button>
               <button class="chip" data-act="none">清空</button>
               <button class="chip" data-act="ans">只选有答案的库</button>
             </div>
           </div>
-          <div class="bank-pick" id="bank-pick" style="overflow-y:auto;padding:0 16px;flex:1;-webkit-overflow-scrolling:touch"></div>
-          <div style="padding:8px 16px calc(12px + env(safe-area-inset-bottom))">
-            <button class="btn ghost" id="pick-more" style="display:none;width:100%"></button>
-          </div>
+          <div class="pick-body" id="bank-pick"></div>
+          <div class="pick-foot"><button class="btn primary big" id="bank-confirm">完成</button></div>
         </div>
-      </div>`;
+      </div>      </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
-    const pickMoreBtn = document.getElementById('pick-more');
-    /* 题库选择弹层：点摘要按钮拉起，遮罩/完成关闭（v1.8.13） */
     const bankSheet = document.getElementById('bank-sheet');
-    document.getElementById('bank-open').onclick = () => { bankSheet.style.display = ''; };
-    document.getElementById('bank-mask').onclick = () => { bankSheet.style.display = 'none'; };
-    document.getElementById('bank-sheet-done').onclick = () => { bankSheet.style.display = 'none'; };
+    const secSheet = document.getElementById('sec-sheet');
     const secArea = document.getElementById('sec-area');
     const secOpenBtn = document.getElementById('sec-open');
-    const secSheet = document.getElementById('sec-sheet');
     const startBtn = document.getElementById('start-quiz');
+    const bankSumEl = document.getElementById('bank-sum');
+    const secSumEl = document.getElementById('sec-sum');
+    /* v1.8.37：选择器改成市面 App 常见的样子——整屏底部面板（88vh）+ 顶部搜索 + 列表行 + 底部大按钮；
+       打开时锁住后面页面滚动，列表滑到底也不会把页面带着滑（误触就是这么来的）。 */
+    const openBankSheet = () => { bankSheet.style.display = ''; setInlineLock(true); renderBanks(); };
+    const closeBankSheet = () => { bankSheet.style.display = 'none'; setInlineLock(false); };
+    const openSecSheet = () => { secSheet.style.display = ''; setInlineLock(true); renderSecs(); };
+    const closeSecSheet = () => { secSheet.style.display = 'none'; setInlineLock(false); };
+    document.getElementById('bank-open').onclick = openBankSheet;
+    document.getElementById('bank-mask').onclick = closeBankSheet;
+    document.getElementById('bank-sheet-done').onclick = closeBankSheet;
+    document.getElementById('bank-confirm').onclick = closeBankSheet;
+    document.getElementById('sec-mask').onclick = closeSecSheet;
+    document.getElementById('sec-sheet-done').onclick = closeSecSheet;
+    document.getElementById('sec-confirm').onclick = closeSecSheet;
 
-    /* ---- 题库勾选（搜索 + 折叠，题库多也不用翻到底） ---- */
-    function renderBanks() {
-      const kw = bankKw.trim().toLowerCase();
-      const arr = banks.filter(b => !kw || String(b.name).toLowerCase().includes(kw));
-      const show = (bankExpanded || kw) ? arr : arr.slice(0, LIMIT);
-      bankPickEl.innerHTML = arr.length ? show.map(b => {
-        const d = bankData[b.id];
-        return `<label class="pick-item"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
-          <span class="pick-name">${escapeHtml(b.name)}</span>
-          <span class="muted small pick-num">${d.ans}${d.ans !== b.count ? '/' + b.count : ''}</span>
-        </label>`;
-      }).join('') : '<div class="muted small" style="padding:8px 0">没有匹配的题库</div>';
-      bankPickEl.querySelectorAll('input').forEach(i => {
-        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); persistSetup(); refresh(); };
-      });
-      pickMoreBtn.style.display = arr.length > LIMIT && !kw ? '' : 'none';
-      pickMoreBtn.textContent = bankExpanded ? '收起列表' : `展开全部 ${arr.length} 个题库`;
+    /* ---- 题库勾选（列表行 + 搜索，不再只显示 6 个） ---- */
+    function bankSummary() {
+      if (bankSumEl) bankSumEl.textContent = sel.size === banks.length ? `全选（${banks.length}）` : `已选 ${sel.size}/${banks.length}`;
+      const c = document.getElementById('bank-confirm');
+      if (c) c.textContent = sel.size === banks.length ? `完成（全部 ${banks.length} 个题库）` : `完成（已选 ${sel.size} 个题库）`;
       document.getElementById('bank-open').textContent = sel.size === banks.length
         ? `📂 全部 ${banks.length} 个题库（点此修改） ›`
         : `📂 已选 ${sel.size}/${banks.length} 个题库（点此修改） ›`;
     }
+    function renderBanks() {
+      const kw = bankKw.trim().toLowerCase();
+      const arr = banks.filter(b => !kw || String(b.name).toLowerCase().includes(kw));
+      bankPickEl.innerHTML = arr.length ? arr.map(b => {
+        const d = bankData[b.id];
+        const on = sel.has(b.id);
+        return `<label class="pick-row${on ? ' on' : ''}">
+          <input type="checkbox" value="${b.id}" ${on ? 'checked' : ''}>
+          <span class="nm">${escapeHtml(b.name)}</span>
+          <span class="cnt">${d.ans}${d.ans !== b.count ? ' / ' + b.count : ''} 题</span>
+        </label>`;
+      }).join('') : '<div class="muted small" style="padding:18px 0">没有匹配的题库</div>';
+      bankPickEl.querySelectorAll('input').forEach(i => {
+        i.onchange = () => {
+          i.checked ? sel.add(i.value) : sel.delete(i.value);
+          const row = i.closest('.pick-row');
+          if (row) row.classList.toggle('on', i.checked);
+          persistSetup(); bankSummary(); refresh();
+        };
+      });
+      bankSummary();
+    }
 
-    /* ---- 章节勾选（按库分组，chip 点选；不选 = 全部章节） ---- */
+    /* ---- 章节勾选（按库分组、整行勾选；不选 = 全部章节） ---- */
+    const secFolded = new Set();   // 记住用户在弹层里折叠了哪些库（默认全展开）
+    function updateSecGroupHead(grp) {
+      if (!grp) return;
+      const boxes = grp.querySelectorAll('input[data-sec]');
+      let picked = 0;
+      boxes.forEach(b => { if (b.checked) picked++; });
+      const lab = grp.querySelector('.pick-group-head .muted.small');
+      if (lab) lab.textContent = picked ? `已选 ${picked}/${boxes.length}` : `${boxes.length} 章`;
+      const btn = grp.querySelector('button[data-bank]');
+      if (btn) btn.textContent = (boxes.length && picked === boxes.length) ? '全清' : '全选';
+    }
+    function updateSecSummary() {
+      if (secSumEl) secSumEl.textContent = selSecs.size ? `已选 ${selSecs.size} 章` : '全部章节';
+      const c = document.getElementById('sec-confirm');
+      if (c) c.textContent = selSecs.size ? `完成（已选 ${selSecs.size} 个章节）` : '完成（全部章节）';
+      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+    }
     function renderSecs() {
+      const kw = secKw.trim().toLowerCase();
       const parts = [];
       for (const b of banks) {
         if (!sel.has(b.id)) continue;
@@ -8420,58 +8524,72 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         const list = (b.sections || []).filter(s => d.secCount.has(String(s.secIdx)));
         const hasNoSec = d.secCount.has('');
         if (!list.length && !hasNoSec) continue;
-        const picked = list.filter(s => selSecs.has(b.id + ':' + s.secIdx)).length + (hasNoSec && selSecs.has(b.id + ':') ? 1 : 0);
-        const totalSec = list.length + (hasNoSec ? 1 : 0);
-        const folded = !secExpanded.has(b.id);
+        const rows = list.map(s => ({
+          key: b.id + ':' + s.secIdx,
+          title: s.title || `第 ${s.secIdx} 节`,
+          n: d.secCount.get(String(s.secIdx)) || 0
+        }));
+        if (hasNoSec) rows.push({ key: b.id + ':', title: '未分节（没有章节信息的题）', n: d.secCount.get('') || 0 });
+        const bankHit = kw && String(b.name).toLowerCase().includes(kw);
+        const shown = kw ? rows.filter(r => bankHit || String(r.title).toLowerCase().includes(kw)) : rows;
+        if (!shown.length) continue;
+        const picked = rows.filter(r => selSecs.has(r.key)).length;
+        const folded = !kw && secFolded.has(b.id);
         parts.push(`
-          <div class="sec-pick">
-            <div class="sec-pick-head">
-              <button class="sec-toggle" data-fold="${b.id}" title="${folded ? '展开本章节' : '折叠本章节'}">${folded ? '▸' : '▾'}</button>
+          <div class="pick-group" data-bid="${b.id}">
+            <div class="pick-group-head">
+              <button class="sec-toggle" data-fold="${b.id}">${folded ? '▸' : '▾'}</button>
               <b>${escapeHtml(b.name)}</b>
-              <span class="muted small">${picked ? `已选 ${picked}/${totalSec}` : `${totalSec} 章`}</span>
-              <button class="chip" data-bank="${b.id}">全选/清空</button>
+              <span class="muted small">${picked ? `已选 ${picked}/${rows.length}` : `${rows.length} 章`}</span>
+              <button class="chip" data-bank="${b.id}">${picked === rows.length && rows.length ? '全清' : '全选'}</button>
             </div>
-            ${folded ? '' : `<div class="chips">
-              ${list.map(s => {
-                const key = b.id + ':' + s.secIdx;
-                const n = d.secCount.get(String(s.secIdx)) || 0;
-                return `<button class="chip ${selSecs.has(key) ? 'on' : ''}" data-sec="${key}" title="${escapeHtml(s.title || '')}">${escapeHtml(shortTitle(s.title))}（${n}）</button>`;
-              }).join('')}
-              ${hasNoSec ? `<button class="chip ${selSecs.has(b.id + ':') ? 'on' : ''}" data-sec="${b.id}:" title="没有章节信息的题目">未分节（${d.secCount.get('') || 0}）</button>` : ''}
-            </div>`}
+            ${folded ? '' : `<div class="sec-rows">${shown.map(r => `
+              <label class="pick-row${selSecs.has(r.key) ? ' on' : ''}">
+                <input type="checkbox" data-sec="${escapeHtml(r.key)}" ${selSecs.has(r.key) ? 'checked' : ''}>
+                <span class="nm">${escapeHtml(r.title)}</span>
+                <span class="cnt">${r.n} 题</span>
+              </label>`).join('')}</div>`}
           </div>`);
       }
-      secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:8px 0">所选题库没有章节信息（可按题库整体练习）</div>';
-      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
-      // 整库折叠/展开
+      secArea.innerHTML = parts.length ? parts.join('') : '<div class="muted small" style="padding:18px 0">所选题库没有章节信息（可按题库整体练习）</div>';
       secArea.querySelectorAll('button[data-fold]').forEach(btn => {
         btn.onclick = () => {
           const bid = btn.dataset.fold;
-          secExpanded.has(bid) ? secExpanded.delete(bid) : secExpanded.add(bid);
+          secFolded.has(bid) ? secFolded.delete(bid) : secFolded.add(bid);
           renderSecs();
         };
       });
-      // 章节 chip
-      secArea.querySelectorAll('button[data-sec]').forEach(btn => {
-        btn.onclick = () => {
-          const key = btn.dataset.sec;
-          selSecs.has(key) ? selSecs.delete(key) : selSecs.add(key);
-          renderSecs(); persistSetup(); refresh();
+      // 勾选章节：只更新这一行的状态与分组小计，不整页重排（几十上百行时不卡）
+      secArea.querySelectorAll('input[data-sec]').forEach(box => {
+        box.onchange = () => {
+          const key = box.dataset.sec;
+          box.checked ? selSecs.add(key) : selSecs.delete(key);
+          const row = box.closest('.pick-row');
+          if (row) row.classList.toggle('on', box.checked);
+          updateSecGroupHead(box.closest('.pick-group'));
+          updateSecSummary();
+          persistSetup(); refresh();
         };
       });
       // 整库全选/清空
       secArea.querySelectorAll('button[data-bank]').forEach(btn => {
         btn.onclick = () => {
           const bid = btn.dataset.bank;
-          const d = bankData[bid];
-          const keys = [];
-          (banks.find(x => x.id === bid)?.sections || []).forEach(s => { if (d.secCount.has(String(s.secIdx))) keys.push(bid + ':' + s.secIdx); });
-          if (d.secCount.has('')) keys.push(bid + ':');
-          const allOn = keys.every(k => selSecs.has(k));
-          keys.forEach(k => allOn ? selSecs.delete(k) : selSecs.add(k));
-          renderSecs(); persistSetup(); refresh();
+          const grp = btn.closest('.pick-group');
+          const boxes = [...(grp ? grp.querySelectorAll('input[data-sec]') : [])];
+          const allOn = boxes.length > 0 && boxes.every(b => b.checked);
+          boxes.forEach(b => {
+            b.checked = !allOn;
+            b.checked ? selSecs.add(b.dataset.sec) : selSecs.delete(b.dataset.sec);
+            const row = b.closest('.pick-row');
+            if (row) row.classList.toggle('on', b.checked);
+          });
+          updateSecGroupHead(grp);
+          updateSecSummary();
+          persistSetup(); refresh();
         };
       });
+      updateSecSummary();
     }
 
     function shortTitle(t) {
@@ -8521,18 +8639,19 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     /* ---- 交互绑定 ---- */
     const searchEl = document.getElementById('setup-search');
     searchEl.oninput = () => { bankKw = searchEl.value; renderBanks(); };
-    pickMoreBtn.onclick = () => { bankExpanded = !bankExpanded; renderBanks(); };
     document.getElementById('pick-tools').onclick = (e) => {
       const b = e.target.closest('button[data-act]'); if (!b) return;
       if (b.dataset.act === 'all') banks.forEach(x => sel.add(x.id));
       else if (b.dataset.act === 'none') sel.clear();
       else banks.forEach(x => { if (bankData[x.id].ans) sel.add(x.id); });
-      renderBanks(); renderSecs(); persistSetup(); refresh();
+      renderBanks(); persistSetup(); refresh();
     };
-    /* ---- 章节选择：点击默认拉起底部弹层，不在页面里铺开 ---- */
-    secOpenBtn.onclick = () => { secSheet.style.display = ''; };
-    document.getElementById('sec-mask').onclick = () => { secSheet.style.display = 'none'; };
-    document.getElementById('sec-sheet-done').onclick = () => { secSheet.style.display = 'none'; };
+    /* ---- 章节选择：底部整屏面板（默认全展开，可搜索、可整库全选） ---- */
+    secOpenBtn.onclick = openSecSheet;
+    const secSearchEl = document.getElementById('sec-search');
+    secSearchEl.oninput = () => { secKw = secSearchEl.value; renderSecs(); };
+    document.getElementById('sec-expand-all').onclick = () => { secFolded.clear(); renderSecs(); };
+    document.getElementById('sec-fold-all').onclick = () => { banks.forEach(b => secFolded.add(b.id)); renderSecs(); };
     document.getElementById('sec-sheet-clear').onclick = () => {
       selSecs.clear(); renderSecs(); persistSetup(); refresh();
     };
@@ -10626,6 +10745,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         else if (mq.addListener) mq.addListener(onChange);
       }
       window.addEventListener('hashchange', render);
+      setupSheetScrollLock();
       render();
       if (DB.isFallback && DB.isFallback()) {
         const keep = DB.fallbackPersistent && DB.fallbackPersistent();

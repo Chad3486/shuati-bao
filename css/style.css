@@ -373,7 +373,7 @@ body {
 @keyframes shimmer { to { transform: translateX(100%); } }
 
 /* ---------- 练习配置 ---------- */
-.bank-pick { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.bank-pick { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .pick-item { display: flex; gap: 8px; font-size: 14px; padding: 4px 0; }
 /* 章节区：按题库分组（可整库折叠） */
 .sec-pick { margin-top: 12px; }
@@ -934,3 +934,43 @@ html.dark {
 .note-item:active { transform: scale(.995); }
 .note-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .note-item .note-stem { margin: 0 0 6px; }
+
+/* ---------- 选择器弹层（v1.8.37，仿市面 App 的整屏底部面板） ----------
+   题库 / 章节选择：88vh 面板、顶部搜索、列表行勾选、底部大按钮。
+   顺手解决「划列表时后面页面跟着滑」：面板内部 overscroll-behavior:contain，
+   打开期间 html.sheet-open 把页面滚动锁住。 */
+html.sheet-open, html.sheet-open body { overflow: hidden; height: 100%; }
+.pick-sheet { position: fixed; inset: 0; z-index: 99; display: flex; flex-direction: column; justify-content: flex-end; }
+.pick-mask { position: absolute; inset: 0; background: rgba(0,0,0,.45); overscroll-behavior: contain; }
+.pick-panel {
+  position: relative; display: flex; flex-direction: column;
+  height: 88vh; max-height: 88vh;
+  background: var(--card); border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0,0,0,.25);
+  overscroll-behavior: contain;
+}
+.pick-grip { flex: 0 0 auto; width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 9px auto 2px; }
+.pick-head { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 16px 10px; }
+.pick-head b { font-size: 16px; }
+.pick-tools { flex: 0 0 auto; padding: 0 16px 8px; }
+.pick-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding: 0 16px; touch-action: pan-y;
+}
+.pick-foot { flex: 0 0 auto; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
+.pick-row { display: flex; align-items: center; gap: 12px; padding: 14px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.pick-group .pick-row { padding-left: 30px; }
+.pick-row:last-child { border-bottom: none; }
+.pick-row input { flex: 0 0 auto; width: 20px; height: 20px; accent-color: var(--primary); }
+.pick-row .nm { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-row .cnt { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+.pick-row.on .nm { color: var(--primary); font-weight: 600; }
+.pick-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 14px 2px 8px;
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 2; background: var(--card);
+}
+.pick-group-head b { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 弹层里的滚动区域滚到底不再把页面带着滑 */
+.sheet-mask, .sheet-panel, .sheet-panel > * { overscroll-behavior: contain; }
