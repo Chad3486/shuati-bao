@@ -9318,11 +9318,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
      与「开始练习」同风格：按题库分类勾选范围 + 题型/模式/顺序，替代旧的"一键全量开练" */
   async function pageReviewSetup(kind) {
     const isWrong = kind === 'wrong';
-    topbar(isWrong ? '错题重做' : '★ 收藏重练', isWrong ? '#/wrong' : '#/star');
-    const banks = await DB.bankList();
+    topbar(isWrong ? '错题重做' : '收藏重练', isWrong ? '#/wrong' : '#/star');
+    const [banks, rawPool, preferredShuffle] = await Promise.all([
+      DB.bankList(), isWrong ? DB.wrongQuestions() : DB.starQuestions(), prefShuffle()
+    ]);
     const bankName = new Map(banks.map(b => [b.id, b.name]));
-    const pool = (isWrong ? await DB.wrongQuestions() : (await DB.starQuestions()).filter(q => q.answer))
-      .filter(q => bankName.has(q.bankId));
+    const pool = (isWrong ? rawPool : rawPool.filter(q => q.answer)).filter(q => bankName.has(q.bankId));
     if (!pool.length) {
       $view().innerHTML = `<div class="empty" style="padding-top:40px">${isWrong ? '没有错题<br>继续保持！' : '还没有能练的收藏题<br><span class="muted small">收藏的题补上答案后可在这里重练</span>'}</div>`;
       return;
@@ -9331,7 +9332,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     for (const q of pool) cnt.set(q.bankId, (cnt.get(q.bankId) || 0) + 1);
     const list = banks.filter(b => cnt.has(b.id));
     const sel = new Set(list.map(b => b.id));
-    let filterType = 'all', exam = false, timeMode = 'auto', shuffle = true;
+    let filterType = 'all', exam = false, timeMode = 'auto', shuffle = preferredShuffle;
     /* 章节筛选（v1.8.13）：selSecs 空 = 全部章节；分组默认折叠 */
     const selSecs = new Set();
     const secExp = new Set();
@@ -9346,31 +9347,20 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     for (const b of banks) for (const s of (b.sections || [])) secTitle.set(b.id + ':' + String(s.secIdx), s.title);
 
     $view().innerHTML = `
-      <div class="card">
-        <div class="card-title">范围（题库）</div>
-        <button class="btn ghost big" id="rv-open" style="width:100%"></button>
-        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（全部展开，无需折叠）</div>
+      <div class="card setup-range-card">
+        <div class="card-title">${isWrong ? '错题范围' : '收藏范围'} <span class="muted small">共 ${pool.length} 题</span></div>
+        <button class="scope-select" id="rv-open">
+          <span class="scope-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+          <span class="scope-copy"><span id="rv-open-title">全部题库</span><small id="rv-open-sub"></small></span><span class="scope-chevron">›</span>
+        </button>
       </div>
-      <div class="card">
-        <div class="card-title">范围（章节）</div>
-        <button class="btn ghost big" id="rv-sec-open" style="width:100%"></button>
-        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择（分组默认折叠）</div>
-      </div>
-      <div class="card">
-        <div class="card-title">题型</div>
-        <div class="seg" id="rv-type">
-          <button data-v="all" class="on">全部</button>
-          <button data-v="choice">选择/判断</button>
-          <button data-v="fill">填空</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">模式</div>
+      <div class="card setup-mode-card">
+        <div class="card-title">练习模式</div>
         <div class="seg" id="rv-mode">
-          <button data-v="learn" class="on">📖 学习模式</button>
-          <button data-v="exam">📝 考试模式</button>
+          <button data-v="learn" class="on">学习模式</button>
+          <button data-v="exam">考试模式</button>
         </div>
-        <div id="rv-exam-opts" style="display:none;margin-top:10px">
+        <div id="rv-exam-opts" style="display:none;margin-top:12px">
           <div class="field"><span>考试时长</span>
             <div class="seg" id="rv-time">
               <button data-v="auto" class="on">按 1 分钟/题</button>
@@ -9381,40 +9371,56 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <div class="field" id="rv-min-wrap" style="display:none"><span>时长（分钟）</span>
             <input type="number" id="rv-min" min="1" max="600" value="60" inputmode="numeric">
           </div>
+          <div class="muted small">考试时不显示对错与解析，交卷后统一判分。</div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-title">顺序</div>
-        <div class="seg" id="rv-order">
-          <button data-v="shuffle" class="on">随机</button>
-          <button data-v="order">顺序</button>
-        </div>
-        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
-      </div>
-      <button class="btn primary big" id="rv-start"></button>
-
-      <div id="rv-sheet" style="display:none;position:fixed;inset:0;z-index:99">
-        <div id="rv-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
-        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
-          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
-            <b style="flex:1;font-size:15px">选择题库</b>
-            <button class="chip" id="rv-tools-all">全选</button>
-            <button class="chip" id="rv-tools-none">清空</button>
-            <button class="btn primary" id="rv-done" style="padding:8px 16px">完成</button>
+      <details class="card advanced-card" id="rv-advanced">
+        <summary><b>高级设置</b><span id="rv-advanced-summary">全部章节 · 全部题型 · 随机</span><i>›</i></summary>
+        <div class="advanced-body">
+          <div class="advanced-field">
+            <div class="field-label">练习章节</div>
+            <button class="scope-select compact" id="rv-sec-open">
+              <span class="scope-copy"><span id="rv-sec-title">全部章节</span><small>只练习勾选章节</small></span><span class="scope-chevron">›</span>
+            </button>
           </div>
-          <div id="rv-pick" class="bank-pick" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+          <div class="advanced-field"><div class="field-label">题型</div>
+            <div class="seg" id="rv-type">
+              <button data-v="all" class="on">全部</button>
+              <button data-v="choice">选择/判断</button>
+              <button data-v="fill">填空</button>
+            </div>
+            <div class="muted small" id="rv-type-hint"></div>
+          </div>
+          <div class="advanced-field"><div class="field-label">题目顺序</div>
+            <div class="seg" id="rv-order">
+              <button data-v="order" ${shuffle ? '' : 'class="on"'}>顺序</button>
+              <button data-v="shuffle" ${shuffle ? 'class="on"' : ''}>随机</button>
+            </div>
+            <div class="muted small">随机会同时打乱题目和选项顺序，答案自动换算。</div>
+          </div>
+        </div>
+      </details>
+      <button class="btn primary big setup-start" id="rv-start"></button>
+
+      <div id="rv-sheet" class="pick-sheet" style="display:none">
+        <div id="rv-mask" class="pick-mask"></div>
+        <div class="pick-panel">
+          <div class="pick-grip"></div>
+          <div class="pick-head"><b>选择题库</b><span class="muted small" id="rv-pick-count"></span></div>
+          <div class="pick-tools"><div class="chips"><button class="chip" id="rv-tools-all">全选</button><button class="chip" id="rv-tools-none">清空</button></div></div>
+          <div id="rv-pick" class="pick-body"></div>
+          <div class="pick-foot"><button class="btn primary big" id="rv-done">完成</button></div>
         </div>
       </div>
 
-      <div id="rv-sec-sheet" style="display:none;position:fixed;inset:0;z-index:99">
-        <div id="rv-sec-mask" style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
-        <div style="position:absolute;left:0;right:0;bottom:0;max-height:72vh;background:var(--card);border-radius:16px 16px 0 0;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(0,0,0,.25)">
-          <div style="padding:14px 16px 8px;display:flex;align-items:center;gap:8px">
-            <b style="flex:1;font-size:15px">选择章节</b>
-            <button class="chip" id="rv-sec-clear">清空（=全部章节）</button>
-            <button class="btn primary" id="rv-sec-done" style="padding:8px 16px">完成</button>
-          </div>
-          <div id="rv-sec-area" style="overflow-y:auto;padding:0 16px calc(20px + env(safe-area-inset-bottom));flex:1;-webkit-overflow-scrolling:touch"></div>
+      <div id="rv-sec-sheet" class="pick-sheet" style="display:none">
+        <div id="rv-sec-mask" class="pick-mask"></div>
+        <div class="pick-panel">
+          <div class="pick-grip"></div>
+          <div class="pick-head"><b>选择章节</b><span class="muted small">按题库分组</span></div>
+          <div class="pick-tools"><button class="chip" id="rv-sec-clear">清空（即全部章节）</button></div>
+          <div id="rv-sec-area" class="pick-body"></div>
+          <div class="pick-foot"><button class="btn primary big" id="rv-sec-done">完成</button></div>
         </div>
       </div>`;
 
@@ -9430,29 +9436,37 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
     function renderPick() {
       pickEl.innerHTML = list.map(b => `
-        <label class="pick-item"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
-          <span class="pick-name">${escapeHtml(bankName.get(b.id))}</span>
-          <span class="muted small pick-num">${cnt.get(b.id)}</span>
+        <label class="pick-row ${sel.has(b.id) ? 'on' : ''}"><input type="checkbox" value="${b.id}" ${sel.has(b.id) ? 'checked' : ''}>
+          <span class="nm">${escapeHtml(bankName.get(b.id))}<span class="pick-sub">${sel.has(b.id) ? '已选' : '未选'}</span></span>
+          <span class="cnt">${cnt.get(b.id)} 题</span>
         </label>`).join('');
+      document.getElementById('rv-pick-count').textContent = `已选 ${sel.size}/${list.length}`;
       pickEl.querySelectorAll('input').forEach(i => {
-        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); refresh(); };
+        i.onchange = () => { i.checked ? sel.add(i.value) : sel.delete(i.value); renderPick(); refresh(); };
       });
-      rvOpenBtn.textContent = sel.size === list.length
-        ? `📂 全部 ${list.length} 个题库（点此修改） ›`
-        : `📂 已选 ${sel.size}/${list.length} 个题库（点此修改） ›`;
+      document.getElementById('rv-open-title').textContent = sel.size === list.length
+        ? `全部 ${list.length} 个题库`
+        : `已选 ${sel.size}/${list.length} 个题库`;
     }
     function countAvail() { return pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q)).length; }
     function curMinutes(n) {
       if (!exam || timeMode === 'none') return 0;
-      if (timeMode === 'custom') return Math.max(1, parseInt(document.getElementById('rv-min').value, 10) || 60);
+      if (timeMode === 'custom') return Math.max(1, Math.min(600, parseInt(document.getElementById('rv-min').value, 10) || 60));
       return Math.max(1, n);             // 按 1 分钟/题
     }
     function refresh() {
       const n = countAvail();
-      startBtn.textContent = n ? `开始${isWrong ? '重做' : '重练'}（${n} 题）` : '该范围没有可练的题';
-      startBtn.style.opacity = n ? '' : '.5';
+      const mins = curMinutes(n);
+      startBtn.textContent = n
+        ? `开始${isWrong ? '重做' : '重练'}（${n} 题${exam && mins ? ` · ${mins} 分钟` : exam ? ' · 不限时' : ''}）`
+        : '该范围没有可练的题';
+      startBtn.disabled = !n;
+      document.getElementById('rv-open-sub').textContent = `已选 ${sel.size}/${list.length} 个题库 · 当前可练 ${n} 题`;
+      document.getElementById('rv-type-hint').textContent = `当前范围可练 ${n} 题`;
+      const typeText = { all: '全部题型', choice: '选择/判断', fill: '填空题' }[filterType];
+      document.getElementById('rv-advanced-summary').textContent = `${selSecs.size ? `${selSecs.size} 章` : '全部章节'} · ${typeText} · ${shuffle ? '随机' : '顺序'}`;
     }
-    /* 题库选择：进入页面默认拉起底部弹层，全部展开、无折叠；主页留摘要按钮可再次打开 */
+    /* 题库选择：默认全选，不强制弹窗；点范围卡后再打开底部弹层。 */
     document.getElementById('rv-tools-all').onclick = () => { list.forEach(x => sel.add(x.id)); renderPick(); refresh(); };
     document.getElementById('rv-tools-none').onclick = () => { sel.clear(); renderPick(); refresh(); };
     rvOpenBtn.onclick = () => { rvSheet.style.display = ''; };
@@ -9503,13 +9517,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       rvSecArea.querySelectorAll('button[data-rvsec]').forEach(btn => {
         btn.onclick = () => { const k = btn.dataset.rvsec; selSecs.has(k) ? selSecs.delete(k) : selSecs.add(k); renderRvSecs(); refresh(); };
       });
-      rvSecOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+      document.getElementById('rv-sec-title').textContent = selSecs.size ? `已选 ${selSecs.size} 个章节` : '全部章节';
     }
     rvSecOpenBtn.onclick = () => { renderRvSecs(); rvSecSheet.style.display = ''; };
     document.getElementById('rv-sec-mask').onclick = () => { rvSecSheet.style.display = 'none'; };
     document.getElementById('rv-sec-done').onclick = () => { rvSecSheet.style.display = 'none'; };
     document.getElementById('rv-sec-clear').onclick = () => { selSecs.clear(); renderRvSecs(); refresh(); };
-    rvSecOpenBtn.textContent = '📂 全部章节（点此选择） ›';
     [[document.getElementById('rv-type'), v => filterType = v],
      [document.getElementById('rv-time'), v => { timeMode = v; document.getElementById('rv-min-wrap').style.display = v === 'custom' ? '' : 'none'; }]]
       .forEach(([seg, set]) => {
@@ -9533,11 +9546,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.remove('on'));
       b.classList.add('on'); shuffle = b.dataset.v === 'shuffle';
       savePrefShuffle(shuffle);   // 记住顺序偏好（题库直开也生效）
+      refresh();
     };
-    prefShuffle().then(v => {   // 打开页面先还原上次选的顺序（默认随机）
-      document.getElementById('rv-order').querySelectorAll('button').forEach(x => x.classList.toggle('on', (x.dataset.v === 'shuffle') === v));
-      shuffle = v;
-    });
     startBtn.onclick = () => {
       const qs = pool.filter(q => sel.has(q.bankId) && matchType(q) && matchSec(q));
       if (!qs.length) return toast('该范围没有可练的题');
@@ -9548,7 +9558,6 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       });
     };
     renderPick(); refresh();
-    rvSheet.style.display = '';   // 默认拉起：进入页面直接弹选择题库
   }
   async function pageQuiz() {
     if (!session) return navigate('#/quiz-setup');
