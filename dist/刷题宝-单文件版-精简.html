@@ -1341,6 +1341,86 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .me-entry + .me-entry::before { left: 0; right: 0; }
 .me-footnote { margin: 16px 10px 0; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
 
+/* ---------- 统计页 v2：概况、行动、趋势、章节、记录 ---------- */
+.stats-overview { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; padding: 16px; }
+.overview-ring {
+  --acc: 0; flex: 0 0 auto; width: 104px; height: 104px; padding: 7px; border-radius: 50%;
+  background: conic-gradient(var(--primary) calc(var(--acc) * 1%), var(--surface-2) 0);
+}
+.overview-ring > div {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 100%; height: 100%; border-radius: 50%; background: var(--card);
+}
+.overview-ring b { font-size: 26px; line-height: 1.1; letter-spacing: -.5px; }
+.overview-ring span { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.overview-copy { flex: 1 1 auto; min-width: 0; }
+.overview-title { font-size: 17px; font-weight: 750; }
+.overview-sub { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.overview-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; }
+.overview-numbers b { display: block; font-size: 19px; line-height: 1.2; }
+.overview-numbers span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.study-next { margin-bottom: 10px; padding: 16px; background: var(--primary-soft); box-shadow: none; }
+.section-kicker { margin-bottom: 5px; color: var(--primary); font-size: 11px; font-weight: 750; }
+.next-title { font-size: 20px; font-weight: 750; line-height: 1.4; overflow-wrap: anywhere; }
+.next-meta { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.next-actions { display: grid; grid-template-columns: 1.15fr 1fr; gap: 8px; }
+.next-actions .btn { min-height: 42px; padding: 10px 8px; font-size: 13px; }
+.next-actions .btn:disabled { opacity: .5; cursor: default; }
+.week-card, .chapter-stats-card { margin-bottom: 10px; padding: 16px; }
+.stats-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.stats-section-head b { flex: 0 0 auto; font-size: 16px; }
+.stats-section-head > span { min-width: 0; color: var(--muted); font-size: 11px; text-align: right; }
+.stats-section-head button { padding: 3px 0; color: var(--primary); font-size: 11px; background: none; border: 0; cursor: pointer; }
+.week-chart { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; height: 132px; margin-top: 14px; }
+.week-day { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.week-value { height: 16px; color: var(--primary); font-size: 10px; font-weight: 700; }
+.week-track {
+  display: flex; align-items: flex-end; width: 20px; height: 72px; overflow: hidden;
+  background: var(--surface-2); border-radius: 6px;
+}
+.week-track i { display: block; width: 100%; min-height: 0; background: var(--primary); border-radius: 6px; }
+.week-weekday { margin-top: 6px; font-size: 11px; }
+.week-day small { margin-top: 2px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.week-note { margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.stats-filter { margin: 10px 0 4px; }
+.stats-filter .chip { padding: 6px 10px; font-size: 11px; }
+.sec-acc-row {
+  display: block; width: 100%; margin: 0; padding: 11px 0; color: var(--text); font: inherit; text-align: left;
+  background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.sec-acc-row:first-child { padding-top: 6px; }
+.sec-acc-row:last-child { padding-bottom: 2px; border-bottom: 0; }
+.sec-acc-row:active { background: var(--surface-2); }
+.sec-acc-top { display: flex; align-items: flex-start; gap: 10px; width: 100%; }
+.sec-acc-name { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.sec-acc-num { display: flex; align-items: baseline; gap: 5px; flex: 0 0 auto; font-size: 16px; font-weight: 750; }
+.sec-acc-num small { font-size: 10px; font-weight: 500; }
+.sec-acc-num.good, .recent-acc.good, .acc-fill.good { color: var(--ok); }
+.sec-acc-num.mid, .recent-acc.mid, .acc-fill.mid { color: var(--warn, #b7791f); }
+.sec-acc-num.weak, .recent-acc.weak, .acc-fill.weak { color: var(--bad); }
+.acc-track { display: block; width: 100%; height: 3px; margin: 7px 0 5px; overflow: hidden; background: var(--surface-2); border-radius: 2px; }
+.acc-fill { display: block; height: 100%; border-radius: 2px; background: currentColor; }
+.sec-acc-meta { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; }
+.sec-acc-meta span:last-child { color: var(--primary); }
+.recent-card { margin-bottom: 10px; padding: 13px 16px 4px; }
+.recent-list { margin-top: 7px; }
+.recent-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 0;
+  color: var(--text); font: inherit; background: transparent; border: 0; cursor: pointer;
+}
+.recent-item + .recent-item { border-top: 1px solid var(--line); }
+.recent-main { flex: 1 1 auto; min-width: 0; text-align: left; }
+.recent-main b { display: block; font-size: 13px; }
+.recent-main small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.recent-acc { flex: 0 0 auto; font-size: 16px; font-weight: 750; }
+.recent-item > i { color: var(--muted); font-size: 18px; font-style: normal; }
+.stats-empty { padding: 14px 0 6px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.stats-more { margin-bottom: 10px; }
+.stats-more .ability-summary {
+  margin: 14px 0 0; padding: 0 0 14px; background: transparent; border: 0;
+  border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none;
+}
+
 @media (max-width: 380px) {
   #view { padding-left: 12px; padding-right: 12px; }
   .ability-head .ability-link { font-size: 11px; }
@@ -6076,9 +6156,83 @@ const QuizBuilder = {
 
 </script>
   <script>
+/* ========== 学习统计视图模型：纯计算，不访问 IndexedDB ========== */
+const StatsModel = (() => {
+  function dayKey(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  /* 最近 N 个自然日，包含没有答题的日期，避免趋势图把断练日期悄悄略过。 */
+  function recentDays(byDay, count = 7, today = new Date()) {
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const out = [];
+    for (let i = count - 1; i >= 0; i--) {
+      const d = new Date(end);
+      d.setDate(end.getDate() - i);
+      const key = dayKey(d);
+      const value = byDay[key] || { total: 0, correct: 0 };
+      out.push({
+        key,
+        label: `${d.getMonth() + 1}/${d.getDate()}`,
+        weekday: '日一二三四五六'[d.getDay()],
+        total: value.total || 0,
+        correct: value.correct || 0,
+        acc: value.total ? Math.round(value.correct / value.total * 100) : 0
+      });
+    }
+    return out;
+  }
+
+  function periodSummary(days) {
+    const total = days.reduce((n, d) => n + d.total, 0);
+    const correct = days.reduce((n, d) => n + d.correct, 0);
+    return { total, correct, acc: total ? Math.round(correct / total * 100) : 0 };
+  }
+
+  /* 每题只取最近一次作答，按“题库 + 章节序号”聚合；同名章节不会串数据。 */
+  function chapterRows(latest, banks, questions) {
+    const qById = new Map(questions.map(q => [q.id, q]));
+    const secTitle = new Map();
+    const bankName = new Map(banks.map(b => [b.id, b.name]));
+    for (const b of banks) {
+      for (const sec of (b.sections || [])) secTitle.set(b.id + ':' + String(sec.secIdx), sec.title);
+    }
+    const agg = new Map();
+    for (const [qid, rec] of Object.entries(latest || {})) {
+      const q = qById.get(qid);
+      if (!q) continue;
+      const secIdx = String(q.secIdx ?? '');
+      const key = q.bankId + ':' + secIdx;
+      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
+      cur.total++;
+      if (rec.correct) cur.correct++;
+      agg.set(key, cur);
+    }
+    return [...agg.values()].map(x => ({
+      ...x,
+      acc: Math.round(x.correct / x.total * 100),
+      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
+      bank: bankName.get(x.bankId) || ''
+    })).sort((a, b) => a.acc - b.acc || b.total - a.total || a.key.localeCompare(b.key));
+  }
+
+  function mastery(acc) {
+    if (acc >= 80) return { label: '已掌握', tone: 'good' };
+    if (acc >= 60) return { label: '待巩固', tone: 'mid' };
+    return { label: '薄弱', tone: 'weak' };
+  }
+
+  return { dayKey, recentDays, periodSummary, chapterRows, mastery };
+})();
+
+</script>
+  <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.9.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.10.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -10633,8 +10787,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       subtitle = '正在计算…';
       metrics = [['预计卷面分', '…'], ['及格概率', '…'], ['最弱章节', '…']];
     } else if (est && est.insufficient) {
-      subtitle = '数据还不够，先练题';
-      metrics = [['已答题数', total], ['建议至少答', 30], ['还差', Math.max(0, 30 - total)]];
+      subtitle = '作答样本不足，继续练习后会逐步完善';
+      metrics = [['已答题数', total], ['估分状态', '待完善'], ['详细分析', '查看 ›']];
     } else {
       metrics = [['预计卷面分', score], ['及格概率', Math.round((pred.passRate || 0) * 100) + '%'], [weak ? '最弱章节' : '暂无一章', weak ? Math.round(weak.score) : '—']];
     }
@@ -10646,81 +10800,108 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
   async function pageStats() {
     topbar('学习统计');
-    /* 一次全表扫描拿到统计所需全部数据：原来 stats + wrongQuestions + latestByQuestion 扫了三遍 */
-    const summary = await recordsSummary();
+    /* 记录、练习历史和题库并行读取；统计页不再串行等待。 */
+    const [summary, hist, banks] = await Promise.all([recordsSummary(), historyList(), DB.bankList()]);
     const s = { total: summary.total, correct: summary.correct, byDay: summary.byDay };
     const days = Object.entries(s.byDay).sort().slice(-14);
     const max = Math.max(1, ...days.map(([, v]) => v.total));
+    const week = StatsModel.recentDays(s.byDay, 7);
+    const weekSummary = StatsModel.periodSummary(week);
+    const weekMax = Math.max(1, ...week.map(d => d.total));
     const acc = s.total ? Math.round(s.correct / s.total * 100) : 0;
     const wrongCount = summary.wrongCount;
-    const hist = await historyList();
     const histCount = hist.length;
 
     /* ---- 章节正确率：题目 → 章节 → 最近一次作答（薄弱章节置顶） ---- */
-    const banks = await DB.bankList();
-    const qById = new Map();
-    const allQ = [];
-    for (const b of banks) {
-      for (const q of await DB.questionsByBank(b.id)) { qById.set(q.id, q); allQ.push(q); }
-    }
+    const bankQuestions = await Promise.all(banks.map(b => DB.questionsByBank(b.id)));
+    const allQ = bankQuestions.flat();
     const latest = summary.latest;
-    const secTitle = new Map();
-    for (const b of banks) for (const sec of (b.sections || [])) secTitle.set(b.id + ':' + String(sec.secIdx), sec.title);
-    const bankName = new Map(banks.map(b => [b.id, b.name]));
-    const agg = new Map();
-    for (const [qid, rec] of Object.entries(latest)) {
-      const q = qById.get(qid);
-      if (!q) continue;
-      const secIdx = String(q.secIdx ?? '');
-      const key = q.bankId + ':' + secIdx;
-      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
-      cur.total++;
-      if (rec.correct) cur.correct++;
-      agg.set(key, cur);
-    }
-    const rows = [...agg.values()].map(x => ({
-      ...x,
-      acc: Math.round(x.correct / x.total * 100),
-      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
-      bank: bankName.get(x.bankId) || ''
-    })).sort((a, b) => a.acc - b.acc || b.total - a.total);
+    const rows = StatsModel.chapterRows(latest, banks, allQ);
+    const weakest = rows[0] || null;
+    const weakCount = rows.filter(r => r.acc < 60).length;
     let onlyWeak = false;
-    const LIMIT = 12;
+    const LIMIT = 6;
 
     /* 能力估分：命中缓存就立刻出卡；没缓存先画「计算中」，让页面先出来再算 */
     const cachedEst = (s.total && abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
 
     $view().innerHTML = `
-      <div class="card stats-row">
-        <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
-        <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
-        <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
-      </div>
-      <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
-      <button class="card stats-history" onclick="App.navigate('#/history')"><span>练习记录</span><b>${histCount} 次 <i>›</i></b></button>
-      <div class="card chapter-stats-card">
-        <div class="card-title">章节正确率 <span class="muted small">薄弱在前</span></div>
+      <section class="card stats-overview">
+        <div class="overview-ring" style="--acc:${acc}" role="img" aria-label="总体正确率 ${acc}%">
+          <div><b>${acc}%</b><span>正确率</span></div>
+        </div>
+        <div class="overview-copy">
+          <div class="overview-title">学习概况</div>
+          <div class="overview-sub">${histCount} 次练习 · 每题按最近一次作答统计</div>
+          <div class="overview-numbers">
+            <div><b>${s.total}</b><span>累计答题</span></div>
+            <div><b>${s.correct}</b><span>累计答对</span></div>
+            <div><b>${wrongCount}</b><span>当前错题</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card study-next">
+        <div class="section-kicker">推荐下一步</div>
+        ${weakest ? `
+          <div class="next-title">${escapeHtml(weakest.title)}</div>
+          <div class="next-meta">${escapeHtml(weakest.bank)} · 当前 ${weakest.acc}% · 答对 ${weakest.correct}/${weakest.total} 题</div>
+          <div class="next-actions">
+            <button class="btn primary" id="practice-weakest" data-bank="${weakest.bankId}" data-sec="${escapeHtml(weakest.secIdx)}">${weakest.acc < 60 ? '练薄弱章节' : '继续巩固'}</button>
+            <button class="btn ghost" onclick="App.wrongRedo()" ${wrongCount ? '' : 'disabled'}>${wrongCount ? `错题重做（${wrongCount}）` : '暂无错题'}</button>
+          </div>`
+        : `
+          <div class="next-title">先完成一次练习</div>
+          <div class="next-meta">有了作答记录后，这里会自动推荐最需要巩固的章节。</div>
+          <div class="next-actions"><button class="btn primary" onclick="App.navigate('#/quiz-setup')">去练习</button></div>`}
+      </section>
+
+      <section class="card week-card">
+        <div class="stats-section-head"><b>近 7 天练习</b><span>${weekSummary.total} 题 · 正确率 ${weekSummary.acc}%</span></div>
+        <div class="week-chart" role="img" aria-label="近 7 天共答 ${weekSummary.total} 题，正确率 ${weekSummary.acc}%">
+          ${week.map(d => `<div class="week-day" title="${d.key}：答对 ${d.correct}/${d.total} 题">
+            <span class="week-value">${d.total || ''}</span>
+            <div class="week-track"><i style="height:${d.total ? Math.max(8, Math.round(d.total / weekMax * 100)) : 0}%"></i></div>
+            <span class="week-weekday">${d.weekday}</span><small>${d.label}</small>
+          </div>`).join('')}
+        </div>
+        <div class="week-note">${weekSummary.total ? `这一周答对 ${weekSummary.correct} 题；空白日期表示没有练习。` : '近 7 天还没有练习，今天从推荐章节开始。'}</div>
+      </section>
+
+      <section class="card chapter-stats-card">
+        <div class="stats-section-head"><b>章节掌握</b><span>${weakCount} 个薄弱章节</span></div>
         ${rows.length ? `
-        <div class="muted small chapter-stats-note">按最近一次作答统计，点一行即可练这一章。</div>
-        <div class="chips" id="sec-filter" style="margin-bottom:10px">
-          <button class="chip on" data-v="all">全部章节（${rows.length}）</button>
-          <button class="chip" data-v="weak">只看薄弱 &lt;60%（${rows.filter(r => r.acc < 60).length}）</button>
+        <div class="chips stats-filter" id="sec-filter">
+          <button class="chip on" data-v="all">全部（${rows.length}）</button>
+          <button class="chip" data-v="weak">薄弱 &lt;60%（${weakCount}）</button>
         </div>
         <div id="sec-acc-list"></div>
         <button class="btn ghost" id="sec-more" style="display:none;margin-top:8px"></button>`
-        : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况。</div>'}
-      </div>
-      <details class="card trend-card">
-        <summary><b>近 14 日学习趋势</b><span>答题量与正确率</span><i>›</i></summary>
+        : '<div class="stats-empty">还没有章节数据，练几道题后就能看到掌握情况。</div>'}
+      </section>
+
+      <section class="card recent-card">
+        <div class="stats-section-head"><b>最近练习</b><button id="all-history">全部 ${histCount} 次 ›</button></div>
+        ${hist.length ? `<div class="recent-list">${hist.slice(0, 3).map(rec => `
+          <button class="recent-item" data-hid="${escapeHtml(rec.id)}">
+            <span class="recent-main"><b>${escapeHtml(rec.label)}</b><small>${fmtTime(rec.at)} · ${rec.correct}/${rec.total} 题</small></span>
+            <span class="recent-acc ${rec.acc >= 60 ? 'good' : 'weak'}">${rec.acc}${rec.exam ? '分' : '%'}</span><i>›</i>
+          </button>`).join('')}</div>`
+        : '<div class="stats-empty">完成练习或考试后，可在这里快速回看。</div>'}
+      </section>
+
+      <details class="card trend-card stats-more">
+        <summary><b>更多分析</b><span>能力估分 · 近 14 日趋势</span><i>›</i></summary>
         <div class="trend-body">
-          <section><div class="trend-title">每日答题量</div>
+          <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
+          <section><div class="trend-title">近 14 日答题量</div>
           ${days.length ? `<div class="chart">
             ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
               <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
               <span class="col-label"><b class="lb-num">${v.total}</b><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
           </div>` : '<div class="muted">暂无答题记录</div>'}
           </section>
-          <section><div class="trend-title">每日正确率</div>
+          <section><div class="trend-title">近 14 日正确率</div>
           ${days.length ? `<div class="chart">
             ${days.map(([d, v]) => {
               const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
@@ -10728,12 +10909,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
                 <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
                 <span class="col-label"><b class="lb-num" style="color:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}">${a}%</b><span class="lb-sub">${v.total} 题</span></span></div>`;
             }).join('')}
-          </div>
-          <div class="muted small" style="margin-top:8px">绿色为当日正确率不低于 60%，红色为低于 60%。</div>`
-          : '<div class="muted">暂无答题记录</div>'}
+          </div>` : '<div class="muted">暂无答题记录</div>'}
           </section>
         </div>
       </details>`;
+
+    $view().querySelectorAll('[data-hid]').forEach(el => {
+      el.onclick = () => navigate('#/history/' + el.dataset.hid);
+    });
+    const allHistory = document.getElementById('all-history');
+    if (allHistory) allHistory.onclick = () => navigate('#/history');
+    const weakBtn = document.getElementById('practice-weakest');
+    if (weakBtn && weakest) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
 
     /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
     if (!cachedEst && s.total > 0) {
@@ -10758,15 +10945,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     function renderRows() {
       let arr = onlyWeak ? rows.filter(r => r.acc < 60) : rows;
       const show = expanded ? arr : arr.slice(0, LIMIT);
-      listEl.innerHTML = arr.length ? show.map(r => `
-        <div class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
-          <div class="sec-acc-top">
+      listEl.innerHTML = arr.length ? show.map(r => {
+        const level = StatsModel.mastery(r.acc);
+        return `
+        <button type="button" class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
+          <span class="sec-acc-top">
             <span class="sec-acc-name" title="${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}">${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}</span>
-            <span class="sec-acc-num" style="color:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}">${r.acc}%</span>
-          </div>
-          <div class="acc-track"><div class="acc-fill" style="width:${r.acc}%;background:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}"></div></div>
-          <div class="muted small">${r.correct}/${r.total} 题 · 点此行练这一章</div>
-        </div>`).join('') : '<div class="muted small">这一档暂时没有章节</div>';
+            <span class="sec-acc-num ${level.tone}">${r.acc}%<small>${level.label}</small></span>
+          </span>
+          <span class="acc-track"><i class="acc-fill ${level.tone}" style="width:${r.acc}%"></i></span>
+          <span class="sec-acc-meta"><span>答对 ${r.correct}/${r.total} 题</span><span>练这一章 ›</span></span>
+        </button>`;
+      }).join('') : '<div class="stats-empty">这一档暂时没有章节</div>';
       listEl.querySelectorAll('.sec-acc-row').forEach(el => {
         el.onclick = () => practiceSection(el.dataset.bank, el.dataset.sec);
       });
@@ -11308,7 +11498,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     let correct = 0;
     for (const r of recs) {
       const t = r.time || 0;
-      const day = new Date(t).toISOString().slice(0, 10);
+      const day = StatsModel.dayKey(new Date(t));
       const cell = byDay[day] || (byDay[day] = { total: 0, correct: 0 });
       cell.total++;
       if (r.correct) { correct++; cell.correct++; }

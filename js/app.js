@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.9.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.10.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4555,8 +4555,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       subtitle = '正在计算…';
       metrics = [['预计卷面分', '…'], ['及格概率', '…'], ['最弱章节', '…']];
     } else if (est && est.insufficient) {
-      subtitle = '数据还不够，先练题';
-      metrics = [['已答题数', total], ['建议至少答', 30], ['还差', Math.max(0, 30 - total)]];
+      subtitle = '作答样本不足，继续练习后会逐步完善';
+      metrics = [['已答题数', total], ['估分状态', '待完善'], ['详细分析', '查看 ›']];
     } else {
       metrics = [['预计卷面分', score], ['及格概率', Math.round((pred.passRate || 0) * 100) + '%'], [weak ? '最弱章节' : '暂无一章', weak ? Math.round(weak.score) : '—']];
     }
@@ -4568,81 +4568,108 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
   async function pageStats() {
     topbar('学习统计');
-    /* 一次全表扫描拿到统计所需全部数据：原来 stats + wrongQuestions + latestByQuestion 扫了三遍 */
-    const summary = await recordsSummary();
+    /* 记录、练习历史和题库并行读取；统计页不再串行等待。 */
+    const [summary, hist, banks] = await Promise.all([recordsSummary(), historyList(), DB.bankList()]);
     const s = { total: summary.total, correct: summary.correct, byDay: summary.byDay };
     const days = Object.entries(s.byDay).sort().slice(-14);
     const max = Math.max(1, ...days.map(([, v]) => v.total));
+    const week = StatsModel.recentDays(s.byDay, 7);
+    const weekSummary = StatsModel.periodSummary(week);
+    const weekMax = Math.max(1, ...week.map(d => d.total));
     const acc = s.total ? Math.round(s.correct / s.total * 100) : 0;
     const wrongCount = summary.wrongCount;
-    const hist = await historyList();
     const histCount = hist.length;
 
     /* ---- 章节正确率：题目 → 章节 → 最近一次作答（薄弱章节置顶） ---- */
-    const banks = await DB.bankList();
-    const qById = new Map();
-    const allQ = [];
-    for (const b of banks) {
-      for (const q of await DB.questionsByBank(b.id)) { qById.set(q.id, q); allQ.push(q); }
-    }
+    const bankQuestions = await Promise.all(banks.map(b => DB.questionsByBank(b.id)));
+    const allQ = bankQuestions.flat();
     const latest = summary.latest;
-    const secTitle = new Map();
-    for (const b of banks) for (const sec of (b.sections || [])) secTitle.set(b.id + ':' + String(sec.secIdx), sec.title);
-    const bankName = new Map(banks.map(b => [b.id, b.name]));
-    const agg = new Map();
-    for (const [qid, rec] of Object.entries(latest)) {
-      const q = qById.get(qid);
-      if (!q) continue;
-      const secIdx = String(q.secIdx ?? '');
-      const key = q.bankId + ':' + secIdx;
-      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
-      cur.total++;
-      if (rec.correct) cur.correct++;
-      agg.set(key, cur);
-    }
-    const rows = [...agg.values()].map(x => ({
-      ...x,
-      acc: Math.round(x.correct / x.total * 100),
-      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
-      bank: bankName.get(x.bankId) || ''
-    })).sort((a, b) => a.acc - b.acc || b.total - a.total);
+    const rows = StatsModel.chapterRows(latest, banks, allQ);
+    const weakest = rows[0] || null;
+    const weakCount = rows.filter(r => r.acc < 60).length;
     let onlyWeak = false;
-    const LIMIT = 12;
+    const LIMIT = 6;
 
     /* 能力估分：命中缓存就立刻出卡；没缓存先画「计算中」，让页面先出来再算 */
     const cachedEst = (s.total && abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
 
     $view().innerHTML = `
-      <div class="card stats-row">
-        <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
-        <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
-        <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
-      </div>
-      <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
-      <button class="card stats-history" onclick="App.navigate('#/history')"><span>练习记录</span><b>${histCount} 次 <i>›</i></b></button>
-      <div class="card chapter-stats-card">
-        <div class="card-title">章节正确率 <span class="muted small">薄弱在前</span></div>
+      <section class="card stats-overview">
+        <div class="overview-ring" style="--acc:${acc}" role="img" aria-label="总体正确率 ${acc}%">
+          <div><b>${acc}%</b><span>正确率</span></div>
+        </div>
+        <div class="overview-copy">
+          <div class="overview-title">学习概况</div>
+          <div class="overview-sub">${histCount} 次练习 · 每题按最近一次作答统计</div>
+          <div class="overview-numbers">
+            <div><b>${s.total}</b><span>累计答题</span></div>
+            <div><b>${s.correct}</b><span>累计答对</span></div>
+            <div><b>${wrongCount}</b><span>当前错题</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card study-next">
+        <div class="section-kicker">推荐下一步</div>
+        ${weakest ? `
+          <div class="next-title">${escapeHtml(weakest.title)}</div>
+          <div class="next-meta">${escapeHtml(weakest.bank)} · 当前 ${weakest.acc}% · 答对 ${weakest.correct}/${weakest.total} 题</div>
+          <div class="next-actions">
+            <button class="btn primary" id="practice-weakest" data-bank="${weakest.bankId}" data-sec="${escapeHtml(weakest.secIdx)}">${weakest.acc < 60 ? '练薄弱章节' : '继续巩固'}</button>
+            <button class="btn ghost" onclick="App.wrongRedo()" ${wrongCount ? '' : 'disabled'}>${wrongCount ? `错题重做（${wrongCount}）` : '暂无错题'}</button>
+          </div>`
+        : `
+          <div class="next-title">先完成一次练习</div>
+          <div class="next-meta">有了作答记录后，这里会自动推荐最需要巩固的章节。</div>
+          <div class="next-actions"><button class="btn primary" onclick="App.navigate('#/quiz-setup')">去练习</button></div>`}
+      </section>
+
+      <section class="card week-card">
+        <div class="stats-section-head"><b>近 7 天练习</b><span>${weekSummary.total} 题 · 正确率 ${weekSummary.acc}%</span></div>
+        <div class="week-chart" role="img" aria-label="近 7 天共答 ${weekSummary.total} 题，正确率 ${weekSummary.acc}%">
+          ${week.map(d => `<div class="week-day" title="${d.key}：答对 ${d.correct}/${d.total} 题">
+            <span class="week-value">${d.total || ''}</span>
+            <div class="week-track"><i style="height:${d.total ? Math.max(8, Math.round(d.total / weekMax * 100)) : 0}%"></i></div>
+            <span class="week-weekday">${d.weekday}</span><small>${d.label}</small>
+          </div>`).join('')}
+        </div>
+        <div class="week-note">${weekSummary.total ? `这一周答对 ${weekSummary.correct} 题；空白日期表示没有练习。` : '近 7 天还没有练习，今天从推荐章节开始。'}</div>
+      </section>
+
+      <section class="card chapter-stats-card">
+        <div class="stats-section-head"><b>章节掌握</b><span>${weakCount} 个薄弱章节</span></div>
         ${rows.length ? `
-        <div class="muted small chapter-stats-note">按最近一次作答统计，点一行即可练这一章。</div>
-        <div class="chips" id="sec-filter" style="margin-bottom:10px">
-          <button class="chip on" data-v="all">全部章节（${rows.length}）</button>
-          <button class="chip" data-v="weak">只看薄弱 &lt;60%（${rows.filter(r => r.acc < 60).length}）</button>
+        <div class="chips stats-filter" id="sec-filter">
+          <button class="chip on" data-v="all">全部（${rows.length}）</button>
+          <button class="chip" data-v="weak">薄弱 &lt;60%（${weakCount}）</button>
         </div>
         <div id="sec-acc-list"></div>
         <button class="btn ghost" id="sec-more" style="display:none;margin-top:8px"></button>`
-        : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况。</div>'}
-      </div>
-      <details class="card trend-card">
-        <summary><b>近 14 日学习趋势</b><span>答题量与正确率</span><i>›</i></summary>
+        : '<div class="stats-empty">还没有章节数据，练几道题后就能看到掌握情况。</div>'}
+      </section>
+
+      <section class="card recent-card">
+        <div class="stats-section-head"><b>最近练习</b><button id="all-history">全部 ${histCount} 次 ›</button></div>
+        ${hist.length ? `<div class="recent-list">${hist.slice(0, 3).map(rec => `
+          <button class="recent-item" data-hid="${escapeHtml(rec.id)}">
+            <span class="recent-main"><b>${escapeHtml(rec.label)}</b><small>${fmtTime(rec.at)} · ${rec.correct}/${rec.total} 题</small></span>
+            <span class="recent-acc ${rec.acc >= 60 ? 'good' : 'weak'}">${rec.acc}${rec.exam ? '分' : '%'}</span><i>›</i>
+          </button>`).join('')}</div>`
+        : '<div class="stats-empty">完成练习或考试后，可在这里快速回看。</div>'}
+      </section>
+
+      <details class="card trend-card stats-more">
+        <summary><b>更多分析</b><span>能力估分 · 近 14 日趋势</span><i>›</i></summary>
         <div class="trend-body">
-          <section><div class="trend-title">每日答题量</div>
+          <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
+          <section><div class="trend-title">近 14 日答题量</div>
           ${days.length ? `<div class="chart">
             ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
               <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
               <span class="col-label"><b class="lb-num">${v.total}</b><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
           </div>` : '<div class="muted">暂无答题记录</div>'}
           </section>
-          <section><div class="trend-title">每日正确率</div>
+          <section><div class="trend-title">近 14 日正确率</div>
           ${days.length ? `<div class="chart">
             ${days.map(([d, v]) => {
               const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
@@ -4650,12 +4677,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
                 <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
                 <span class="col-label"><b class="lb-num" style="color:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}">${a}%</b><span class="lb-sub">${v.total} 题</span></span></div>`;
             }).join('')}
-          </div>
-          <div class="muted small" style="margin-top:8px">绿色为当日正确率不低于 60%，红色为低于 60%。</div>`
-          : '<div class="muted">暂无答题记录</div>'}
+          </div>` : '<div class="muted">暂无答题记录</div>'}
           </section>
         </div>
       </details>`;
+
+    $view().querySelectorAll('[data-hid]').forEach(el => {
+      el.onclick = () => navigate('#/history/' + el.dataset.hid);
+    });
+    const allHistory = document.getElementById('all-history');
+    if (allHistory) allHistory.onclick = () => navigate('#/history');
+    const weakBtn = document.getElementById('practice-weakest');
+    if (weakBtn && weakest) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
 
     /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
     if (!cachedEst && s.total > 0) {
@@ -4680,15 +4713,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     function renderRows() {
       let arr = onlyWeak ? rows.filter(r => r.acc < 60) : rows;
       const show = expanded ? arr : arr.slice(0, LIMIT);
-      listEl.innerHTML = arr.length ? show.map(r => `
-        <div class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
-          <div class="sec-acc-top">
+      listEl.innerHTML = arr.length ? show.map(r => {
+        const level = StatsModel.mastery(r.acc);
+        return `
+        <button type="button" class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
+          <span class="sec-acc-top">
             <span class="sec-acc-name" title="${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}">${escapeHtml((r.bank ? r.bank + ' · ' : '') + r.title)}</span>
-            <span class="sec-acc-num" style="color:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}">${r.acc}%</span>
-          </div>
-          <div class="acc-track"><div class="acc-fill" style="width:${r.acc}%;background:${r.acc >= 60 ? 'var(--ok)' : 'var(--bad)'}"></div></div>
-          <div class="muted small">${r.correct}/${r.total} 题 · 点此行练这一章</div>
-        </div>`).join('') : '<div class="muted small">这一档暂时没有章节</div>';
+            <span class="sec-acc-num ${level.tone}">${r.acc}%<small>${level.label}</small></span>
+          </span>
+          <span class="acc-track"><i class="acc-fill ${level.tone}" style="width:${r.acc}%"></i></span>
+          <span class="sec-acc-meta"><span>答对 ${r.correct}/${r.total} 题</span><span>练这一章 ›</span></span>
+        </button>`;
+      }).join('') : '<div class="stats-empty">这一档暂时没有章节</div>';
       listEl.querySelectorAll('.sec-acc-row').forEach(el => {
         el.onclick = () => practiceSection(el.dataset.bank, el.dataset.sec);
       });
@@ -5230,7 +5266,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     let correct = 0;
     for (const r of recs) {
       const t = r.time || 0;
-      const day = new Date(t).toISOString().slice(0, 10);
+      const day = StatsModel.dayKey(new Date(t));
       const cell = byDay[day] || (byDay[day] = { total: 0, correct: 0 });
       cell.total++;
       if (r.correct) { correct++; cell.correct++; }
