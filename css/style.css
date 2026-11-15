@@ -1109,3 +1109,228 @@ html.sheet-open, html.sheet-open body { overflow: hidden; height: 100%; }
 .pick-group-head b { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 弹层里的滚动区域滚到底不再把页面带着滑 */
 .sheet-mask, .sheet-panel, .sheet-panel > * { overscroll-behavior: contain; }
+
+/* ================= 五主页面统一重构（v1.9.0） =================
+   原则：一个页面只保留一个视觉重点；减少重复浮卡与无效说明，
+   高频操作直接展示，低频选项默认折叠，全部旧功能与 DOM 绑定保留。 */
+:root {
+  --bg: #f4f6fa;
+  --line: #e6eaf1;
+  --radius: 16px;
+  --shadow-card: 0 2px 10px rgba(31, 45, 71, .045);
+  --grad-primary: linear-gradient(135deg, #155eef 0%, #3b82f6 100%);
+  --hero-grad: linear-gradient(135deg, #155eef 0%, #3b82f6 100%);
+}
+body { background: var(--bg); }
+#view { padding: 14px 14px calc(88px + env(safe-area-inset-bottom)); }
+.card { border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); }
+.card-title { margin-bottom: 14px; font-size: 16px; }
+.card-title .muted { font-weight: 400; }
+.btn { border-radius: 12px; min-height: 42px; }
+.btn.big { padding: 14px 16px; }
+.btn.primary { box-shadow: 0 5px 14px rgba(21, 94, 239, .18); }
+.btn.ghost { background: var(--surface-2); border: 1px solid var(--line); box-shadow: none; }
+.seg { gap: 4px; padding: 4px; border-radius: 12px; background: var(--surface-2); }
+.seg button { min-height: 40px; padding: 8px 6px; font-size: 14px; }
+.seg button.on { box-shadow: 0 2px 7px rgba(31, 45, 71, .08); }
+.chip.on { background: var(--primary); box-shadow: none; }
+.tabbar { box-shadow: 0 -4px 20px rgba(31, 45, 71, .06); }
+button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
+  outline: 3px solid var(--primary-glow); outline-offset: 2px;
+}
+
+/* 题库：概览、每日一练、快捷入口各只出现一次；题库列表合并为轻量分组。 */
+.ov-card { padding: 16px; margin-bottom: 12px; }
+.ov-total { font-size: 28px; line-height: 1.2; }
+.ov-cells { margin-top: 14px; padding: 12px 4px; border-radius: 12px; background: var(--surface-2); }
+.ov-cell + .ov-cell { border-left: 1px solid var(--line); }
+.quick-grid {
+  gap: 0; margin-bottom: 16px; padding: 6px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+.quick-tile { padding: 12px 4px; background: transparent; border: 0; box-shadow: none; }
+.quick-tile:active { background: var(--surface-2); }
+.quick-icon { width: 38px; height: 38px; margin-bottom: 7px; border-radius: 11px; }
+.quick-label { font-size: 13px; }
+.bank-section-head, .review-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 4px 2px 10px;
+}
+.bank-section-head b, .review-list-head b { font-size: 16px; }
+.bank-section-head span, .review-list-head span { color: var(--muted); font-size: 12px; }
+.bank-list {
+  padding: 0 14px; overflow: hidden;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+.bank-list .bank-card {
+  margin: 0; padding: 16px 0; border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; box-shadow: none;
+}
+.bank-list .bank-card:last-child { border-bottom: 0; }
+.bank-list > .muted { padding: 12px 0 0; }
+.bank-card .bank-title { font-size: 16px; }
+.bank-more { margin-top: 12px; }
+
+/* 练习：首屏只呈现范围、模式、开始；高级设置按真实选择显示摘要。 */
+.setup-range-card, .setup-mode-card { padding: 16px; }
+.scope-select {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0;
+  padding: 13px 14px; color: var(--text); text-align: left; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 13px;
+}
+.scope-select:active { background: var(--primary-soft); border-color: var(--primary-border); }
+.scope-ico {
+  display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px;
+  color: var(--primary); background: var(--primary-soft); border-radius: 11px;
+}
+.scope-ico svg { width: 22px; height: 22px; }
+.scope-copy { flex: 1 1 auto; min-width: 0; }
+.scope-copy b { display: block; color: var(--muted); font-size: 12px; font-weight: 500; }
+.scope-copy span {
+  display: block; margin-top: 3px; font-size: 16px; font-weight: 650; line-height: 1.45;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.scope-chevron { flex: 0 0 auto; color: var(--muted); font-size: 24px; line-height: 1; }
+.scope-select.compact { padding: 12px; }
+.scope-select.compact .scope-copy span { font-size: 14px; }
+.advanced-card { padding: 0; overflow: hidden; }
+.advanced-card summary, .trend-card summary {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 16px; cursor: pointer; list-style: none;
+}
+.advanced-card summary::-webkit-details-marker, .trend-card summary::-webkit-details-marker { display: none; }
+.advanced-card summary b, .trend-card summary b { flex: 0 0 auto; font-size: 15px; }
+.advanced-card summary span, .trend-card summary span {
+  flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.advanced-card summary i, .trend-card summary i {
+  flex: 0 0 auto; color: var(--muted); font-size: 21px; font-style: normal; line-height: 1;
+  transform: rotate(90deg); transition: transform .18s;
+}
+.advanced-card[open] summary i, .trend-card[open] summary i { transform: rotate(-90deg); }
+.advanced-body { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.advanced-field { margin-top: 16px; }
+.advanced-field > span { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; }
+.advanced-field .muted { margin-top: 8px; line-height: 1.55; }
+.setup-start { margin-top: 2px; font-size: 16px; }
+.setup-secondary { display: flex; gap: 10px; }
+.setup-secondary .btn { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
+#exam-opts .field { margin-bottom: 12px; }
+#exam-opts .seg button { font-size: 12px; }
+
+/* 复习：错题/收藏共用一个轻量切换，一张分组卡承载一组题。 */
+.review-nav { margin-bottom: 14px; }
+.review-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; }
+.review-summary > div > span { display: block; color: var(--muted); font-size: 12px; }
+.review-summary > div > b { display: block; margin-top: 3px; font-size: 29px; line-height: 1.15; }
+.review-summary b small { color: var(--muted); font-size: 13px; font-weight: 500; }
+.review-summary .btn { flex: 0 0 auto; margin: 0; }
+.review-list-head { margin-top: 18px; }
+.rev-group {
+  margin-bottom: 12px; overflow: hidden;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+.rev-group-head {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0;
+  padding: 15px 16px; color: var(--text); text-align: left; cursor: pointer;
+  background: transparent; border: 0;
+}
+.rev-arrow { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+.rev-group-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rev-group-count { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.rev-group-body { border-top: 1px solid var(--line); }
+.review-question { padding: 15px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.review-question:last-child { border-bottom: 0; }
+.review-question .wrong-head { display: flex; align-items: center; gap: 8px; }
+.review-question .stem { margin-top: 10px; font-size: 14px; line-height: 1.65; }
+.rev-ops { margin-left: auto; }
+.rev-op { padding: 5px 9px; color: var(--muted); font-size: 12px; background: var(--surface-2); border: 0; border-radius: 8px; }
+.rev-op.danger { color: var(--bad); }
+.review-question .wrong-ans { margin-top: 10px; padding: 9px 11px; border: 0; border-radius: 9px; }
+.review-question .judge-exp { border: 0; border-radius: 9px; background: var(--surface-2); }
+.review-empty { display: grid; gap: 8px; padding-top: 56px; }
+.review-empty b { color: var(--text); font-size: 17px; }
+.review-empty span { color: var(--muted); font-size: 13px; }
+
+/* 统计：三项核心数据同卡，能力估分只留摘要，趋势图默认折叠。 */
+.stats-row { display: flex; margin-bottom: 12px; padding: 18px 6px; }
+.stats-row .stat-cell { position: relative; background: transparent; box-shadow: none; }
+.stats-row .stat-cell + .stat-cell::before {
+  content: ''; position: absolute; left: 0; top: 5px; bottom: 5px; width: 1px; background: var(--line);
+}
+.stats-row .stat-cell b { font-size: 27px; }
+.stats-row .stat-cell span { font-size: 12px; }
+.ability-summary { padding: 16px; cursor: pointer; }
+.ability-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.ability-head > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.ability-head b { font-size: 16px; }
+.ability-head span { color: var(--muted); font-size: 12px; }
+.ability-head .ability-link { flex: 0 0 auto; white-space: nowrap; }
+.ability-metrics {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px; padding: 13px 0; background: var(--surface-2); border-radius: 12px;
+}
+.ability-metric { min-width: 0; padding: 0 5px; text-align: center; }
+.ability-metric + .ability-metric { border-left: 1px solid var(--line); }
+.ability-metric span { display: block; color: var(--muted); font-size: 11px; }
+.ability-metric b { display: block; margin-top: 4px; font-size: 23px; line-height: 1.15; }
+.ability-metric small { font-size: 13px; }
+.stats-history {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  padding: 15px 16px; color: var(--text); text-align: left; cursor: pointer;
+}
+.stats-history span { font-size: 15px; font-weight: 650; }
+.stats-history b { color: var(--primary); font-size: 13px; }
+.stats-history i { margin-left: 5px; color: var(--muted); font-size: 20px; font-style: normal; vertical-align: -1px; }
+.chapter-stats-note { margin: -4px 0 12px; line-height: 1.5; }
+.sec-acc-row { padding: 14px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.sec-acc-row:first-child { padding-top: 4px; }
+.sec-acc-row:last-child { padding-bottom: 2px; border-bottom: 0; }
+.sec-acc-top { display: flex; align-items: flex-start; gap: 10px; }
+.sec-acc-name { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.sec-acc-num { flex: 0 0 auto; font-size: 16px; font-weight: 750; }
+.acc-track { height: 4px; margin: 8px 0 6px; overflow: hidden; background: var(--surface-2); border-radius: 2px; }
+.acc-fill { height: 100%; border-radius: 2px; }
+.trend-card { padding: 0; overflow: hidden; }
+.trend-body { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.trend-title { margin: 16px 0 10px; font-size: 14px; font-weight: 650; }
+
+/* 我的：身份卡改为紧凑横排，四个入口采用统一 SVG 图标与双行说明。 */
+.me-hero { display: flex; align-items: center; padding: 16px; color: var(--text); text-align: left; background: var(--card); }
+.me-hero .muted { color: var(--muted); }
+.me-avatar {
+  flex: 0 0 auto; width: 48px; height: 48px; margin: 0; border-radius: 14px;
+  font-size: 24px; box-shadow: none;
+}
+.me-hero-copy { flex: 1 1 auto; min-width: 0; margin-left: 12px; }
+.me-name { font-size: 18px; }
+.me-version {
+  flex: 0 0 auto; margin-left: 8px; padding: 4px 8px; color: var(--muted);
+  font-size: 11px; background: var(--surface-2); border-radius: 8px;
+}
+.me-section-title { margin: 18px 4px 8px; color: var(--muted); font-size: 13px; }
+.me-list { padding: 0 14px; }
+.me-entry { min-height: 72px; gap: 12px; padding: 14px 0; }
+.me-ico { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 10px; }
+.me-ico svg { width: 20px; height: 20px; }
+.me-entry .me-label { flex: 1 1 auto; min-width: 0; font-size: 15px; text-align: left; }
+.me-entry .me-label small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.4; }
+.me-entry .me-chev { flex: 0 0 auto; }
+.me-entry + .me-entry::before { left: 0; right: 0; }
+.me-footnote { margin: 16px 10px 0; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
+
+@media (max-width: 380px) {
+  #view { padding-left: 12px; padding-right: 12px; }
+  .ability-head .ability-link { font-size: 11px; }
+  .ability-metric b { font-size: 21px; }
+  .review-summary { padding: 14px; }
+  .review-summary .btn { padding-left: 12px; padding-right: 12px; }
+  .advanced-card summary, .trend-card summary { padding: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .advanced-card summary i, .trend-card summary i { transition: none; }
+}

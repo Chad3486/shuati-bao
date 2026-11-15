@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.38'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.9.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -623,6 +623,7 @@ const App = (() => {
           <span>错题重做</span>
         </button>
       </div>
+      <div class="bank-section-head"><b>题库列表</b><span>${banks.length} 个题库</span></div>
       ${banks.length > LIMIT ? `
       <div class="list-tools">
         <input id="bank-search" class="search-input" placeholder="搜索题库名称…" value="">
@@ -725,7 +726,7 @@ const App = (() => {
         slot.innerHTML = `
       <div class="daily-card" onclick="App.navigate('#/daily')">
         <div class="daily-body">
-          <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">🔥 连续 ${st.days || 0} 天</span></div>
+          <div class="daily-top"><span>每日一练 · 按题库</span><span class="daily-streak">连续 ${st.days || 0} 天</span></div>
           <div class="daily-title">${d.pending ? '还有 ' + d.pending + ' 个题库没练' : '今天全部练完 ✓'}</div>
           <div class="daily-sub">${d.pending
             ? `每库 ${d.size} 题 · 已完成 ${d.done}/${d.total}`
@@ -2618,35 +2619,22 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     };
 
     $view().innerHTML = `
-      <div class="card">
-        <div class="card-title">范围（题库）</div>
-        <button class="btn ghost big" id="bank-open" style="width:100%"></button>
-        <div class="muted small" style="margin-top:8px">点上面弹出题库选择（默认全选，可搜索）</div>
+      <div class="card setup-range-card">
+        <div class="card-title">练习范围</div>
+        <button class="scope-select" id="bank-open">
+          <span class="scope-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+          <span class="scope-copy"><b>题库</b><span id="bank-open-text"></span></span>
+          <span class="scope-chevron">›</span>
+        </button>
       </div>
 
-      <div class="card">
-        <div class="card-title">范围（章节）</div>
-        <button class="btn ghost big" id="sec-open" style="width:100%"></button>
-        <div class="muted small" style="margin-top:8px">不选 = 全部章节；点上面弹出章节选择</div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">题型</div>
-        <div class="seg" id="seg-type">
-          <button data-v="all" class="on">全部</button>
-          <button data-v="choice">选择/判断</button>
-          <button data-v="fill">填空</button>
-        </div>
-        <div class="muted small" id="type-hint" style="margin-top:8px"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">模式</div>
+      <div class="card setup-mode-card">
+        <div class="card-title">练习模式</div>
         <div class="seg" id="seg-mode">
-          <button data-v="learn" class="on">📖 学习模式</button>
-          <button data-v="exam">📝 考试模式</button>
+          <button data-v="learn" class="on">学习模式</button>
+          <button data-v="exam">考试模式</button>
         </div>
-        <div id="exam-opts" style="display:none;margin-top:10px">
+        <div id="exam-opts" style="display:none;margin-top:12px">
           <div class="field"><span>考试时长</span>
             <div class="seg" id="seg-time">
               <button data-v="auto" class="on">按 1 分钟/题</button>
@@ -2657,21 +2645,42 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <div class="field" id="exam-min-wrap" style="display:none"><span>时长（分钟）</span>
             <input type="number" id="exam-min" min="1" max="600" value="60" inputmode="numeric">
           </div>
-          <div class="muted small">考试模式：作答时<b>不显示对错与解析</b>，可自由跳题改动；交卷后统一判分，给出成绩单与错题解析。</div>
+          <div class="muted small">考试时不显示对错与解析，交卷后统一判分并查看错题解析。</div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title">顺序</div>
-        <div class="seg" id="seg-order">
-          <button data-v="order" class="on">顺序</button>
-          <button data-v="shuffle">随机</button>
+      <details class="card advanced-card" id="advanced-setup">
+        <summary><b>高级设置</b><span id="advanced-summary">章节 · 题型 · 顺序</span><i>›</i></summary>
+        <div class="advanced-body">
+          <div class="advanced-field"><span>练习章节</span>
+            <button class="scope-select compact" id="sec-open">
+              <span class="scope-copy"><b>章节范围</b><span id="sec-open-text"></span></span>
+              <span class="scope-chevron">›</span>
+            </button>
+          </div>
+          <div class="advanced-field"><span>题型</span>
+            <div class="seg" id="seg-type">
+              <button data-v="all" class="on">全部</button>
+              <button data-v="choice">选择/判断</button>
+              <button data-v="fill">填空</button>
+            </div>
+            <div class="muted small" id="type-hint"></div>
+          </div>
+          <div class="advanced-field"><span>题目顺序</span>
+            <div class="seg" id="seg-order">
+              <button data-v="order" class="on">顺序</button>
+              <button data-v="shuffle">随机</button>
+            </div>
+            <div class="muted small">随机会同时打乱题目和选项顺序，答案自动换算。</div>
+          </div>
         </div>
-        <div class="muted small" style="margin-top:8px">随机 = 题目顺序 + 选项顺序都打乱（答案自动换算，判分不受影响）</div>
+      </details>
+
+      <button class="btn primary big setup-start" id="start-quiz"></button>
+      <div class="setup-secondary">
+        <button class="btn ghost" onclick="App.navigate('#/wrong-setup')">错题重做</button>
+        ${starCount ? `<button class="btn ghost" onclick="App.navigate('#/star-setup')">收藏重练（${starCount}）</button>` : ''}
       </div>
-      <button class="btn primary big" id="start-quiz"></button>
-      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">错题重做</button>
-      ${starCount ? `<button class="btn ghost big" onclick="App.navigate('#/star-setup')">★ 收藏重练（${starCount}）</button>` : ''}
 
       <div id="sec-sheet" class="pick-sheet" style="display:none">
         <div class="pick-mask" id="sec-mask"></div>
@@ -2715,7 +2724,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <div class="pick-body" id="bank-pick"></div>
           <div class="pick-foot"><button class="btn primary big" id="bank-confirm">完成</button></div>
         </div>
-      </div>      </div>`;
+      </div>`;
 
     const bankPickEl = document.getElementById('bank-pick');
     const bankSheet = document.getElementById('bank-sheet');
@@ -2744,9 +2753,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       if (bankSumEl) bankSumEl.textContent = sel.size === banks.length ? `全选（${banks.length}）` : `已选 ${sel.size}/${banks.length}`;
       const c = document.getElementById('bank-confirm');
       if (c) c.textContent = sel.size === banks.length ? `完成（全部 ${banks.length} 个题库）` : `完成（已选 ${sel.size} 个题库）`;
-      document.getElementById('bank-open').textContent = sel.size === banks.length
-        ? `📂 全部 ${banks.length} 个题库（点此修改） ›`
-        : `📂 已选 ${sel.size}/${banks.length} 个题库（点此修改） ›`;
+      document.getElementById('bank-open-text').textContent = sel.size === banks.length
+        ? `全部 ${banks.length} 个题库`
+        : `已选 ${sel.size}/${banks.length} 个题库`;
     }
     function renderBanks() {
       const kw = bankKw.trim().toLowerCase();
@@ -2793,7 +2802,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       if (secSumEl) secSumEl.textContent = selSecs.size ? `已选 ${selSecs.size} 章` : '全部章节';
       const c = document.getElementById('sec-confirm');
       if (c) c.textContent = selSecs.size ? `完成（已选 ${selSecs.size} 个章节）` : '完成（全部章节）';
-      secOpenBtn.textContent = selSecs.size ? `📂 已选 ${selSecs.size} 个章节（点此修改） ›` : `📂 全部章节（点此选择） ›`;
+      document.getElementById('sec-open-text').textContent = selSecs.size ? `已选 ${selSecs.size} 个章节` : '全部章节';
     }
     function renderSecs() {
       const kw = secKw.trim().toLowerCase();
@@ -2873,11 +2882,6 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       updateSecSummary();
     }
 
-    function shortTitle(t) {
-      const s = String(t || '未命名章节');
-      return s.length > 18 ? s.slice(0, 17) + '…' : s;
-    }
-
     /* ---- 实时可练题量 ---- */
     function curFilter() {
       const raw = document.querySelector('#seg-type .on').dataset.v;
@@ -2912,6 +2916,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         : '该筛选下没有可练的题（或都缺答案）';
       startBtn.disabled = !n;
       renderTypeHint(n);
+      const typeText = { all: '全部题型', choice: '选择/判断', fill: '填空题' }[document.querySelector('#seg-type .on').dataset.v] || '全部题型';
+      const orderText = document.querySelector('#seg-order .on').dataset.v === 'shuffle' ? '随机' : '顺序';
+      document.getElementById('advanced-summary').textContent = `${selSecs.size ? `${selSecs.size} 章` : '全部章节'} · ${typeText} · ${orderText}`;
     }
     function renderTypeHint(n) {
       document.getElementById('type-hint').textContent = `当前范围可练 ${n} 题`;
@@ -3979,9 +3986,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
   /* ================= 页面：错题本 / 收藏夹（同一入口页的两种视图） ================= */
   const REVIEW_NAV = `
-    <div class="seg" style="margin-bottom:12px">
+    <div class="seg review-nav">
       <button data-nav="#/wrong">错题本</button>
-      <button data-nav="#/star">★ 收藏夹</button>
+      <button data-nav="#/star">收藏夹</button>
     </div>`;
   function bindNavSeg(activeHash) {
     document.querySelectorAll('#view [data-nav]').forEach(b => {
@@ -4001,30 +4008,31 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       g.items.push(q);
     }
     return groups.map(g => `
-      <div class="rev-group">
-        <button class="rev-group-head" data-rev-fold="${g.id}" style="display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;padding:12px 4px;cursor:pointer;text-align:left">
-          <span class="rev-arrow" style="color:var(--muted,#888);font-size:12px;flex:0 0 auto">▸</span>
-          <span class="muted small" style="font-weight:600">📁 ${escapeHtml(bankName.get(g.id) || '未知题库')} · ${g.items.length} 题</span>
+      <section class="rev-group">
+        <button class="rev-group-head" data-rev-fold="${g.id}">
+          <span class="rev-arrow">▸</span>
+          <span class="rev-group-name">${escapeHtml(bankName.get(g.id) || '未知题库')}</span>
+          <span class="rev-group-count">${g.items.length} 题</span>
         </button>
-        <div id="rev-body-${g.id}" style="display:none">
+        <div class="rev-group-body" id="rev-body-${g.id}" style="display:none">
           ${g.items.map(q => `
-            <div class="card wrong-card" onclick="App.openQuestionDetail('${q.id}')" style="cursor:pointer">
-              <div class="wrong-head" style="display:flex;align-items:center;gap:8px">
+            <article class="wrong-card review-question" onclick="App.openQuestionDetail('${q.id}')">
+              <div class="wrong-head">
                 <span class="q-type ${q.type}">${typeLabel[q.type]}</span>
                 <span class="rev-ops">
                   ${starred
-                    ? `<button class="rev-op" data-unstar="${q.id}" title="取消收藏">★ 取消</button>`
-                    : `<button class="rev-op danger" data-rev-del="${q.id}" title="移出错题本">✕ 移出</button>`}
+                    ? `<button class="rev-op" data-unstar="${q.id}" title="取消收藏">取消收藏</button>`
+                    : `<button class="rev-op danger" data-rev-del="${q.id}" title="移出错题本">移出</button>`}
                 </span>
               </div>
               <div class="stem sm">${renderStem(q)}</div>
               ${q.answer
                 ? `<div class="wrong-ans">答案：${escapeHtml(q.answer.replace(/\|\|\|/g, ' ／ '))}</div>`
-                : `<div class="muted small" style="margin-top:8px">（本题缺答案）</div>`}
+                : `<div class="muted small" style="margin-top:8px">本题缺答案</div>`}
               ${q.explanation ? `<div class="judge-exp sm">解析：${escapeHtml(q.explanation)}</div>` : ''}
-            </div>`).join('')}
+            </article>`).join('')}
         </div>
-      </div>`).join('');
+      </section>`).join('');
   }
 
   /* 分组折叠绑定：点库头切换展开/收起 */
@@ -4061,11 +4069,15 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const qs = (await DB.wrongQuestions()).filter(q => !muted.has(q.id));
     const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
-      <button class="btn primary big" onclick="App.navigate('#/wrong-setup')">重做错题（${qs.length} · 按题库选）</button>
+      <div class="card review-summary">
+        <div><span>待复习错题</span><b>${qs.length}<small> 题</small></b></div>
+        <button class="btn primary" onclick="App.navigate('#/wrong-setup')">重做错题</button>
+      </div>
+      <div class="review-list-head"><b>按题库分组</b><span>点题库展开</span></div>
       <div class="wrong-list">
         ${reviewGrouped(qs, bankName, false)}
       </div>`
-      : `<div class="empty" style="padding-top:40px">没有错题<br>继续保持！</div>`);
+      : `<div class="empty review-empty"><b>没有错题</b><span>继续保持，答错的题会自动收进这里。</span></div>`);
     bindNavSeg('#/wrong');
     bindReviewFolds();
     $view().querySelectorAll('[data-rev-del]').forEach(btn => {
@@ -4087,13 +4099,15 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const bankName = new Map((await DB.bankList()).map(b => [b.id, b.name]));
     const ready = qs.filter(q => q.answer).length;
     $view().innerHTML = REVIEW_NAV + (qs.length ? `
-      ${ready
-        ? `<button class="btn primary big" onclick="App.navigate('#/star-setup')">收藏练习（${ready} · 按题库选）</button>`
-        : `<div class="muted small" style="margin-bottom:12px">收藏的题都缺答案，先在题库里补答案才能练习</div>`}
+      <div class="card review-summary star-summary">
+        <div><span>已收藏题目</span><b>${qs.length}<small> 题</small></b></div>
+        ${ready ? `<button class="btn primary" onclick="App.navigate('#/star-setup')">收藏练习</button>` : '<span class="muted small">补答案后可练习</span>'}
+      </div>
+      <div class="review-list-head"><b>按题库分组</b><span>点题库展开</span></div>
       <div class="wrong-list">
         ${reviewGrouped(qs, bankName, true)}
       </div>`
-      : `<div class="empty" style="padding-top:40px">还没有收藏的题<br><span class="muted small">刷题时点右上角 ☆ 收藏</span></div>`);
+      : `<div class="empty review-empty"><b>还没有收藏题</b><span>刷题时点右上角 ☆，题目会集中到这里。</span></div>`);
     bindNavSeg('#/star');
     bindReviewFolds();
     $view().querySelectorAll('[data-unstar]').forEach(btn => {
@@ -4502,33 +4516,20 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       ? (est.sections || []).filter(x => (x.n || 0) >= 2).sort((a, b) => (a.score || 0) - (b.score || 0))[0]
       : null;
     if (!total) return '';
+    let subtitle = '按题目难度推算';
+    let metrics;
     if (score == null) {
-      return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
-        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">正在计算…</span></div>
-        <div class="audit-sum" style="margin:0">
-          <div class="audit-stat"><b>…</b><span>预计卷面分</span></div>
-          <div class="audit-stat"><b>…</b><span>及格概率</span></div>
-          <div class="audit-stat"><b>…</b><span>最弱章节</span></div>
-        </div>
-      </div>`;
+      subtitle = '正在计算…';
+      metrics = [['预计卷面分', '…'], ['及格概率', '…'], ['最弱章节', '…']];
+    } else if (est && est.insufficient) {
+      subtitle = '数据还不够，先练题';
+      metrics = [['已答题数', total], ['建议至少答', 30], ['还差', Math.max(0, 30 - total)]];
+    } else {
+      metrics = [['预计卷面分', score], ['及格概率', Math.round((pred.passRate || 0) * 100) + '%'], [weak ? '最弱章节' : '暂无一章', weak ? Math.round(weak.score) : '—']];
     }
-    if (est && est.insufficient) {
-      return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
-        <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">数据还不够，先练题</span></div>
-        <div class="audit-sum" style="margin:0">
-          <div class="audit-stat"><b>${total}</b><span>已答题数</span></div>
-          <div class="audit-stat"><b>30</b><span>建议至少答</span></div>
-          <div class="audit-stat"><b>${Math.max(0, 30 - total)}</b><span>还差</span></div>
-        </div>
-      </div>`;
-    }
-    return `<div class="card" onclick="App.navigate('#/ability')" style="cursor:pointer">
-      <div class="card-title">能力估分 <span class="muted small" style="font-weight:400">按题目难度推算 · 点开详情</span></div>
-      <div class="audit-sum" style="margin:0">
-        <div class="audit-stat"><b>${score}</b><span>预计卷面分</span></div>
-        <div class="audit-stat"><b>${Math.round((pred.passRate || 0) * 100)}%</b><span>及格概率</span></div>
-        <div class="audit-stat"><b>${weak ? Math.round(weak.score) : '—'}</b><span>${weak ? '最弱章节' : '暂无一章'}</span></div>
-      </div>
+    return `<div class="card ability-summary" onclick="App.navigate('#/ability')">
+      <div class="ability-head"><div><b>能力估分</b><span>${subtitle}</span></div><span class="ability-link">查看详情 ›</span></div>
+      <div class="ability-metrics">${metrics.map(([label, value]) => `<div class="ability-metric"><span>${label}</span><b>${value}</b></div>`).join('')}</div>
     </div>`;
   }
 
@@ -4579,47 +4580,49 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const cachedEst = (s.total && abilityCache && abilityCache.key === abilityKey(allQ, hist)) ? abilityCache.est : null;
 
     $view().innerHTML = `
-      <div class="stats-row">
+      <div class="card stats-row">
         <div class="stat-cell"><b>${s.total}</b><span>累计答题</span></div>
         <div class="stat-cell"><b>${acc}%</b><span>正确率</span></div>
         <div class="stat-cell"><b>${wrongCount}</b><span>当前错题</span></div>
       </div>
       <div id="ability-card">${abilityCardHtml(cachedEst, s.total)}</div>
-      <button class="btn ghost big" onclick="App.navigate('#/history')">📋 练习记录${histCount ? `（${histCount}）` : ''}</button>
-      <div class="card">
-        <div class="card-title">章节正确率（薄弱在前）</div>
+      <button class="card stats-history" onclick="App.navigate('#/history')"><span>练习记录</span><b>${histCount} 次 <i>›</i></b></button>
+      <div class="card chapter-stats-card">
+        <div class="card-title">章节正确率 <span class="muted small">薄弱在前</span></div>
         ${rows.length ? `
+        <div class="muted small chapter-stats-note">按最近一次作答统计，点一行即可练这一章。</div>
         <div class="chips" id="sec-filter" style="margin-bottom:10px">
           <button class="chip on" data-v="all">全部章节（${rows.length}）</button>
           <button class="chip" data-v="weak">只看薄弱 &lt;60%（${rows.filter(r => r.acc < 60).length}）</button>
         </div>
         <div id="sec-acc-list"></div>
-        <button class="btn ghost" id="sec-more" style="display:none;margin-top:8px"></button>
-        <div class="muted small" style="margin-top:8px">按「最近一次作答」统计；点某一行可直接开始练这一章</div>`
-        : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况</div>'}
+        <button class="btn ghost" id="sec-more" style="display:none;margin-top:8px"></button>`
+        : '<div class="muted">还没有作答记录，练几道题就能看到各章节的掌握情况。</div>'}
       </div>
-      <div class="card">
-        <div class="card-title">近 14 日答题量</div>
-        ${days.length ? `<div class="chart">
-          ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
-            <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
-            <span class="col-label"><b class="lb-num">${v.total}</b><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
+      <details class="card trend-card">
+        <summary><b>近 14 日学习趋势</b><span>答题量与正确率</span><i>›</i></summary>
+        <div class="trend-body">
+          <section><div class="trend-title">每日答题量</div>
+          ${days.length ? `<div class="chart">
+            ${days.map(([d, v]) => `<div class="col" title="${d}：${v.total} 题">
+              <div class="col-track"><div class="col-bar" style="height:${Math.round(v.total / max * 100)}%"></div></div>
+              <span class="col-label"><b class="lb-num">${v.total}</b><span class="lb-full">${d.slice(5)}</span><span class="lb-mini">${d.slice(8)}</span></span></div>`).join('')}
+          </div>` : '<div class="muted">暂无答题记录</div>'}
+          </section>
+          <section><div class="trend-title">每日正确率</div>
+          ${days.length ? `<div class="chart">
+            ${days.map(([d, v]) => {
+              const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
+              return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
+                <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
+                <span class="col-label"><b class="lb-num" style="color:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}">${a}%</b><span class="lb-sub">${v.total} 题</span></span></div>`;
+            }).join('')}
+          </div>
+          <div class="muted small" style="margin-top:8px">绿色为当日正确率不低于 60%，红色为低于 60%。</div>`
+          : '<div class="muted">暂无答题记录</div>'}
+          </section>
         </div>
-        <div class="muted small" style="margin-top:8px">柱子下面的数字 = 当天答了几题；没有答题的日期不显示柱</div>` : '<div class="muted">暂无答题记录</div>'}
-      </div>
-      <div class="card">
-        <div class="card-title">近 14 日正确率</div>
-        ${days.length ? `<div class="chart">
-          ${days.map(([d, v]) => {
-            const a = v.total ? Math.round(v.correct / v.total * 100) : 0;
-            return `<div class="col" title="${d}：${a}%（${v.correct}/${v.total}）">
-              <div class="col-track"><div class="col-bar" style="height:${v.total ? Math.max(a, 3) : 3}%;background:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}"></div></div>
-              <span class="col-label"><b class="lb-num" style="color:${v.total && a >= 60 ? 'var(--ok,#3ba776)' : 'var(--bad,#e05656)'}">${a}%</b><span class="lb-sub">${v.total} 题</span></span></div>`;
-          }).join('')}
-        </div>
-        <div class="muted small" style="margin-top:8px">绿 = 当日 ≥60%；红 = 低于 60%；没有答题的日期不显示柱</div>`
-        : '<div class="muted">暂无答题记录</div>'}
-      </div>`;
+      </details>`;
 
     /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
     if (!cachedEst && s.total > 0) {
@@ -4693,36 +4696,33 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     $view().innerHTML = `
       <div class="card me-hero">
         <div class="me-avatar">刷</div>
-        <div class="me-name">刷题宝</div>
-        <div class="muted small">v${VERSION} · ${banks.length} 个题库 · ${qTotal} 道题</div>
+        <div class="me-hero-copy"><div class="me-name">刷题宝</div><div class="muted small">${banks.length} 个题库 · ${qTotal} 道题</div></div>
+        <span class="me-version">v${VERSION}</span>
       </div>
+      <div class="me-section-title">偏好与数据</div>
       <div class="card me-list">
         <button class="me-entry" onclick="App.navigate('#/settings')">
-          <span class="me-ico" style="background:var(--primary)">⚙</span>
-          <span class="me-label">设置</span>
-          <span class="muted small">模型 / Key / 外观 / 计费</span>
+          <span class="me-ico" style="background:var(--primary)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a8 8 0 0 0-1.7-1L14.5 3h-5L9 6a8 8 0 0 0-1.7 1L5 6.1 3 9.5 5 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a8 8 0 0 0 1.7 1l.5 3.1h5l.4-3.1a8 8 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5a7 7 0 0 0 .1-1z"/></svg></span>
+          <span class="me-label">设置<small>作答、外观、智能工具与备份</small></span>
           <span class="me-chev">›</span>
         </button>
         <button class="me-entry" onclick="App.navigate('#/notes')">
-          <span class="me-ico" style="background:#d97706">📝</span>
-          <span class="me-label">我的笔记</span>
-          <span class="muted small">${nNotes ? nNotes + ' 条 · 只看你自己写的' : '给某道题写感悟'}</span>
+          <span class="me-ico" style="background:#d97706"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M8 7h8M8 11h6"/></svg></span>
+          <span class="me-label">我的笔记<small>${nNotes ? nNotes + ' 条笔记' : '给题目写感悟'}</small></span>
           <span class="me-chev">›</span>
         </button>
         <button class="me-entry" onclick="App.navigate('#/recycle')">
-          <span class="me-ico" style="background:#8a93a8">🗑</span>
-          <span class="me-label">回收站</span>
-          <span class="muted small">删掉的题库先放这里</span>
+          <span class="me-ico" style="background:#8a93a8"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/></svg></span>
+          <span class="me-label">回收站<small>恢复误删的题库或题目</small></span>
           <span class="me-chev">›</span>
         </button>
         <button class="me-entry" id="check-update">
-          <span class="me-ico" style="background:#3d8f5f">⟳</span>
-          <span class="me-label">检查更新</span>
-          <span class="muted small">对比 GitHub 最新版</span>
+          <span class="me-ico" style="background:#3d8f5f"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg></span>
+          <span class="me-label">检查更新<small>查看新版本与更新内容</small></span>
           <span class="me-chev">›</span>
         </button>
       </div>
-      <div class="muted small" style="text-align:center;margin-top:16px">本地题库 · 数据不出设备 · 定期「导出备份」更安心</div>`;
+      <div class="me-footnote">题库与作答数据只保存在本机，建议定期导出备份。</div>`;
 
     /* 检查更新：拉 GitHub 最新 Release 对比版本号，有新版直接打开 APK 下载直链 */
     document.getElementById('check-update').onclick = async () => {
