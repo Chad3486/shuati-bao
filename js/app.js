@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.8.37'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.8.38'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -2568,13 +2568,16 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
       const secCount = new Map();  // secIdx(字符串) -> 有答案题数
+      const secTypes = new Map();  // secIdx(字符串) -> 题型集合（同名章节在列表里也要能分清）
       let ans = 0;
       for (const q of qs) {
         const k = String(q.secIdx ?? '');
+        if (!secTypes.has(k)) secTypes.set(k, new Set());
+        if (q.type) secTypes.get(k).add(q.type);
         if (q.answer) { ans++; secCount.set(k, (secCount.get(k) || 0) + 1); }
         else if (!secCount.has(k)) secCount.set(k, 0);
       }
-      bankData[b.id] = { qs, ans, secCount };
+      bankData[b.id] = { qs, ans, secCount, secTypes };
     }));
     const total = banks.reduce((s, b) => s + bankData[b.id].ans, 0);
     const starCount = (await DB.starQuestions()).filter(q => q.answer).length;
@@ -2680,7 +2683,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
             <button class="btn primary" id="sec-sheet-done" style="padding:8px 16px">完成</button>
           </div>
           <div class="pick-tools">
-            <input id="sec-search" class="search-input" placeholder="搜索章节 / 题库名…">
+            <input id="sec-search" class="search-input" placeholder="搜索章节 / 题型 / 题库名…">
             <div class="chips" style="margin-top:8px">
               <button class="chip" id="sec-sheet-clear">清空（=全部章节）</button>
               <button class="chip" id="sec-expand-all">全部展开</button>
@@ -2770,6 +2773,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
 
     /* ---- 章节勾选（按库分组、整行勾选；不选 = 全部章节） ---- */
     const secFolded = new Set();   // 记住用户在弹层里折叠了哪些库（默认全展开）
+    const secTypeNames = { single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题' };
+    function rowType(d, key, preferred) {
+      if (preferred && secTypeNames[preferred]) return secTypeNames[preferred];
+      const types = d.secTypes.get(key) || new Set();
+      return types.size === 1 ? (secTypeNames[[...types][0]] || '综合题') : '综合题';
+    }
     function updateSecGroupHead(grp) {
       if (!grp) return;
       const boxes = grp.querySelectorAll('input[data-sec]');
@@ -2798,11 +2807,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         const rows = list.map(s => ({
           key: b.id + ':' + s.secIdx,
           title: s.title || `第 ${s.secIdx} 节`,
+          type: rowType(d, String(s.secIdx), s.type),
           n: d.secCount.get(String(s.secIdx)) || 0
         }));
-        if (hasNoSec) rows.push({ key: b.id + ':', title: '未分节（没有章节信息的题）', n: d.secCount.get('') || 0 });
+        if (hasNoSec) rows.push({ key: b.id + ':', title: '未分节（没有章节信息的题）', type: rowType(d, '', null), n: d.secCount.get('') || 0 });
         const bankHit = kw && String(b.name).toLowerCase().includes(kw);
-        const shown = kw ? rows.filter(r => bankHit || String(r.title).toLowerCase().includes(kw)) : rows;
+        const shown = kw ? rows.filter(r => bankHit || String(r.title + ' ' + r.type).toLowerCase().includes(kw)) : rows;
         if (!shown.length) continue;
         const picked = rows.filter(r => selSecs.has(r.key)).length;
         const folded = !kw && secFolded.has(b.id);
@@ -2817,7 +2827,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
             ${folded ? '' : `<div class="sec-rows">${shown.map(r => `
               <label class="pick-row${selSecs.has(r.key) ? ' on' : ''}">
                 <input type="checkbox" data-sec="${escapeHtml(r.key)}" ${selSecs.has(r.key) ? 'checked' : ''}>
-                <span class="nm">${escapeHtml(r.title)}</span>
+                <span class="nm"><span class="pick-title">${escapeHtml(r.title)}</span>${r.type && !r.title.includes(r.type) ? `<span class="pick-sub">${escapeHtml(r.type)}</span>` : ''}</span>
                 <span class="cnt">${r.n} 题</span>
               </label>`).join('')}</div>`}
           </div>`);
@@ -5432,87 +5442,190 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     return out;
   }
 
-  /* 单个题库的每日一练设置：题数 / 配比 / 只看哪些章节（留空=跟随默认） */
+  /* 单个题库的每日一练设置：题数 / 配比 / 章节。
+     章节不再截成 14 字胶囊：同名章节会保留完整标题，并用题型和可练题量区分。 */
   async function openDailyCfg(bankId) {
     const bank = await DB.bankGet(bankId);
     if (!bank) return;
-    const c = await dailyCfg();
+    const [c, questions] = await Promise.all([dailyCfg(), DB.questionsByBank(bankId)]);
     const b = c.perBank[bankId] || {};
     const secList = bank.sections || [];
     const sel = new Set(Array.isArray(b.secs) ? b.secs.map(Number) : []);
+    const typeNames = { single: '单选题', multi: '多选题', judge: '判断题', fill: '填空题' };
+    const secCount = new Map();
+    const secTypes = new Map();
+    for (const q of questions) {
+      const key = String(q.secIdx ?? '');
+      const item = secCount.get(key) || { total: 0, answered: 0 };
+      item.total++;
+      if (q.answer) item.answered++;
+      secCount.set(key, item);
+      if (!secTypes.has(key)) secTypes.set(key, new Set());
+      if (q.type) secTypes.get(key).add(q.type);
+    }
+    const secRows = secList.map((sec, index) => {
+      const key = String(sec.secIdx ?? '');
+      const count = secCount.get(key) || { total: 0, answered: 0 };
+      const types = secTypes.get(key) || new Set();
+      const type = typeNames[sec.type] || (types.size === 1 ? typeNames[[...types][0]] : '综合题');
+      const numericIdx = Number(sec.secIdx);
+      const title = String(sec.title || (Number.isFinite(numericIdx) ? `第 ${numericIdx + 1} 组` : `第 ${index + 1} 组`));
+      return { secIdx: Number(sec.secIdx), title, type, answered: count.answered, total: count.total };
+    });
+    let secKw = '';
     const mask = document.createElement('div');
-    mask.className = 'sheet-mask';
-    const draw = () => {
-      mask.innerHTML = `
-      <div class="sheet-panel">
-        <div class="sheet-head"><b>${escapeHtml(bank.name)} · 每日一练</b><button class="sheet-close">×</button></div>
-        <div class="sheet-sub">留空 = 跟随默认（默认每库 ${c.size} 题，错 ${c.quota.wrong} / 新 ${c.quota.fresh} / 复 ${c.quota.review}）</div>
-        <div class="field"><span>这个题库每天几题</span>
-          <div class="dset-num-row">
-            <label class="dset-num"><input id="dc-size" type="number" min="1" max="60" placeholder="${c.size}" value="${b.size != null ? b.size : ''}"><em>题</em></label>
+    mask.className = 'sheet-mask daily-config-mask';
+    mask.innerHTML = `
+      <div class="sheet-panel daily-config-panel" role="dialog" aria-modal="true" aria-labelledby="dc-title">
+        <div class="pick-grip"></div>
+        <div class="dc-head">
+          <div class="dc-heading">
+            <span class="dc-eyebrow">每日一练 · 单独设置</span>
+            <b id="dc-title">${escapeHtml(bank.name)}</b>
           </div>
+          <button class="sheet-close" aria-label="关闭">×</button>
         </div>
-        <div class="field"><span>配比（错题 / 新题 / 复习）</span>
-          <div class="dset-num-row">
-            <label class="dset-num"><span>错题</span><input id="dc-wrong" type="number" min="0" placeholder="${c.quota.wrong}" value="${b.quota ? b.quota.wrong : ''}"></label>
-            <label class="dset-num"><span>新题</span><input id="dc-fresh" type="number" min="0" placeholder="${c.quota.fresh}" value="${b.quota ? b.quota.fresh : ''}"></label>
-            <label class="dset-num"><span>复习</span><input id="dc-review" type="number" min="0" placeholder="${c.quota.review}" value="${b.quota ? b.quota.review : ''}"></label>
-          </div>
+        <div class="dc-scroll">
+          <div class="dc-default-note">留空跟随全局默认：每天 ${c.size} 题，错题 ${c.quota.wrong} / 新题 ${c.quota.fresh} / 复习 ${c.quota.review}</div>
+
+          <section class="dc-section">
+            <div class="dc-section-title"><b>每日题量</b><span>1–60 题</span></div>
+            <div class="dc-stepper">
+              <button type="button" data-step="-1" data-target="dc-size" aria-label="减少题量">−</button>
+              <input id="dc-size" type="number" min="1" max="60" inputmode="numeric" placeholder="${c.size}" value="${b.size != null ? b.size : ''}" aria-label="这个题库每天几题">
+              <span>题 / 天</span>
+              <button type="button" data-step="1" data-target="dc-size" aria-label="增加题量">＋</button>
+            </div>
+          </section>
+
+          <section class="dc-section">
+            <div class="dc-section-title"><b>题目配比</b><span id="dc-quota-sum"></span></div>
+            <div class="dc-quota-grid">
+              <label class="dc-quota wrong"><span>错题</span><input id="dc-wrong" type="number" min="0" max="60" inputmode="numeric" placeholder="${c.quota.wrong}" value="${b.quota ? b.quota.wrong : ''}"></label>
+              <label class="dc-quota fresh"><span>新题</span><input id="dc-fresh" type="number" min="0" max="60" inputmode="numeric" placeholder="${c.quota.fresh}" value="${b.quota ? b.quota.fresh : ''}"></label>
+              <label class="dc-quota review"><span>复习</span><input id="dc-review" type="number" min="0" max="60" inputmode="numeric" placeholder="${c.quota.review}" value="${b.quota ? b.quota.review : ''}"></label>
+            </div>
+            <div class="dc-ratio-bar" aria-hidden="true"><i id="dc-bar-wrong"></i><i id="dc-bar-fresh"></i><i id="dc-bar-review"></i></div>
+            <p class="dc-help">按比例凑够每日题量，某类题不够时自动用其他题补齐。</p>
+          </section>
+
+          ${secRows.length ? `<section class="dc-section dc-scope-section">
+            <div class="dc-section-title"><b>练习范围</b><span id="dc-sec-sum"></span></div>
+            <p class="dc-help">不勾选 = 全部 ${secRows.length} 个章节 / 题型分组。同名分组按题型区分，标题会完整显示。</p>
+            <div class="dc-sec-tools">
+              <input id="dc-sec-search" class="search-input" type="search" placeholder="搜索章节或题型…" aria-label="搜索章节或题型">
+              <div class="dc-sec-actions">
+                <button type="button" id="dc-sec-all">全选</button>
+                <button type="button" id="dc-sec-clear">清除筛选（全部）</button>
+              </div>
+            </div>
+            <div class="dc-sec-list" id="dc-secs"></div>
+          </section>` : ''}
         </div>
-        ${secList.length ? `<div class="field"><span>只练这些章节（不选 = 全部 ${secList.length} 章）</span>
-          <div class="chips" id="dc-secs">
-            ${secList.map(sec => `<button class="chip ${sel.has(Number(sec.secIdx)) ? 'on' : ''}" data-s="${sec.secIdx}">${escapeHtml(String(sec.title || ('第' + sec.secIdx + '节')).slice(0, 14))}</button>`).join('')}
-          </div>
-        </div>` : ''}
-        <div class="btn-row" style="margin-top:14px">
+        <div class="dc-foot">
           <button class="btn ghost" id="dc-reset">恢复默认</button>
-          <button class="btn primary" id="dc-save">保存</button>
+          <button class="btn primary" id="dc-save">保存设置</button>
         </div>
       </div>`;
-      mask.querySelector('.sheet-close').onclick = () => mask.remove();
-      const secsEl = mask.querySelector('#dc-secs');
-      if (secsEl) secsEl.onclick = (e) => {
-        const btn = e.target.closest('button[data-s]');
-        if (!btn) return;
-        btn.classList.toggle('on');
-      };
-      const write = async (patch) => {
-        const cfg = await dailyCfg();
-        const cur = cfg.perBank[bankId] || {};
-        cfg.perBank[bankId] = Object.assign({}, cur, patch);
-        // 清掉空的字段（= 跟随默认）
-        for (const k of ['size', 'quota', 'secs']) {
-          const v = cfg.perBank[bankId][k];
-          if (v == null || (Array.isArray(v) && !v.length) || (k === 'size' && !v)) delete cfg.perBank[bankId][k];
-        }
-        if (!Object.keys(cfg.perBank[bankId]).length) delete cfg.perBank[bankId];
-        await DB.metaSet('dailyCfg', cfg);
-        // 这个库今天的题集作废，按新设置重排
-        const map = await dailyBanksMap();
-        delete map[bankId];
-        await DB.metaSet('dailyBanks', map);
-        mask.remove();
-        render();
-      };
-      mask.querySelector('#dc-reset').onclick = () => write({ size: null, quota: null, secs: null });
-      mask.querySelector('#dc-save').onclick = () => {
-        const sizeV = parseInt(mask.querySelector('#dc-size').value, 10);
-        const q = {
-          wrong: parseInt(mask.querySelector('#dc-wrong').value, 10),
-          fresh: parseInt(mask.querySelector('#dc-fresh').value, 10),
-          review: parseInt(mask.querySelector('#dc-review').value, 10)
-        };
-        const hasQuota = [q.wrong, q.fresh, q.review].some(v => Number.isFinite(v));
-        const picked = [...mask.querySelectorAll('#dc-secs button.on')].map(x => Number(x.dataset.s));
-        write({
-          size: Number.isFinite(sizeV) ? Math.max(1, Math.min(60, sizeV)) : null,
-          quota: hasQuota ? normQuota(q) : null,
-          secs: picked.length ? picked : null
-        });
-      };
+
+    const close = () => mask.remove();
+    mask.querySelector('.sheet-close').onclick = close;
+    mask.onclick = e => { if (e.target === mask) close(); };
+
+    const quotaIds = ['wrong', 'fresh', 'review'];
+    const updateQuota = () => {
+      const vals = quotaIds.map(k => {
+        const el = mask.querySelector('#dc-' + k);
+        const typed = parseInt(el.value, 10);
+        return Math.max(0, Number.isFinite(typed) ? typed : (parseInt(el.placeholder, 10) || 0));
+      });
+      const sum = vals.reduce((a, n) => a + n, 0) || 1;
+      mask.querySelector('#dc-quota-sum').textContent = vals.join(' : ');
+      quotaIds.forEach((k, i) => { mask.querySelector('#dc-bar-' + k).style.width = (vals[i] * 100 / sum) + '%'; });
     };
-    draw();
-    mask.onclick = e => { if (e.target === mask) mask.remove(); };
+    quotaIds.forEach(k => { mask.querySelector('#dc-' + k).oninput = updateQuota; });
+    updateQuota();
+
+    mask.querySelectorAll('button[data-step]').forEach(btn => {
+      btn.onclick = () => {
+        const input = mask.querySelector('#' + btn.dataset.target);
+        const typed = parseInt(input.value, 10);
+        const cur = Number.isFinite(typed) ? typed : (parseInt(input.placeholder, 10) || 1);
+        const min = Number(input.min) || 1, max = Number(input.max) || 60;
+        input.value = Math.max(min, Math.min(max, cur + Number(btn.dataset.step)));
+      };
+    });
+
+    const updateSecSummary = () => {
+      const el = mask.querySelector('#dc-sec-sum');
+      if (el) el.textContent = sel.size ? `已选 ${sel.size}/${secRows.length}` : '全部章节';
+    };
+    const renderSecs = () => {
+      const area = mask.querySelector('#dc-secs');
+      if (!area) return;
+      const kw = secKw.trim().toLowerCase();
+      const rows = secRows.filter(r => !kw || (r.title + ' ' + r.type).toLowerCase().includes(kw));
+      area.innerHTML = rows.length ? rows.map(r => {
+        const on = sel.has(r.secIdx);
+        const typeInTitle = r.title.includes(r.type);
+        return `<label class="dc-sec-row${on ? ' on' : ''}">
+          <input type="checkbox" data-s="${r.secIdx}" ${on ? 'checked' : ''}>
+          <span class="dc-sec-copy">
+            <span class="dc-sec-title">${escapeHtml(r.title)}</span>
+            <span class="dc-sec-meta">${typeInTitle ? '' : escapeHtml(r.type) + ' · '}${r.answered} 题可练${r.total !== r.answered ? ` · 共 ${r.total} 题` : ''}</span>
+          </span>
+        </label>`;
+      }).join('') : '<div class="dc-sec-empty">没有匹配的章节或题型</div>';
+      area.querySelectorAll('input[data-s]').forEach(box => {
+        box.onchange = () => {
+          const idx = Number(box.dataset.s);
+          box.checked ? sel.add(idx) : sel.delete(idx);
+          box.closest('.dc-sec-row').classList.toggle('on', box.checked);
+          updateSecSummary();
+        };
+      });
+      updateSecSummary();
+    };
+    if (secRows.length) {
+      mask.querySelector('#dc-sec-search').oninput = e => { secKw = e.target.value; renderSecs(); };
+      mask.querySelector('#dc-sec-all').onclick = () => { secRows.forEach(r => sel.add(r.secIdx)); renderSecs(); };
+      mask.querySelector('#dc-sec-clear').onclick = () => { sel.clear(); renderSecs(); };
+      renderSecs();
+    }
+
+    const write = async (patch, message) => {
+      const cfg = await dailyCfg();
+      const cur = cfg.perBank[bankId] || {};
+      cfg.perBank[bankId] = Object.assign({}, cur, patch);
+      for (const k of ['size', 'quota', 'secs']) {
+        const v = cfg.perBank[bankId][k];
+        if (v == null || (Array.isArray(v) && !v.length) || (k === 'size' && !v)) delete cfg.perBank[bankId][k];
+      }
+      if (!Object.keys(cfg.perBank[bankId]).length) delete cfg.perBank[bankId];
+      await DB.metaSet('dailyCfg', cfg);
+      const map = await dailyBanksMap();
+      delete map[bankId];
+      await DB.metaSet('dailyBanks', map);
+      close();
+      toast(message || '已保存，今天的题已按新设置重排');
+      render();
+    };
+    mask.querySelector('#dc-reset').onclick = () => write({ size: null, quota: null, secs: null }, '已恢复全局默认设置');
+    mask.querySelector('#dc-save').onclick = () => {
+      const sizeV = parseInt(mask.querySelector('#dc-size').value, 10);
+      const q = {
+        wrong: parseInt(mask.querySelector('#dc-wrong').value, 10),
+        fresh: parseInt(mask.querySelector('#dc-fresh').value, 10),
+        review: parseInt(mask.querySelector('#dc-review').value, 10)
+      };
+      if ([q.wrong, q.fresh, q.review].some(v => Number.isFinite(v) && v < 0)) return toast('配比不能小于 0');
+      const hasQuota = [q.wrong, q.fresh, q.review].some(v => Number.isFinite(v));
+      write({
+        size: Number.isFinite(sizeV) ? Math.max(1, Math.min(60, sizeV)) : null,
+        quota: hasQuota ? normQuota(q) : null,
+        secs: sel.size ? [...sel] : null
+      });
+    };
     document.body.appendChild(mask);
   }
 
@@ -5534,27 +5647,29 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const dcfg0 = await dailyCfg();
     for (const r of rows) r.cfg = await dailyPlanCfg(r.bank.id);
     $view().innerHTML = `
-      <div class="card" style="padding:12px 14px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <b style="flex:1">今天已完成 ${doneCount} / ${rows.length} 个题库</b>
-          <span class="muted small">每个库每天一组</span>
+      <div class="daily-overview">
+        <div class="daily-overview-main">
+          <div><span>今日练习</span><b>${doneCount}<small> / ${rows.length}</small></b></div>
+          <strong>${doneCount === rows.length ? '今日全部完成' : `还剩 ${rows.length - doneCount} 个题库`}</strong>
         </div>
-        <div class="muted small" style="margin-top:4px" id="daily-desc">默认每库 ${dcfg0.size} 题（错 ${dcfg0.quota.wrong} / 新 ${dcfg0.quota.fresh} / 复 ${dcfg0.quota.review}，某类不够自动回填）。点题库右侧 ⚙ 可给这个库单独设题数、配比和章节。</div>
+        <div class="daily-overview-bar"><i style="width:${Math.round(doneCount * 100 / rows.length)}%"></i></div>
+        <p>默认每库 ${dcfg0.size} 题 · 错 ${dcfg0.quota.wrong} / 新 ${dcfg0.quota.fresh} / 复 ${dcfg0.quota.review}。点右侧设置可单独调整题量、配比和章节。</p>
       </div>
       ${rows.map(({ bank, meta, streak, cfg }) => `
-      <div class="card">
-        <div style="display:flex;align-items:center;gap:8px">
-          <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bank.name)}</b>
-          <span class="muted small">🔥 连续 ${streak.days || 0} 天</span>
-          <button class="daily-cfg" data-cfg="${bank.id}" title="这个题库的每日一练设置">⚙</button>
+      <div class="card daily-bank-card${meta.done ? ' done' : ''}">
+        <div class="daily-bank-head">
+          <b>${escapeHtml(bank.name)}</b>
+          <button class="daily-cfg" data-cfg="${bank.id}" title="这个题库的每日一练设置" aria-label="设置 ${escapeHtml(bank.name)} 的每日一练">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15z"></path></svg>
+          </button>
         </div>
-        <div class="muted small" style="margin-top:4px">${meta.done
+        <div class="daily-bank-tags"><span>连续 ${streak.days || 0} 天</span><span>${cfg.size} 题 / 天</span>${cfg.secs ? `<span>只练 ${cfg.secs.length} 组</span>` : '<span>全部章节</span>'}</div>
+        <div class="daily-bank-meta">${meta.done
           ? `今天已完成 · 答对 ${meta.correct ?? 0} / ${meta.total || 0} 题`
-          : `今天 ${meta.total || 0} 题${bdText(meta.breakdown) ? ' · ' + bdText(meta.breakdown) : ''}`}
-          · ${cfg.size} 题/天${cfg.secs ? ` · 只练 ${cfg.secs.length} 章` : ''}</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
-          <div class="daily-bar" style="background:var(--surface-2)"><i style="width:${meta.done ? 100 : 0}%;background:var(--primary)"></i></div>
-          <button class="btn primary" data-go="${bank.id}" data-again="${meta.done ? 1 : 0}">${meta.done ? '再来一组' : '开始'}</button>
+          : `今天 ${meta.total || 0} 题${bdText(meta.breakdown) ? ' · ' + bdText(meta.breakdown) : ''}`}</div>
+        <div class="daily-bank-bottom">
+          <div class="daily-bank-progress"><i style="width:${meta.done ? 100 : 0}%"></i></div>
+          <button class="btn ${meta.done ? 'ghost' : 'primary'}" data-go="${bank.id}" data-again="${meta.done ? 1 : 0}">${meta.done ? '再来一组' : '开始练习'}</button>
         </div>
       </div>`).join('')}`;
     $view().querySelectorAll('button[data-go]').forEach(btn => {
