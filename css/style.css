@@ -1122,7 +1122,7 @@ html.sheet-open, html.sheet-open body { overflow: hidden; height: 100%; }
   --hero-grad: linear-gradient(135deg, #155eef 0%, #3b82f6 100%);
 }
 body { background: var(--bg); }
-#view { padding: 14px 14px calc(88px + env(safe-area-inset-bottom)); }
+#view { padding: 10px 14px calc(88px + env(safe-area-inset-bottom)); }
 .card { border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-card); }
 .card-title { margin-bottom: 14px; font-size: 16px; }
 .card-title .muted { font-weight: 400; }
@@ -1140,22 +1140,25 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 }
 
 /* 题库：概览、每日一练、快捷入口各只出现一次；题库列表合并为轻量分组。 */
-.ov-card { padding: 16px; margin-bottom: 12px; }
-.ov-total { font-size: 28px; line-height: 1.2; }
-.ov-cells { margin-top: 14px; padding: 12px 4px; border-radius: 12px; background: var(--surface-2); }
+.ov-card { padding: 12px 14px; margin-bottom: 8px; }
+.ov-total { font-size: 27px; line-height: 1.2; }
+.ov-cells { margin-top: 10px; padding: 9px 4px; border-radius: 12px; background: var(--surface-2); }
 .ov-cell + .ov-cell { border-left: 1px solid var(--line); }
+.daily-card { gap: 10px; margin-bottom: 8px; padding: 10px 14px 12px; box-shadow: 0 6px 16px -10px var(--primary-glow); }
+.daily-title { margin-top: 1px; font-size: 17px; }
+.daily-btn { padding: 7px 14px; }
 .quick-grid {
-  gap: 0; margin-bottom: 16px; padding: 6px;
+  gap: 0; margin-bottom: 10px; padding: 4px;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow-card);
 }
-.quick-tile { padding: 12px 4px; background: transparent; border: 0; box-shadow: none; }
+.quick-tile { padding: 8px 4px; background: transparent; border: 0; box-shadow: none; }
 .quick-tile:active { background: var(--surface-2); }
-.quick-icon { width: 38px; height: 38px; margin-bottom: 7px; border-radius: 11px; }
+.quick-icon { width: 34px; height: 34px; margin-bottom: 5px; border-radius: 10px; }
 .quick-label { font-size: 13px; }
 .bank-section-head, .review-list-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  margin: 4px 2px 10px;
+  margin: 2px 2px 8px;
 }
 .bank-section-head b, .review-list-head b { font-size: 16px; }
 .bank-section-head span, .review-list-head span { color: var(--muted); font-size: 12px; }
@@ -1165,7 +1168,7 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
   box-shadow: var(--shadow-card);
 }
 .bank-list .bank-card {
-  margin: 0; padding: 16px 0; border: 0; border-bottom: 1px solid var(--line);
+  margin: 0; padding: 12px 0; border: 0; border-bottom: 1px solid var(--line);
   border-radius: 0; box-shadow: none;
 }
 .bank-list .bank-card:last-child { border-bottom: 0; }
@@ -1215,6 +1218,12 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .advanced-field { margin-top: 16px; }
 .advanced-field > span { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; }
 .advanced-field .muted { margin-top: 8px; line-height: 1.55; }
+.type-action {
+  align-items: center; min-height: 30px; margin-top: 5px; padding: 0;
+  color: var(--primary); font-size: 12px; font-weight: 650;
+  background: transparent; border: 0; cursor: pointer;
+}
+.setup-loading { padding: 34px 16px; color: var(--muted); text-align: center; }
 .setup-start { margin-top: 2px; font-size: 16px; }
 .setup-secondary { display: flex; gap: 10px; }
 .setup-secondary .btn { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
@@ -1300,11 +1309,12 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .trend-title { margin: 16px 0 10px; font-size: 14px; font-weight: 650; }
 
 /* 我的：身份卡改为紧凑横排，四个入口采用统一 SVG 图标与双行说明。 */
-.me-hero { display: flex; align-items: center; padding: 16px; color: var(--text); text-align: left; background: var(--card); }
+.me-hero { display: flex; flex-direction: row; align-items: center; gap: 0; padding: 14px 16px; color: var(--text); text-align: left; background: var(--card); }
 .me-hero .muted { color: var(--muted); }
 .me-avatar {
-  flex: 0 0 auto; width: 48px; height: 48px; margin: 0; border-radius: 14px;
-  font-size: 24px; box-shadow: none;
+  flex: 0 0 auto; width: 48px; height: 48px; margin: 0; border: 0; border-radius: 14px;
+  color: #fff; font-size: 24px; background: var(--primary); box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 .me-hero-copy { flex: 1 1 auto; min-width: 0; margin-left: 12px; }
 .me-name { font-size: 18px; }

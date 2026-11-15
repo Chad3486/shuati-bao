@@ -249,10 +249,12 @@ class QuizSession {
 /* ---- 构建会话的辅助 ---- */
 const QuizBuilder = {
   /** 从多个题库构建：filterType 筛题型；secKeys 筛章节（"bankId:secIdx"，空 = 全部章节） */
-  async fromBanks(bankIds, { shuffle = false, filterType = 'all', secKeys = null, exam = false, minutes = 0 } = {}) {
+  async fromBanks(bankIds, { shuffle = false, filterType = 'all', secKeys = null, exam = false, minutes = 0, questionCache = null } = {}) {
     let qs = [];
     for (const id of bankIds) {
-      const list = await DB.questionsByBank(id);
+      // 设置页已统计过题目时直接复用，避免点「开始」再把同一批题从 IndexedDB 读一遍。
+      const cached = questionCache && questionCache[id];
+      const list = cached || await DB.questionsByBank(id);
       qs.push(...list);
     }
     if (secKeys && secKeys.size) {

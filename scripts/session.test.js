@@ -24,9 +24,10 @@ globalThis.DB = {
 
 (0, eval)(
   fs.readFileSync(path.join(__dirname, '..', 'js', 'quiz.js'), 'utf8')
-  + '\nglobalThis.__QuizSession = QuizSession;'
+  + '\nglobalThis.__QuizSession = QuizSession; globalThis.__QuizBuilder = QuizBuilder;'
 );
 const QuizSession = globalThis.__QuizSession;
+const QuizBuilder = globalThis.__QuizBuilder;
 
 function makeQs(n = 5) {
   const list = [];
@@ -83,4 +84,20 @@ test('考试身份也一起记住（交卷后结果页不误判）', async () =>
   assert.strictEqual(back.exam, true);
   assert.strictEqual(back.minutes, 10);
   assert.strictEqual(back.inExam, true);
+});
+
+test('fromBanks 复用设置页题目缓存，填空筛选正确且不再读库', async () => {
+  const qs = [
+    { id: 'fill-ok', bankId: 'cache-bank', type: 'fill', stem: '填空：晶闸管的三个电极', options: null, answer: '阳极|||阴极|||门极', secIdx: 1 },
+    { id: 'fill-none', bankId: 'cache-bank', type: 'fill', stem: '缺答案填空', options: null, answer: null, secIdx: 1 },
+    { id: 'single-ok', bankId: 'cache-bank', type: 'single', stem: '单选', options: { A: '甲', B: '乙' }, answer: 'A', secIdx: 1 }
+  ];
+  let reads = 0;
+  globalThis.DB.questionsByBank = async () => { reads++; throw new Error('使用缓存时不应再次读库'); };
+  const s = await QuizBuilder.fromBanks(['cache-bank'], {
+    filterType: 'fill|answered', shuffle: false, questionCache: { 'cache-bank': qs }
+  });
+  assert.strictEqual(s.total, 1);
+  assert.strictEqual(s.list[0].id, 'fill-ok');
+  assert.strictEqual(reads, 0);
 });

@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.9.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.9.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -2564,10 +2564,16 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       $view().innerHTML = `<div class="empty" style="padding-top:40px">暂无题库<br>请先导入文件</div>`;
       return;
     }
-    // 读全每库题目：有答案数 + 各章节可练题数（供章节勾选与实时题量）
+    // 先给出加载反馈，再并行读取统计所需数据，避免点「练习」后旧页面停留不动。
+    $view().innerHTML = '<div class="card setup-loading">正在统计可练题目…</div>';
+    const prefPromise = setupPref();
+    const starPromise = DB.starQuestions();
+    const shufflePromise = prefShuffle();
     const bankData = {};
+    const questionCache = {};
     await Promise.all(banks.map(async b => {
       const qs = await DB.questionsByBank(b.id);
+      questionCache[b.id] = qs;
       const secCount = new Map();  // secIdx(字符串) -> 有答案题数
       const secTypes = new Map();  // secIdx(字符串) -> 题型集合（同名章节在列表里也要能分清）
       let ans = 0;
@@ -2581,14 +2587,14 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       bankData[b.id] = { qs, ans, secCount, secTypes };
     }));
     const total = banks.reduce((s, b) => s + bankData[b.id].ans, 0);
-    const starCount = (await DB.starQuestions()).filter(q => q.answer).length;
+    const [pref, starred, shufflePreferred] = await Promise.all([prefPromise, starPromise, shufflePromise]);
+    const starCount = starred.filter(q => q.answer).length;
     if (!total) {
       $view().innerHTML = `<div class="empty" style="padding-top:40px">暂无带答案的题目<br>请先导入文件并在题库列表「补答案」</div>`;
       return;
     }
 
-    // ---- 选择状态（v1.8.34：默认取上次的选择，没有记录才回到全选/全部章节） ----
-    const pref = await setupPref();
+    // ---- 选择状态（默认取上次选择，没有记录才回到全选/全部章节） ----
     const validIds = new Set(banks.map(b => b.id));
     const savedBanks = (pref.banks || []).filter(id => validIds.has(id));
     const sel = new Set(savedBanks.length ? savedBanks : banks.map(b => b.id));  // 选中的题库
@@ -2601,6 +2607,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       return !!d && d.secCount.has(sidx);   // 章节被删掉/题库没了就自动丢掉
     }));
     let bankKw = '', secKw = '', exam = pref.mode === 'exam', timeMode = pref.time;
+    const initialOrder = pref.order || (shufflePreferred ? 'shuffle' : 'order');
     let setupTimer = null;
     /* 当前选择落库：改一次存一次（防抖 250ms，连点不会写爆）。
        注意快照要在点击当时抓——等定时器触发时页面可能已经切走、DOM 查不到按钮了 */
@@ -2665,6 +2672,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
               <button data-v="fill">填空</button>
             </div>
             <div class="muted small" id="type-hint"></div>
+            <button class="type-action" id="type-action" type="button" style="display:none">去补答案 ›</button>
           </div>
           <div class="advanced-field"><span>题目顺序</span>
             <div class="seg" id="seg-order">
@@ -2882,26 +2890,33 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       updateSecSummary();
     }
 
-    /* ---- 实时可练题量 ---- */
+    function rawType() { return document.querySelector('#seg-type .on').dataset.v; }
     function curFilter() {
-      const raw = document.querySelector('#seg-type .on').dataset.v;
+      const raw = rawType();
       return raw === 'all' ? 'answered' : raw + '|answered';
     }
-    function countAvail() {
-      const raw = document.querySelector('#seg-type .on').dataset.v;
-      let n = 0;
+    function scopeStats() {
+      const raw = rawType();
+      let ready = 0, fillReady = 0, fillMissing = 0, fillBankId = null;
       for (const b of banks) {
         if (!sel.has(b.id)) continue;
         for (const q of bankData[b.id].qs) {
-          if (!q.answer) continue;                                        // 练习只用有答案的题
           if (selSecs.size && !selSecs.has(q.bankId + ':' + String(q.secIdx ?? ''))) continue;
-          if (raw === 'choice' && !['single', 'multi', 'judge'].includes(q.type)) continue;
-          if (raw === 'fill' && q.type !== 'fill') continue;
-          n++;
+          const isFill = q.type === 'fill';
+          const isChoice = q.type === 'single' || q.type === 'multi' || q.type === 'judge';
+          if (isFill) {
+            if (q.answer) fillReady++;
+            else { fillMissing++; if (!fillBankId) fillBankId = b.id; }
+          }
+          if (!q.answer) continue;  // 练习只用有答案的题
+          if (raw === 'choice' && !isChoice) continue;
+          if (raw === 'fill' && !isFill) continue;
+          ready++;
         }
       }
-      return n;
+      return { ready, fillReady, fillMissing, fillBankId };
     }
+    function countAvail() { return scopeStats().ready; }
     function curMinutes(n) {
       if (!exam) return 0;
       if (timeMode === 'none') return 0;
@@ -2909,19 +2924,40 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       return Math.max(1, n);   // 1 分钟/题
     }
     function refresh() {
-      const n = countAvail();
+      const raw = rawType();
+      const stats = scopeStats();
+      const n = stats.ready;
       const mins = curMinutes(n);
+      const emptyText = raw === 'fill'
+        ? (stats.fillMissing ? '填空题缺答案，补完后可练' : '当前范围没有填空题')
+        : '该筛选下没有可练的题（或都缺答案）';
       startBtn.textContent = n
         ? `开始${exam ? '考试' : '练习'}（${n} 题${exam && mins ? ` · ${mins} 分钟` : exam ? ' · 不限时' : ''}）`
-        : '该筛选下没有可练的题（或都缺答案）';
+        : emptyText;
       startBtn.disabled = !n;
-      renderTypeHint(n);
-      const typeText = { all: '全部题型', choice: '选择/判断', fill: '填空题' }[document.querySelector('#seg-type .on').dataset.v] || '全部题型';
+      renderTypeHint(stats, raw);
+      const typeText = { all: '全部题型', choice: '选择/判断', fill: '填空题' }[raw] || '全部题型';
       const orderText = document.querySelector('#seg-order .on').dataset.v === 'shuffle' ? '随机' : '顺序';
       document.getElementById('advanced-summary').textContent = `${selSecs.size ? `${selSecs.size} 章` : '全部章节'} · ${typeText} · ${orderText}`;
     }
-    function renderTypeHint(n) {
-      document.getElementById('type-hint').textContent = `当前范围可练 ${n} 题`;
+    function renderTypeHint(stats, raw) {
+      const hint = document.getElementById('type-hint');
+      if (raw === 'fill') {
+        hint.textContent = stats.fillReady
+          ? `可练填空 ${stats.fillReady} 题${stats.fillMissing ? ` · 另有 ${stats.fillMissing} 题缺答案` : ''}`
+          : stats.fillMissing
+            ? `当前范围有 ${stats.fillMissing} 道填空题，但都缺答案，补完后才能练习`
+            : '当前范围没有填空题，请更换题库或章节';
+      } else if (raw === 'choice') {
+        hint.textContent = `当前范围可练选择/判断 ${stats.ready} 题`;
+      } else {
+        hint.textContent = `当前范围可练 ${stats.ready} 题 · 其中填空 ${stats.fillReady} 题`;
+      }
+      const action = document.getElementById('type-action');
+      const showAction = raw === 'fill' && stats.fillMissing > 0 && stats.fillBankId;
+      action.style.display = showAction ? 'inline-flex' : 'none';
+      action.textContent = showAction ? `去补 ${stats.fillMissing} 道填空答案 ›` : '';
+      action.onclick = showAction ? () => navigate('#/answers/' + stats.fillBankId) : null;
     }
 
     /* ---- 交互绑定 ---- */
@@ -2951,21 +2987,17 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       if (!seg || v == null) return;
       seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
     };
-    /* 还原上次的选择；没有记录时退回「全部 / 学习 / 顺序偏好」 */
-    (async () => {
-      const ord = pref.order || ((await prefShuffle()) ? 'shuffle' : 'order');
-      setSeg(segType, pref.type || 'all');
-      setSeg(segOrder, ord);
-      setSeg(segMode, pref.mode);
-      setSeg(segTime, pref.time);
-      exam = pref.mode === 'exam';
-      timeMode = pref.time;
-      document.getElementById('exam-opts').style.display = exam ? '' : 'none';
-      document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
-      const minEl = document.getElementById('exam-min');
-      if (minEl) minEl.value = pref.minutes;
-      refresh();
-    })();
+    /* 还原上次选择；首帧只渲染一次，避免默认页面与恢复页面连续重排。 */
+    setSeg(segType, pref.type || 'all');
+    setSeg(segOrder, initialOrder);
+    setSeg(segMode, pref.mode);
+    setSeg(segTime, pref.time);
+    exam = pref.mode === 'exam';
+    timeMode = pref.time;
+    document.getElementById('exam-opts').style.display = exam ? '' : 'none';
+    document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
+    const minEl = document.getElementById('exam-min');
+    if (minEl) minEl.value = pref.minutes;
     [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
       seg.onclick = (e) => {
         const b = e.target.closest('button'); if (!b) return;
@@ -2999,7 +3031,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         filterType: curFilter(),
         secKeys: selSecs,
         exam,
-        minutes: mins
+        minutes: mins,
+        questionCache
       });
       if (!session.total) return toast('该筛选下没有可练的题（可能都缺答案）');
       if (exam) toast(mins ? `考试开始 · ${mins} 分钟` : '考试开始 · 不限时');
