@@ -34,8 +34,12 @@ const StatsModel = (() => {
     return { total, correct, acc: total ? Math.round(correct / total * 100) : 0 };
   }
 
-  /* 每题只取最近一次作答，按“题库 + 章节序号”聚合；同名章节不会串数据。 */
-  function chapterRows(latest, banks, questions) {
+  /*
+   * 每题只取最近一次作答，按“题库 + 章节序号”聚合。
+   * 推荐分 = 掌握不足 × 样本置信度 + 答错题数，并给久未练习少量加权。
+   * 用总体正确率作 4 题先验，避免 0/1、0/2 这种小样本被武断判成最薄弱。
+   */
+  function chapterRows(latest, banks, questions, { globalAcc = 60, now = Date.now() } = {}) {
     const qById = new Map(questions.map(q => [q.id, q]));
     const secTitle = new Map();
     const bankName = new Map(banks.map(b => [b.id, b.name]));
@@ -48,20 +52,36 @@ const StatsModel = (() => {
       if (!q) continue;
       const secIdx = String(q.secIdx ?? '');
       const key = q.bankId + ':' + secIdx;
-      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
+      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0, lastTime: 0 };
       cur.total++;
       if (rec.correct) cur.correct++;
+      cur.lastTime = Math.max(cur.lastTime, rec.time || 0);
       agg.set(key, cur);
     }
-    return [...agg.values()].map(x => ({
-      ...x,
-      acc: Math.round(x.correct / x.total * 100),
-      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
-      bank: bankName.get(x.bankId) || ''
-    })).sort((a, b) => a.acc - b.acc || b.total - a.total || a.key.localeCompare(b.key));
+    const prior = 4;
+    const priorRate = Math.max(0, Math.min(100, globalAcc)) / 100;
+    return [...agg.values()].map(x => {
+      const acc = Math.round(x.correct / x.total * 100);
+      const wrong = x.total - x.correct;
+      const estimatedRaw = (x.correct + priorRate * prior) / (x.total + prior) * 100;
+      const confidence = Math.min(1, x.total / 6);
+      const ageDays = x.lastTime ? Math.max(0, (now - x.lastTime) / 86400000) : 0;
+      const recencyBoost = 1 + Math.min(.15, ageDays / 30 * .15);
+      const priority = ((100 - estimatedRaw) * (.5 + .5 * confidence) + Math.min(wrong, 5) * 2) * recencyBoost;
+      return {
+        ...x,
+        acc,
+        estimated: Math.round(estimatedRaw),
+        sampleLow: x.total < 3,
+        priority,
+        title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
+        bank: bankName.get(x.bankId) || ''
+      };
+    }).sort((a, b) => b.priority - a.priority || a.acc - b.acc || b.total - a.total || a.key.localeCompare(b.key));
   }
 
-  function mastery(acc) {
+  function mastery(acc, total = 3) {
+    if (total < 3) return { label: '样本少', tone: 'mid' };
     if (acc >= 80) return { label: '已掌握', tone: 'good' };
     if (acc >= 60) return { label: '待巩固', tone: 'mid' };
     return { label: '薄弱', tone: 'weak' };

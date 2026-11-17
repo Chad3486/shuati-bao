@@ -64,8 +64,9 @@
 
 /* 夜间 */
 html.dark {
+  --primary: #6f9cff; --primary-dark: #9db9ff; --primary-soft: #1d2a4d;
   --bg: #12151d; --card: #1c212e; --topbar-bg: #161a25; --tabbar-bg: #161a25;
-  --text: #e6eaf2; --muted: #7d879e; --line: #2a3145;
+  --text: #e6eaf2; --muted: #9aa6bc; --line: #2a3145;
   --surface-2: #232a3b; --surface-3: #1d2a4d; --key-bg: #2c344a;
   --exp-text: #a8b3c7;
   --ok-bg: #14352b; --bad-bg: #3d2029;
@@ -471,6 +472,7 @@ body {
   display: flex; gap: 10px; align-items: flex-start; text-align: left;
   background: var(--surface-2); border: 1.5px solid var(--glass-line); border-radius: var(--radius-sm);
   padding: 12px 13px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
+  color: var(--text);
   min-width: 0;
   transition: border-color .15s, background .15s, box-shadow .15s, transform .1s;
 }
@@ -488,7 +490,7 @@ body {
 .option.picked .opt-key { background: var(--primary); color: var(--on-primary); }
 .option.right .opt-key { background: var(--ok); color: #fff; }
 .option.wrong .opt-key { background: var(--bad); color: #fff; }
-.opt-text { flex: 1; min-width: 0; }
+.opt-text { flex: 1; min-width: 0; color: inherit; }
 
 #multi-submit { margin-top: 14px; }
 
@@ -1359,10 +1361,11 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .overview-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; }
 .overview-numbers b { display: block; font-size: 19px; line-height: 1.2; }
 .overview-numbers span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
-.study-next { margin-bottom: 10px; padding: 16px; background: var(--primary-soft); box-shadow: none; }
+.study-next { margin-bottom: 10px; padding: 16px; background: var(--surface-3); box-shadow: none; }
 .section-kicker { margin-bottom: 5px; color: var(--primary); font-size: 11px; font-weight: 750; }
-.next-title { font-size: 20px; font-weight: 750; line-height: 1.4; overflow-wrap: anywhere; }
-.next-meta { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.next-title { color: var(--text); font-size: 20px; font-weight: 750; line-height: 1.4; overflow-wrap: anywhere; }
+.next-meta { margin: 4px 0 5px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.next-reason { margin-bottom: 12px; color: var(--exp-text); font-size: 11px; line-height: 1.55; }
 .next-actions { display: grid; grid-template-columns: 1.15fr 1fr; gap: 8px; }
 .next-actions .btn { min-height: 42px; padding: 10px 8px; font-size: 13px; }
 .next-actions .btn:disabled { opacity: .5; cursor: default; }
@@ -6215,8 +6218,12 @@ const StatsModel = (() => {
     return { total, correct, acc: total ? Math.round(correct / total * 100) : 0 };
   }
 
-  /* 每题只取最近一次作答，按“题库 + 章节序号”聚合；同名章节不会串数据。 */
-  function chapterRows(latest, banks, questions) {
+  /*
+   * 每题只取最近一次作答，按“题库 + 章节序号”聚合。
+   * 推荐分 = 掌握不足 × 样本置信度 + 答错题数，并给久未练习少量加权。
+   * 用总体正确率作 4 题先验，避免 0/1、0/2 这种小样本被武断判成最薄弱。
+   */
+  function chapterRows(latest, banks, questions, { globalAcc = 60, now = Date.now() } = {}) {
     const qById = new Map(questions.map(q => [q.id, q]));
     const secTitle = new Map();
     const bankName = new Map(banks.map(b => [b.id, b.name]));
@@ -6229,20 +6236,36 @@ const StatsModel = (() => {
       if (!q) continue;
       const secIdx = String(q.secIdx ?? '');
       const key = q.bankId + ':' + secIdx;
-      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0 };
+      const cur = agg.get(key) || { key, bankId: q.bankId, secIdx, total: 0, correct: 0, lastTime: 0 };
       cur.total++;
       if (rec.correct) cur.correct++;
+      cur.lastTime = Math.max(cur.lastTime, rec.time || 0);
       agg.set(key, cur);
     }
-    return [...agg.values()].map(x => ({
-      ...x,
-      acc: Math.round(x.correct / x.total * 100),
-      title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
-      bank: bankName.get(x.bankId) || ''
-    })).sort((a, b) => a.acc - b.acc || b.total - a.total || a.key.localeCompare(b.key));
+    const prior = 4;
+    const priorRate = Math.max(0, Math.min(100, globalAcc)) / 100;
+    return [...agg.values()].map(x => {
+      const acc = Math.round(x.correct / x.total * 100);
+      const wrong = x.total - x.correct;
+      const estimatedRaw = (x.correct + priorRate * prior) / (x.total + prior) * 100;
+      const confidence = Math.min(1, x.total / 6);
+      const ageDays = x.lastTime ? Math.max(0, (now - x.lastTime) / 86400000) : 0;
+      const recencyBoost = 1 + Math.min(.15, ageDays / 30 * .15);
+      const priority = ((100 - estimatedRaw) * (.5 + .5 * confidence) + Math.min(wrong, 5) * 2) * recencyBoost;
+      return {
+        ...x,
+        acc,
+        estimated: Math.round(estimatedRaw),
+        sampleLow: x.total < 3,
+        priority,
+        title: secTitle.get(x.key) || (x.secIdx === '' ? '未分节' : `第 ${x.secIdx} 节`),
+        bank: bankName.get(x.bankId) || ''
+      };
+    }).sort((a, b) => b.priority - a.priority || a.acc - b.acc || b.total - a.total || a.key.localeCompare(b.key));
   }
 
-  function mastery(acc) {
+  function mastery(acc, total = 3) {
+    if (total < 3) return { label: '样本少', tone: 'mid' };
     if (acc >= 80) return { label: '已掌握', tone: 'good' };
     if (acc >= 60) return { label: '待巩固', tone: 'mid' };
     return { label: '薄弱', tone: 'weak' };
@@ -6255,7 +6278,7 @@ const StatsModel = (() => {
   <script>
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.10.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.10.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -10848,9 +10871,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const bankQuestions = await Promise.all(banks.map(b => DB.questionsByBank(b.id)));
     const allQ = bankQuestions.flat();
     const latest = summary.latest;
-    const rows = StatsModel.chapterRows(latest, banks, allQ);
-    const weakest = rows[0] || null;
-    const weakCount = rows.filter(r => r.acc < 60).length;
+    const rows = StatsModel.chapterRows(latest, banks, allQ, { globalAcc: acc });
+    const recommendation = rows[0] || null;
+    const weakCount = rows.filter(r => !r.sampleLow && r.acc < 60).length;
     let onlyWeak = false;
     const LIMIT = 6;
 
@@ -10874,17 +10897,19 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       </section>
 
       <section class="card study-next">
-        <div class="section-kicker">推荐下一步</div>
-        ${weakest ? `
-          <div class="next-title">${escapeHtml(weakest.title)}</div>
-          <div class="next-meta">${escapeHtml(weakest.bank)} · 当前 ${weakest.acc}% · 答对 ${weakest.correct}/${weakest.total} 题</div>
+        ${recommendation ? `
+          <div class="section-kicker">${recommendation.sampleLow ? '先补测再判断' : recommendation.estimated < 60 ? '推荐优先巩固' : '推荐继续练习'}</div>
+          <div class="next-title">${escapeHtml(recommendation.title)}</div>
+          <div class="next-meta">${escapeHtml(recommendation.bank)} · 答对 ${recommendation.correct}/${recommendation.total} 题 · 估算掌握 ${recommendation.estimated}%</div>
+          <div class="next-reason">${recommendation.sampleLow ? `目前只有 ${recommendation.total} 题记录，先补测，不直接判定薄弱。` : '按正确率、样本量、答错次数和最近练习综合推荐。'}</div>
           <div class="next-actions">
-            <button class="btn primary" id="practice-weakest" data-bank="${weakest.bankId}" data-sec="${escapeHtml(weakest.secIdx)}">${weakest.acc < 60 ? '练薄弱章节' : '继续巩固'}</button>
+            <button class="btn primary" id="practice-weakest" data-bank="${recommendation.bankId}" data-sec="${escapeHtml(recommendation.secIdx)}">${recommendation.sampleLow ? '补测这一章' : recommendation.estimated < 60 ? '练推荐章节' : '继续巩固'}</button>
             <button class="btn ghost" onclick="App.wrongRedo()" ${wrongCount ? '' : 'disabled'}>${wrongCount ? `错题重做（${wrongCount}）` : '暂无错题'}</button>
           </div>`
         : `
+          <div class="section-kicker">推荐下一步</div>
           <div class="next-title">先完成一次练习</div>
-          <div class="next-meta">有了作答记录后，这里会自动推荐最需要巩固的章节。</div>
+          <div class="next-meta">有了作答记录后，这里会自动推荐需要巩固或补测的章节。</div>
           <div class="next-actions"><button class="btn primary" onclick="App.navigate('#/quiz-setup')">去练习</button></div>`}
       </section>
 
@@ -10952,7 +10977,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const allHistory = document.getElementById('all-history');
     if (allHistory) allHistory.onclick = () => navigate('#/history');
     const weakBtn = document.getElementById('practice-weakest');
-    if (weakBtn && weakest) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
+    if (weakBtn && recommendation) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
 
     /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
     if (!cachedEst && s.total > 0) {
@@ -10975,10 +11000,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const moreBtn = document.getElementById('sec-more');
 
     function renderRows() {
-      let arr = onlyWeak ? rows.filter(r => r.acc < 60) : rows;
+      let arr = onlyWeak ? rows.filter(r => !r.sampleLow && r.acc < 60) : rows;
       const show = expanded ? arr : arr.slice(0, LIMIT);
       listEl.innerHTML = arr.length ? show.map(r => {
-        const level = StatsModel.mastery(r.acc);
+        const level = StatsModel.mastery(r.acc, r.total);
         return `
         <button type="button" class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
           <span class="sec-acc-top">

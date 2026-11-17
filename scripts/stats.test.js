@@ -49,4 +49,23 @@ test('掌握状态边界与界面筛选一致', () => {
   assert.deepEqual(StatsModel.mastery(59), { label: '薄弱', tone: 'weak' });
   assert.deepEqual(StatsModel.mastery(60), { label: '待巩固', tone: 'mid' });
   assert.deepEqual(StatsModel.mastery(80), { label: '已掌握', tone: 'good' });
+  assert.deepEqual(StatsModel.mastery(0, 2), { label: '样本少', tone: 'mid' });
+});
+
+test('小样本全错不会压过样本充分的薄弱章节，估算值向总体正确率收缩', () => {
+  const banks = [{ id: 'b', name: '题库', sections: [{ secIdx: 1, title: '小样本' }, { secIdx: 2, title: '充分样本' }] }];
+  const questions = [
+    { id: 's1', bankId: 'b', secIdx: 1 }, { id: 's2', bankId: 'b', secIdx: 1 },
+    ...Array.from({ length: 8 }, (_, i) => ({ id: 'l' + i, bankId: 'b', secIdx: 2 }))
+  ];
+  const latest = { s1: { correct: false, time: 100 }, s2: { correct: false, time: 100 } };
+  for (let i = 0; i < 8; i++) latest['l' + i] = { correct: i < 4, time: 100 };
+  const rows = StatsModel.chapterRows(latest, banks, questions, { globalAcc: 60, now: 100 });
+  const small = rows.find(r => r.secIdx === '1');
+  const large = rows.find(r => r.secIdx === '2');
+  assert.equal(rows[0].key, 'b:2');
+  assert.equal(small.sampleLow, true);
+  assert.equal(large.sampleLow, false);
+  assert.equal(small.estimated, 40); // (0 + 60% × 4 先验) / (2 + 4)
+  assert.ok(large.priority > small.priority);
 });

@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.10.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.10.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -4593,9 +4593,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const bankQuestions = await Promise.all(banks.map(b => DB.questionsByBank(b.id)));
     const allQ = bankQuestions.flat();
     const latest = summary.latest;
-    const rows = StatsModel.chapterRows(latest, banks, allQ);
-    const weakest = rows[0] || null;
-    const weakCount = rows.filter(r => r.acc < 60).length;
+    const rows = StatsModel.chapterRows(latest, banks, allQ, { globalAcc: acc });
+    const recommendation = rows[0] || null;
+    const weakCount = rows.filter(r => !r.sampleLow && r.acc < 60).length;
     let onlyWeak = false;
     const LIMIT = 6;
 
@@ -4619,17 +4619,19 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       </section>
 
       <section class="card study-next">
-        <div class="section-kicker">推荐下一步</div>
-        ${weakest ? `
-          <div class="next-title">${escapeHtml(weakest.title)}</div>
-          <div class="next-meta">${escapeHtml(weakest.bank)} · 当前 ${weakest.acc}% · 答对 ${weakest.correct}/${weakest.total} 题</div>
+        ${recommendation ? `
+          <div class="section-kicker">${recommendation.sampleLow ? '先补测再判断' : recommendation.estimated < 60 ? '推荐优先巩固' : '推荐继续练习'}</div>
+          <div class="next-title">${escapeHtml(recommendation.title)}</div>
+          <div class="next-meta">${escapeHtml(recommendation.bank)} · 答对 ${recommendation.correct}/${recommendation.total} 题 · 估算掌握 ${recommendation.estimated}%</div>
+          <div class="next-reason">${recommendation.sampleLow ? `目前只有 ${recommendation.total} 题记录，先补测，不直接判定薄弱。` : '按正确率、样本量、答错次数和最近练习综合推荐。'}</div>
           <div class="next-actions">
-            <button class="btn primary" id="practice-weakest" data-bank="${weakest.bankId}" data-sec="${escapeHtml(weakest.secIdx)}">${weakest.acc < 60 ? '练薄弱章节' : '继续巩固'}</button>
+            <button class="btn primary" id="practice-weakest" data-bank="${recommendation.bankId}" data-sec="${escapeHtml(recommendation.secIdx)}">${recommendation.sampleLow ? '补测这一章' : recommendation.estimated < 60 ? '练推荐章节' : '继续巩固'}</button>
             <button class="btn ghost" onclick="App.wrongRedo()" ${wrongCount ? '' : 'disabled'}>${wrongCount ? `错题重做（${wrongCount}）` : '暂无错题'}</button>
           </div>`
         : `
+          <div class="section-kicker">推荐下一步</div>
           <div class="next-title">先完成一次练习</div>
-          <div class="next-meta">有了作答记录后，这里会自动推荐最需要巩固的章节。</div>
+          <div class="next-meta">有了作答记录后，这里会自动推荐需要巩固或补测的章节。</div>
           <div class="next-actions"><button class="btn primary" onclick="App.navigate('#/quiz-setup')">去练习</button></div>`}
       </section>
 
@@ -4697,7 +4699,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const allHistory = document.getElementById('all-history');
     if (allHistory) allHistory.onclick = () => navigate('#/history');
     const weakBtn = document.getElementById('practice-weakest');
-    if (weakBtn && weakest) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
+    if (weakBtn && recommendation) weakBtn.onclick = () => practiceSection(weakBtn.dataset.bank, weakBtn.dataset.sec);
 
     /* 首帧之后再算估分（80~200ms 的大题库计算不挡页面渲染） */
     if (!cachedEst && s.total > 0) {
@@ -4720,10 +4722,10 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const moreBtn = document.getElementById('sec-more');
 
     function renderRows() {
-      let arr = onlyWeak ? rows.filter(r => r.acc < 60) : rows;
+      let arr = onlyWeak ? rows.filter(r => !r.sampleLow && r.acc < 60) : rows;
       const show = expanded ? arr : arr.slice(0, LIMIT);
       listEl.innerHTML = arr.length ? show.map(r => {
-        const level = StatsModel.mastery(r.acc);
+        const level = StatsModel.mastery(r.acc, r.total);
         return `
         <button type="button" class="sec-acc-row" data-bank="${r.bankId}" data-sec="${escapeHtml(r.secIdx)}">
           <span class="sec-acc-top">

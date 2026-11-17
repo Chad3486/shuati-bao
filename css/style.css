@@ -56,8 +56,9 @@
 
 /* 夜间 */
 html.dark {
+  --primary: #6f9cff; --primary-dark: #9db9ff; --primary-soft: #1d2a4d;
   --bg: #12151d; --card: #1c212e; --topbar-bg: #161a25; --tabbar-bg: #161a25;
-  --text: #e6eaf2; --muted: #7d879e; --line: #2a3145;
+  --text: #e6eaf2; --muted: #9aa6bc; --line: #2a3145;
   --surface-2: #232a3b; --surface-3: #1d2a4d; --key-bg: #2c344a;
   --exp-text: #a8b3c7;
   --ok-bg: #14352b; --bad-bg: #3d2029;
@@ -463,6 +464,7 @@ body {
   display: flex; gap: 10px; align-items: flex-start; text-align: left;
   background: var(--surface-2); border: 1.5px solid var(--glass-line); border-radius: var(--radius-sm);
   padding: 12px 13px; cursor: pointer; font-size: 14.5px; font-family: inherit; line-height: 1.55;
+  color: var(--text);
   min-width: 0;
   transition: border-color .15s, background .15s, box-shadow .15s, transform .1s;
 }
@@ -480,7 +482,7 @@ body {
 .option.picked .opt-key { background: var(--primary); color: var(--on-primary); }
 .option.right .opt-key { background: var(--ok); color: #fff; }
 .option.wrong .opt-key { background: var(--bad); color: #fff; }
-.opt-text { flex: 1; min-width: 0; }
+.opt-text { flex: 1; min-width: 0; color: inherit; }
 
 #multi-submit { margin-top: 14px; }
 
@@ -1351,10 +1353,11 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .overview-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; }
 .overview-numbers b { display: block; font-size: 19px; line-height: 1.2; }
 .overview-numbers span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
-.study-next { margin-bottom: 10px; padding: 16px; background: var(--primary-soft); box-shadow: none; }
+.study-next { margin-bottom: 10px; padding: 16px; background: var(--surface-3); box-shadow: none; }
 .section-kicker { margin-bottom: 5px; color: var(--primary); font-size: 11px; font-weight: 750; }
-.next-title { font-size: 20px; font-weight: 750; line-height: 1.4; overflow-wrap: anywhere; }
-.next-meta { margin: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.next-title { color: var(--text); font-size: 20px; font-weight: 750; line-height: 1.4; overflow-wrap: anywhere; }
+.next-meta { margin: 4px 0 5px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.next-reason { margin-bottom: 12px; color: var(--exp-text); font-size: 11px; line-height: 1.55; }
 .next-actions { display: grid; grid-template-columns: 1.15fr 1fr; gap: 8px; }
 .next-actions .btn { min-height: 42px; padding: 10px 8px; font-size: 13px; }
 .next-actions .btn:disabled { opacity: .5; cursor: default; }
