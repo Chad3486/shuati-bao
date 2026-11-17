@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.10.1'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.10.2'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -27,7 +27,6 @@ const App = (() => {
     'history': pageHistory,
     'stats': pageStats,
     'audit': pageAudit,
-    'ability': pageAbility,
     'daily': pageDaily,
     'notes': pageNotes,
     'me': pageMe,
@@ -4565,12 +4564,12 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       metrics = [['预计卷面分', '…'], ['及格概率', '…'], ['最弱章节', '…']];
     } else if (est && est.insufficient) {
       subtitle = '作答样本不足，继续练习后会逐步完善';
-      metrics = [['已答题数', total], ['估分状态', '待完善'], ['详细分析', '查看 ›']];
+      metrics = [['已答题数', total], ['估分状态', '待完善'], ['练习建议', '继续积累']];
     } else {
       metrics = [['预计卷面分', score], ['及格概率', Math.round((pred.passRate || 0) * 100) + '%'], [weak ? '最弱章节' : '暂无一章', weak ? Math.round(weak.score) : '—']];
     }
-    return `<div class="card ability-summary" onclick="App.navigate('#/ability')">
-      <div class="ability-head"><div><b>能力估分</b><span>${subtitle}</span></div><span class="ability-link">查看详情 ›</span></div>
+    return `<div class="card ability-summary">
+      <div class="ability-head"><div><b>能力估分</b><span>${subtitle}</span></div></div>
       <div class="ability-metrics">${metrics.map(([label, value]) => `<div class="ability-metric"><span>${label}</span><b>${value}</b></div>`).join('')}</div>
     </div>`;
   }
@@ -5333,75 +5332,6 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     }
     abilityCache = { key, est: est || {} };
     return { est: est || {}, questions, banks, rows, sectionTitle };
-  }
-
-  async function pageAbility() {
-    topbar('能力估分', '#/stats');
-    const { est, questions } = await abilityCompute();
-    const pred = est.predicted || {};
-    const score = Number.isFinite(pred.score) ? Math.round(pred.score) : null;
-    const low = Number.isFinite(pred.low) ? Math.round(pred.low) : null;
-    const high = Number.isFinite(pred.high) ? Math.round(pred.high) : null;
-    const passRate = Number.isFinite(pred.passRate) ? Math.round(pred.passRate * 100) : null;
-    const n = Number(est.n) || 0;
-    const sections = (est.sections || []).filter(s => (s.n || 0) >= 2).slice().sort((a, b) => (a.score || 0) - (b.score || 0)).slice(0, 5);
-    const canDrill = questions.length > 0;
-
-    $view().innerHTML = `
-      <div class="card">
-        ${score != null && !est.insufficient ? `
-        <div class="ability-hero">
-          <div class="ability-score">${score}<small> / 100</small></div>
-          <div class="ability-range">预计区间 ${low}–${high} · 基于 ${n} 次作答</div>
-          ${passRate != null ? `<div class="ability-pass">及格（60 分）概率 <b style="color:${passRate >= 60 ? 'var(--ok)' : 'var(--bad)'}">${passRate}%</b></div>` : ''}
-          <div class="ability-line"><i style="width:${Math.max(2, Math.min(100, score))}%"></i></div>
-        </div>` : `
-        <div class="empty" style="padding:16px 0">还在攒数据<span class="muted small" style="display:block;margin-top:6px">已作答 ${n} / 30 题，够了才开始估算</span></div>`}
-        <div class="muted small" style="margin-top:10px">
-          ${n < 30
-            ? `已作答 ${n} 题，再多练 ${30 - n} 题估分会更准（现在的结果波动较大）。`
-            : '这个分数是根据你做过的题、按题目难度推算的「这套题库的卷面分」，不等于官方考试分。'}
-        </div>
-      </div>
-      ${sections.length ? `
-      <div class="card">
-        <div class="card-title">最该补的章节</div>
-        ${sections.map(s => `
-          <div class="audit-item" style="cursor:default">
-            <span class="audit-badge ${s.score >= 60 ? 'info' : 'error'}">${Math.round(s.score)}</span>
-            <div class="audit-body"><div class="audit-msg">${escapeHtml(String(s.title || '未分节'))}</div>
-            <div class="audit-hint">预计正确率 · 该章作答 ${s.n || 0} 次</div></div>
-          </div>`).join('')}
-      </div>` : ''}
-      ${canDrill ? `<button class="btn primary big" id="ability-drill">按当前水平练 10 题</button>` : ''}`;
-
-    const drill = document.getElementById('ability-drill');
-    if (drill) drill.onclick = () => startAbilityDrill(questions);
-  }
-
-  async function startAbilityDrill(questions) {
-    const ok = await guardUnfinishedSession();
-    if (!ok) return;
-    const shape = (typeof Ability !== 'undefined' && Ability.DEFAULT_SHAPE) || { single: 6, multi: 2, judge: 1, fill: 1 };
-    const pool = questions.filter(q => q.answer);
-    const picked = [];
-    const used = new Set();
-    for (const [type, want] of Object.entries(shape)) {
-      let got = 0;
-      for (const q of pool) {
-        if (got >= want) break;
-        if (q.type !== type || used.has(q.id)) continue;
-        used.add(q.id); picked.push(q); got++;
-      }
-    }
-    for (const q of pool) {
-      if (picked.length >= 10) break;
-      if (used.has(q.id)) continue;
-      used.add(q.id); picked.push(q);
-    }
-    if (!picked.length) return toast('题库里还没有带答案的题');
-    session = new QuizSession(picked, { shuffle: false, mode: 'ability' });
-    navigate('#/quiz');
   }
 
   /* ---------- 每日一练（按题库：每个题库每天一组） ---------- */

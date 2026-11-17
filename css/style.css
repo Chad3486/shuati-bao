@@ -855,15 +855,6 @@ html.dark {
 .audit-hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .audit-no { font-size: 12px; color: var(--muted); flex: 0 0 auto; margin-top: 2px; }
 
-/* ---- 能力估分 ---- */
-.ability-hero { text-align: center; padding: 6px 0 2px; }
-.ability-score { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -1px; }
-.ability-score small { font-size: 18px; font-weight: 600; color: var(--muted); }
-.ability-range { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.ability-pass { margin-top: 10px; font-size: 14px; }
-.ability-line { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
-.ability-line i { display: block; height: 100%; border-radius: 99px; background: var(--grad-primary); }
-
 /* ---- 通用底部弹层（题目编辑） ---- */
 .sheet-mask {
   position: fixed; inset: 0; z-index: 90; background: rgba(10, 16, 30, .5);
@@ -1275,12 +1266,11 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 }
 .stats-row .stat-cell b { font-size: 27px; }
 .stats-row .stat-cell span { font-size: 12px; }
-.ability-summary { padding: 16px; cursor: pointer; }
+.ability-summary { padding: 16px; }
 .ability-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .ability-head > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 .ability-head b { font-size: 16px; }
 .ability-head span { color: var(--muted); font-size: 12px; }
-.ability-head .ability-link { flex: 0 0 auto; white-space: nowrap; }
 .ability-metrics {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 14px; padding: 13px 0; background: var(--surface-2); border-radius: 12px;
@@ -1418,7 +1408,6 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 
 @media (max-width: 380px) {
   #view { padding-left: 12px; padding-right: 12px; }
-  .ability-head .ability-link { font-size: 11px; }
   .ability-metric b { font-size: 21px; }
   .review-summary { padding: 14px; }
   .review-summary .btn { padding-left: 12px; padding-right: 12px; }
