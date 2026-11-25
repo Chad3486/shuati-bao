@@ -1,6 +1,6 @@
 /* ========== 主应用：hash 路由 + 页面渲染 ========== */
 const App = (() => {
-  const VERSION = '1.10.2'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
+  const VERSION = '1.11.0'; // 与 apk-src/app/build.gradle 的 versionName 保持一致（build-single.mjs 会按 tag 覆盖）
   let session = null; // 当前答题会话
 
   const $view = () => document.getElementById('view');
@@ -313,11 +313,13 @@ const App = (() => {
   const SETUP_ORDERS = ['order', 'shuffle'];
   const SETUP_MODES = ['learn', 'exam'];
   const SETUP_TIMES = ['auto', 'none', 'custom'];
+  const SETUP_COUNT_MODES = ['20', '50', '100', 'all', 'custom'];
   async function setupPref() {
     let p = null;
     try { p = await DB.metaGet('prefQuizSetup'); } catch (e) { p = null; }
     p = p && typeof p === 'object' ? p : {};
     const mins = parseInt(p.minutes, 10);
+    const count = parseInt(p.count, 10);
     return {
       banks: Array.isArray(p.banks) ? p.banks.filter(x => typeof x === 'string') : null,
       secs: Array.isArray(p.secs) ? p.secs.filter(x => typeof x === 'string') : null,
@@ -325,7 +327,9 @@ const App = (() => {
       order: SETUP_ORDERS.includes(p.order) ? p.order : null,
       mode: SETUP_MODES.includes(p.mode) ? p.mode : 'learn',
       time: SETUP_TIMES.includes(p.time) ? p.time : 'auto',
-      minutes: Number.isFinite(mins) && mins > 0 ? Math.min(600, mins) : 60
+      minutes: Number.isFinite(mins) && mins > 0 ? Math.min(600, mins) : 60,
+      countMode: SETUP_COUNT_MODES.includes(String(p.countMode)) ? String(p.countMode) : '50',
+      count: Number.isFinite(count) && count > 0 ? Math.min(9999, count) : 50
     };
   }
   async function saveSetupPref(patch) {
@@ -2605,7 +2609,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       const d = bankData[bid];
       return !!d && d.secCount.has(sidx);   // 章节被删掉/题库没了就自动丢掉
     }));
-    let bankKw = '', secKw = '', exam = pref.mode === 'exam', timeMode = pref.time;
+    let bankKw = '', secKw = '', exam = pref.mode === 'exam', timeMode = pref.time, examCountMode = pref.countMode;
     const initialOrder = pref.order || (shufflePreferred ? 'shuffle' : 'order');
     let setupTimer = null;
     /* 当前选择落库：改一次存一次（防抖 250ms，连点不会写爆）。
@@ -2618,7 +2622,9 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         order: (document.querySelector('#seg-order .on') || {}).dataset?.v || 'order',
         mode: exam ? 'exam' : 'learn',
         time: timeMode,
-        minutes: parseInt((document.getElementById('exam-min') || {}).value, 10) || 60
+        minutes: parseInt((document.getElementById('exam-min') || {}).value, 10) || 60,
+        countMode: examCountMode,
+        count: parseInt((document.getElementById('exam-count') || {}).value, 10) || 50
       };
       clearTimeout(setupTimer);
       setupTimer = setTimeout(() => { saveSetupPref(snap); }, 250);
@@ -2641,6 +2647,19 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           <button data-v="exam">考试模式</button>
         </div>
         <div id="exam-opts" style="display:none;margin-top:12px">
+          <div class="field"><span>考试题量</span>
+            <div class="chips exam-count-chips" id="seg-count">
+              <button class="chip" data-v="20">20 题</button>
+              <button class="chip on" data-v="50">50 题</button>
+              <button class="chip" data-v="100">100 题</button>
+              <button class="chip" data-v="all">全部</button>
+              <button class="chip" data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="field" id="exam-count-wrap" style="display:none"><span>自定义题量</span>
+            <input type="number" id="exam-count" min="1" max="9999" value="50" inputmode="numeric">
+          </div>
+          <div class="muted small exam-plan-hint" id="exam-plan-hint"></div>
           <div class="field"><span>考试时长</span>
             <div class="seg" id="seg-time">
               <button data-v="auto" class="on">按 1 分钟/题</button>
@@ -2916,6 +2935,13 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       return { ready, fillReady, fillMissing, fillBankId };
     }
     function countAvail() { return scopeStats().ready; }
+    function curExamSize(available) {
+      if (!exam || examCountMode === 'all') return available;
+      const wanted = examCountMode === 'custom'
+        ? parseInt(document.getElementById('exam-count').value, 10) || 50
+        : parseInt(examCountMode, 10) || 50;
+      return Math.max(0, Math.min(available, wanted));
+    }
     function curMinutes(n) {
       if (!exam) return 0;
       if (timeMode === 'none') return 0;
@@ -2926,14 +2952,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       const raw = rawType();
       const stats = scopeStats();
       const n = stats.ready;
-      const mins = curMinutes(n);
+      const examSize = curExamSize(n);
+      const mins = curMinutes(examSize);
       const emptyText = raw === 'fill'
         ? (stats.fillMissing ? '填空题缺答案，补完后可练' : '当前范围没有填空题')
         : '该筛选下没有可练的题（或都缺答案）';
-      startBtn.textContent = n
-        ? `开始${exam ? '考试' : '练习'}（${n} 题${exam && mins ? ` · ${mins} 分钟` : exam ? ' · 不限时' : ''}）`
+      startBtn.textContent = examSize
+        ? `开始${exam ? '考试' : '练习'}（${examSize} 题${exam && mins ? ` · ${mins} 分钟` : exam ? ' · 不限时' : ''}）`
         : emptyText;
-      startBtn.disabled = !n;
+      startBtn.disabled = !examSize;
+      document.getElementById('exam-plan-hint').textContent = exam
+        ? `从当前 ${n} 题中${examSize < n ? `抽取 ${examSize} 题` : `使用全部 ${examSize} 题`}，章节尽量均衡，题型按可出题量占比分配。`
+        : '';
       renderTypeHint(stats, raw);
       const typeText = { all: '全部题型', choice: '选择/判断', fill: '填空题' }[raw] || '全部题型';
       const orderText = document.querySelector('#seg-order .on').dataset.v === 'shuffle' ? '随机' : '顺序';
@@ -2982,6 +3012,7 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     const segOrder = document.getElementById('seg-order');
     const segMode = document.getElementById('seg-mode');
     const segTime = document.getElementById('seg-time');
+    const segCount = document.getElementById('seg-count');
     const setSeg = (seg, v) => {
       if (!seg || v == null) return;
       seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
@@ -2991,13 +3022,18 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
     setSeg(segOrder, initialOrder);
     setSeg(segMode, pref.mode);
     setSeg(segTime, pref.time);
+    setSeg(segCount, pref.countMode);
     exam = pref.mode === 'exam';
     timeMode = pref.time;
+    examCountMode = pref.countMode;
     document.getElementById('exam-opts').style.display = exam ? '' : 'none';
     document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
+    document.getElementById('exam-count-wrap').style.display = examCountMode === 'custom' ? '' : 'none';
     const minEl = document.getElementById('exam-min');
     if (minEl) minEl.value = pref.minutes;
-    [[segType], [segOrder], [segMode], [segTime]].forEach(([seg]) => {
+    const countEl = document.getElementById('exam-count');
+    if (countEl) countEl.value = pref.count;
+    [[segType], [segOrder], [segMode], [segTime], [segCount]].forEach(([seg]) => {
       seg.onclick = (e) => {
         const b = e.target.closest('button'); if (!b) return;
         seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
@@ -3011,11 +3047,16 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
           timeMode = b.dataset.v;
           document.getElementById('exam-min-wrap').style.display = timeMode === 'custom' ? '' : 'none';
         }
+        if (seg === segCount) {
+          examCountMode = b.dataset.v;
+          document.getElementById('exam-count-wrap').style.display = examCountMode === 'custom' ? '' : 'none';
+        }
         persistSetup();
         refresh();
       };
     });
     document.getElementById('exam-min').oninput = () => { persistSetup(); refresh(); };
+    document.getElementById('exam-count').oninput = () => { persistSetup(); refresh(); };
 
     startBtn.onclick = async () => {
       const ids = [...sel];
@@ -3023,7 +3064,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
       persistSetup();   // 开始前把当前选择落库（下次进页面照旧）
       const shuffle = segOrder.querySelector('.on').dataset.v === 'shuffle';
       const n = countAvail();
-      const mins = curMinutes(n);
+      const examSize = curExamSize(n);
+      const mins = curMinutes(examSize);
       if (!await guardUnfinishedSession()) return;
       session = await QuizBuilder.fromBanks(ids, {
         shuffle,
@@ -3031,7 +3073,8 @@ ${dropMat ? DROP_MAT_RULE : ''}`;
         secKeys: selSecs,
         exam,
         minutes: mins,
-        questionCache
+        questionCache,
+        examSize
       });
       if (!session.total) return toast('该筛选下没有可练的题（可能都缺答案）');
       if (exam) toast(mins ? `考试开始 · ${mins} 分钟` : '考试开始 · 不限时');

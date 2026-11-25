@@ -246,10 +246,76 @@ class QuizSession {
   }
 }
 
+/* ---- 考试组卷：章节均衡覆盖，章内题型按可出题量比例分配 ---- */
+const ExamPlanner = {
+  /**
+   * @param questions 已按题库、章节、题型和答案过滤后的题目
+   * @param size 目标题量；不足时按实际题量，绝不重复凑题
+   * @param sampleRandom 随机抽题；false 时每组按原顺序取题（最终题目顺序仍由 QuizSession 决定）
+   */
+  plan(questions, size, { sampleRandom = true, random = Math.random } = {}) {
+    const source = (Array.isArray(questions) ? questions : []).filter(Boolean);
+    const target = Math.max(0, Math.min(source.length, parseInt(size, 10) || 0));
+    if (target === 0) return [];
+    if (target >= source.length) return source.slice();
+
+    const chapterMap = new Map();
+    source.forEach((q, index) => {
+      const key = String(q.bankId || '') + ':' + String(q.secIdx ?? '');
+      if (!chapterMap.has(key)) chapterMap.set(key, { key, items: [], quota: 0 });
+      chapterMap.get(key).items.push({ q, index });
+    });
+    const chapters = [...chapterMap.values()];
+
+    // 轮转分配章节名额：各章尽量各多 1 题，小章节取满后名额自动补给其他章节。
+    let left = target;
+    while (left > 0) {
+      let progressed = false;
+      for (const chapter of chapters) {
+        if (chapter.quota >= chapter.items.length) continue;
+        chapter.quota++; left--; progressed = true;
+        if (!left) break;
+      }
+      if (!progressed) break;
+    }
+
+    const take = (items, count) => {
+      if (!sampleRandom || count >= items.length) return items.slice(0, count);
+      const copy = items.slice();
+      // 部分 Fisher–Yates：只抽 count 题，不重排整库，避免大题库组卷卡顿。
+      for (let i = 0; i < count; i++) {
+        const j = i + Math.floor(random() * (copy.length - i));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+      }
+      return copy.slice(0, count);
+    };
+
+    const picked = [];
+    for (const chapter of chapters) {
+      const typeMap = new Map();
+      for (const item of chapter.items) {
+        const type = item.q.type || 'unknown';
+        if (!typeMap.has(type)) typeMap.set(type, { type, items: [], quota: 0 });
+        typeMap.get(type).items.push(item);
+      }
+      const types = [...typeMap.values()];
+      // 每选一个名额，优先补给“已分配比例”最低的题型，使配额贴近该章真实题型占比。
+      for (let i = 0; i < chapter.quota; i++) {
+        const candidates = types.filter(t => t.quota < t.items.length);
+        if (!candidates.length) break;
+        candidates.sort((a, b) => a.quota / a.items.length - b.quota / b.items.length);
+        candidates[0].quota++;
+      }
+      for (const type of types) picked.push(...take(type.items, type.quota));
+    }
+    return picked.sort((a, b) => a.index - b.index).slice(0, target).map(x => x.q);
+  }
+};
+
 /* ---- 构建会话的辅助 ---- */
 const QuizBuilder = {
   /** 从多个题库构建：filterType 筛题型；secKeys 筛章节（"bankId:secIdx"，空 = 全部章节） */
-  async fromBanks(bankIds, { shuffle = false, filterType = 'all', secKeys = null, exam = false, minutes = 0, questionCache = null } = {}) {
+  async fromBanks(bankIds, { shuffle = false, filterType = 'all', secKeys = null, exam = false, minutes = 0, questionCache = null, examSize = 0 } = {}) {
     let qs = [];
     for (const id of bankIds) {
       // 设置页已统计过题目时直接复用，避免点「开始」再把同一批题从 IndexedDB 读一遍。
@@ -266,6 +332,9 @@ const QuizBuilder = {
       if (parts.includes('answered')) qs = qs.filter(q => q.answer);
       if (parts.includes('choice')) qs = qs.filter(q => q.type === 'single' || q.type === 'multi' || q.type === 'judge');
       else if (parts.includes('fill')) qs = qs.filter(q => q.type === 'fill');
+    }
+    if (exam && examSize > 0 && qs.length > examSize) {
+      qs = ExamPlanner.plan(qs, examSize, { sampleRandom: shuffle });
     }
     return new QuizSession(qs, { shuffle, exam, minutes });
   },

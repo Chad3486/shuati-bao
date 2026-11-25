@@ -1222,6 +1222,9 @@ button:focus-visible, summary:focus-visible, [role="button"]:focus-visible {
 .setup-secondary .btn { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
 #exam-opts .field { margin-bottom: 12px; }
 #exam-opts .seg button { font-size: 12px; }
+#exam-opts .exam-count-chips { margin-top: 0; gap: 7px; }
+#exam-opts .exam-count-chips .chip { padding: 7px 12px; }
+#exam-opts .exam-plan-hint { margin: 2px 0 12px; line-height: 1.55; }
 
 /* 复习：错题/收藏共用一个轻量切换，一张分组卡承载一组题。 */
 .review-nav { margin-bottom: 14px; }
